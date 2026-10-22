@@ -94,6 +94,34 @@ juce::AudioProcessorValueTreeState::ParameterLayout createLayout()
 
     return layout;
 }
+
+struct FactoryPreset
+{
+    const char* name;
+    float decay;
+    float tension;
+    float tone;
+    float drip;
+    float preDelayMs;
+    float mix;
+    float outputDb;
+};
+
+// Surf Guitar matches the parameter defaults, so a new instance is already on program 0.
+constexpr FactoryPreset kFactoryPresets[] = {
+    { "Surf Guitar",          2.2f, 0.28f, 0.58f, 0.70f,  0.0f, 0.42f,  0.0f },
+    { "Dub Splash",           5.0f, 0.16f, 0.32f, 0.96f, 48.0f, 0.72f, -3.0f },
+    { "Subtle Room Spring",   0.85f, 0.76f, 0.46f, 0.20f,  7.0f, 0.20f,  0.0f },
+    { "Vocal Shimmer",        2.9f, 0.40f, 0.84f, 0.46f, 20.0f, 0.36f, -1.5f },
+};
+
+constexpr int kNumFactoryPresets = static_cast<int>(sizeof(kFactoryPresets) / sizeof(kFactoryPresets[0]));
+
+void setPlainValue(juce::AudioProcessorValueTreeState& apvts, const char* id, float plain)
+{
+    if (auto* parameter = apvts.getParameter(id))
+        parameter->setValueNotifyingHost(parameter->convertTo0to1(plain));
+}
 } // namespace
 
 SpringTankProcessor::SpringTankProcessor()
@@ -157,6 +185,46 @@ juce::AudioProcessorEditor* SpringTankProcessor::createEditor()
     return new SpringTankEditor(*this);
 }
 
+int SpringTankProcessor::getNumPrograms()
+{
+    return kNumFactoryPresets;
+}
+
+int SpringTankProcessor::getCurrentProgram()
+{
+    return currentProgram.load();
+}
+
+void SpringTankProcessor::setCurrentProgram(int index)
+{
+    if (!juce::isPositiveAndBelow(index, kNumFactoryPresets))
+        return;
+
+    applyProgram(index);
+    programBroadcaster.sendChangeMessage();
+}
+
+const juce::String SpringTankProcessor::getProgramName(int index)
+{
+    if (!juce::isPositiveAndBelow(index, kNumFactoryPresets))
+        return {};
+
+    return kFactoryPresets[index].name;
+}
+
+void SpringTankProcessor::applyProgram(int index)
+{
+    const auto& preset = kFactoryPresets[index];
+    currentProgram.store(index);
+    setPlainValue(apvts, "decay", preset.decay);
+    setPlainValue(apvts, "tension", preset.tension);
+    setPlainValue(apvts, "tone", preset.tone);
+    setPlainValue(apvts, "drip", preset.drip);
+    setPlainValue(apvts, "predelay", preset.preDelayMs);
+    setPlainValue(apvts, "mix", preset.mix);
+    setPlainValue(apvts, "output", preset.outputDb);
+}
+
 double SpringTankProcessor::getTailLengthSeconds() const
 {
     const float decay = decayRaw != nullptr ? decayRaw->load() : 2.2f;
@@ -166,15 +234,25 @@ double SpringTankProcessor::getTailLengthSeconds() const
 
 void SpringTankProcessor::getStateInformation(juce::MemoryBlock& destData)
 {
-    if (auto xml = apvts.copyState().createXml())
+    auto state = apvts.copyState();
+    state.setProperty("program", currentProgram.load(), nullptr);
+    if (auto xml = state.createXml())
         copyXmlToBinary(*xml, destData);
 }
 
 void SpringTankProcessor::setStateInformation(const void* data, int sizeInBytes)
 {
     if (auto xml = getXmlFromBinary(data, sizeInBytes))
+    {
         if (xml->hasTagName(apvts.state.getType()))
-            apvts.replaceState(juce::ValueTree::fromXml(*xml));
+        {
+            auto state = juce::ValueTree::fromXml(*xml);
+            const int stored = static_cast<int>(state.getProperty("program", 0));
+            currentProgram.store(juce::jlimit(0, kNumFactoryPresets - 1, stored));
+            apvts.replaceState(state);
+            programBroadcaster.sendChangeMessage();
+        }
+    }
 }
 
 SpringReverb::Params SpringTankProcessor::readParams() const

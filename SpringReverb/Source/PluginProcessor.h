@@ -23,22 +23,26 @@ public:
     bool isMidiEffect() const override { return false; }
     double getTailLengthSeconds() const override;
 
-    int getNumPrograms() override { return 1; }
-    int getCurrentProgram() override { return 0; }
-    void setCurrentProgram(int) override {}
-    const juce::String getProgramName(int) override { return "Surf Tank"; }
+    int getNumPrograms() override;
+    int getCurrentProgram() override;
+    void setCurrentProgram(int index) override;
+    const juce::String getProgramName(int index) override;
     void changeProgramName(int, const juce::String&) override {}
 
     void getStateInformation(juce::MemoryBlock& destData) override;
     void setStateInformation(const void* data, int sizeInBytes) override;
 
     juce::AudioProcessorValueTreeState& getApvts() noexcept { return apvts; }
+    juce::ChangeBroadcaster& getProgramBroadcaster() noexcept { return programBroadcaster; }
 
 private:
+    void applyProgram(int index);
     SpringReverb::Params readParams() const;
 
     SpringReverb reverb;
     juce::AudioProcessorValueTreeState apvts;
+    juce::ChangeBroadcaster programBroadcaster;
+    std::atomic<int> currentProgram { 0 };
 
     std::atomic<float>* decayRaw = nullptr;
     std::atomic<float>* tensionRaw = nullptr;

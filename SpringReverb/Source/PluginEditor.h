@@ -2,9 +2,13 @@
 
 #include "PluginProcessor.h"
 
-class SpringTankEditor : public juce::AudioProcessorEditor
+class SpringTankEditor : public juce::AudioProcessorEditor,
+                            private juce::ChangeListener
 {
 public:
+    static constexpr int kWidth = 700;
+    static constexpr int kHeight = 300;
+
     explicit SpringTankEditor(SpringTankProcessor&);
     ~SpringTankEditor() override;
 
@@ -12,13 +16,17 @@ public:
     void resized() override;
 
 private:
-    void drawScrew(juce::Graphics&, float x, float y) const;
-    int headerHeight() const;
+    class LookAndFeel;
+    class Knob;
+
+    void detachLookAndFeel();
+    void changeListenerCallback(juce::ChangeBroadcaster* source) override;
+    void syncPresetBox();
 
     SpringTankProcessor& processor;
-    struct Content;
-    std::unique_ptr<Content> content;
-    juce::Image grain;
+    std::unique_ptr<LookAndFeel> lookAndFeel;
+    juce::ComboBox presetBox;
+    std::array<std::unique_ptr<Knob>, 7> knobs;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(SpringTankEditor)
 };
