@@ -1,6 +1,11 @@
 cmake_minimum_required(VERSION 3.22)
 
-project(SpringTank VERSION 2.1.0 LANGUAGES C CXX)
+if(APPLE)
+    set(CMAKE_OSX_DEPLOYMENT_TARGET "10.13" CACHE STRING "Minimum macOS version")
+    set(CMAKE_OSX_ARCHITECTURES "arm64;x86_64" CACHE STRING "Universal macOS binary")
+endif()
+
+project(SpringTank VERSION 2.1.1 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -12,6 +17,7 @@ include(FetchContent)
 FetchContent_Declare(
     JUCE
     URL https://github.com/juce-framework/JUCE/archive/refs/tags/8.0.15.tar.gz
+    URL_HASH SHA256=0eafd736286c6e7bb6958d79fce18d42cb654b8e231890d327b7cece379bd156
     DOWNLOAD_EXTRACT_TIMESTAMP TRUE
 )
 FetchContent_MakeAvailable(JUCE)
@@ -53,8 +59,10 @@ juce_add_plugin(SpringTank
     PLUGIN_CODE SpTk
     PLUGIN_NAME "Spring Tank"
     PRODUCT_NAME "Spring Tank"
-    VERSION 2.1.0
+    VERSION 2.1.1
     DESCRIPTION "Vintage surf-amp spring tank reverb"
+    MICROPHONE_PERMISSION_ENABLED TRUE
+    MICROPHONE_PERMISSION_TEXT "Spring Tank processes your audio input."
     IS_SYNTH FALSE
     NEEDS_MIDI_INPUT FALSE
     NEEDS_MIDI_OUTPUT FALSE
@@ -75,25 +83,12 @@ juce_add_binary_data(SpringTankFonts
         Resources/InterMedium.ttf
 )
 
-add_library(SpringTankDSP STATIC
-    Source/DSP/SpringReverb.cpp
-)
-target_include_directories(SpringTankDSP PUBLIC
-    ${CMAKE_CURRENT_SOURCE_DIR}/Source
-)
-target_compile_definitions(SpringTankDSP
-    PRIVATE
-        JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
-        JUCE_USE_CURL=0
-        JUCE_WEB_BROWSER=0
-)
-target_link_libraries(SpringTankDSP
-    PUBLIC
-        juce::juce_audio_basics
-    PRIVATE
-        juce::juce_recommended_config_flags
-        juce::juce_recommended_warning_flags
-)
+# Header-only link so JUCE modules are compiled into each consumer once,
+# instead of being archived here and compiled again downstream.
+add_library(SpringTankDSP INTERFACE)
+target_sources(SpringTankDSP INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/Source/DSP/SpringReverb.cpp)
+target_include_directories(SpringTankDSP INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/Source)
+target_link_libraries(SpringTankDSP INTERFACE juce::juce_audio_basics)
 
 target_sources(SpringTank
     PRIVATE

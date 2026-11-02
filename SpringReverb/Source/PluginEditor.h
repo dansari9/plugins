@@ -7,7 +7,6 @@
     name; the view itself is this faceplate, never a text-only placeholder.
 */
 class SpringTankEditor : public juce::AudioProcessorEditor,
-                         private juce::ChangeListener,
                          private juce::Timer
 {
 public:
@@ -26,13 +25,14 @@ private:
     class Meter;
 
     void detachLookAndFeel();
-    void changeListenerCallback(juce::ChangeBroadcaster* source) override;
     void timerCallback() override;
     void syncPresetBox();
     void stepPreset(int delta);
     float uiScale() const noexcept;
 
     float phase = 0.0f;
+    float shownOutput = 0.0f;
+    juce::Rectangle<int> waveArea;
 
     SpringTankProcessor& processor;
     juce::ComponentBoundsConstrainer constrainer;

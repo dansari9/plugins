@@ -68,7 +68,11 @@ jobs:
 
       - name: Configure
         working-directory: SpringReverb
-        run: cmake -S . -B build -G Xcode
+        run: cmake -S . -B build -G Xcode -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" -DCMAKE_OSX_DEPLOYMENT_TARGET=10.13
+
+      - name: Verify universal
+        working-directory: SpringReverb
+        run: lipo -archs "build/SpringTank_artefacts/Release/AU/Spring Tank.component/Contents/MacOS/Spring Tank" | grep -q "x86_64 arm64"
 
       - name: Build AU, VST3, and the impulse-response tool
         working-directory: SpringReverb
@@ -101,6 +105,16 @@ jobs:
           killall -9 AudioComponentRegistrar 2>/dev/null || true
           auval -v aufx SpTk Dwks
 
+      - name: pluginval
+        working-directory: SpringReverb
+        run: |
+          curl -L -o pv.zip https://github.com/Tracktion/pluginval/releases/latest/download/pluginval_macOS.zip
+          unzip -q pv.zip
+          pluginval.app/Contents/MacOS/pluginval --strictness-level 8 --validate "build/SpringTank_artefacts/Release/VST3/Spring Tank.vst3"
+
+      - name: Pack (keeps permissions)
+        run: tar -czf spring-tank-macos.tgz -C SpringReverb/build/SpringTank_artefacts/Release AU VST3
+
       - name: Upload AU, VST3, and impulse response
         uses: actions/upload-artifact@v4
         with:
@@ -110,6 +124,7 @@ jobs:
             SpringReverb/build/SpringTank_artefacts/Release/AU/**
             SpringReverb/build/SpringTank_artefacts/Release/VST3/**
             SpringReverb/artifacts/spring_tank_impulse.wav
+            spring-tank-macos.tgz
 
       - name: Upload editor screenshot
         uses: actions/upload-artifact@v4
@@ -117,3 +132,23 @@ jobs:
           name: spring-tank-editor-macos
           if-no-files-found: error
           path: SpringReverb/artifacts/spring_tank_editor.png
+
+  windows:
+    name: Windows VST3
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake -S SpringReverb -B SpringReverb/build
+
+      - name: Build VST3 and the impulse-response tool
+        run: cmake --build SpringReverb/build --config Release --parallel --target SpringTank_VST3 SpringTankIRTest
+
+      - name: Upload VST3
+        uses: actions/upload-artifact@v4
+        with:
+          name: spring-tank-windows
+          if-no-files-found: error
+          path: SpringReverb/build/SpringTank_artefacts/Release/VST3/**

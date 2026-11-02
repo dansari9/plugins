@@ -200,8 +200,20 @@ public:
     void advance()
     {
         const float target = slider.isMouseOverOrDragging() ? 1.0f : 0.0f;
+        if (std::abs(target - hover) < 0.002f)
+        {
+            if (std::abs(hover - target) >= 1.0e-6f)
+            {
+                hover = target;
+                slider.getProperties().set("hover", hover);
+                slider.repaint();
+            }
+            return;
+        }
+
         hover += (target - hover) * 0.22f;
         slider.getProperties().set("hover", hover);
+        slider.repaint();
     }
 
     void resized() override
@@ -240,8 +252,12 @@ public:
 
     void setLevels(float left, float right)
     {
-        displayL = juce::jmax(left, displayL * 0.84f);
-        displayR = juce::jmax(right, displayR * 0.84f);
+        const float nextL = juce::jmax(left, displayL * 0.84f);
+        const float nextR = juce::jmax(right, displayR * 0.84f);
+        if (std::abs(nextL - displayL) <= 1.0e-4f && std::abs(nextR - displayR) <= 1.0e-4f)
+            return;
+        displayL = nextL;
+        displayR = nextR;
         repaint();
     }
 
@@ -331,7 +347,7 @@ SpringTankEditor::SpringTankEditor(SpringTankProcessor& p)
     {
         const int id = presetBox.getSelectedId();
         if (id > 0 && id - 1 != processor.getCurrentProgram())
-            processor.setCurrentProgram(id - 1);
+            processor.selectProgramFromEditor(id - 1);
     };
     addAndMakeVisible(presetBox);
 
@@ -350,11 +366,8 @@ SpringTankEditor::SpringTankEditor(SpringTankProcessor& p)
     power.setLookAndFeel(lookAndFeel.get());
     power.setClickingTogglesState(true);
     power.setTooltip("Bypass");
-    power.onClick = [this]
-    {
-        if (auto* parameter = processor.getApvts().getParameter("bypass"))
-            parameter->setValueNotifyingHost(power.getToggleState() ? 1.0f : 0.0f);
-    };
+    powerAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment>(
+        processor.getApvts(), "bypass", power);
     addAndMakeVisible(power);
 
     inputMeterOwned = std::make_unique<Meter>("In", *lookAndFeel);
@@ -366,15 +379,14 @@ SpringTankEditor::SpringTankEditor(SpringTankProcessor& p)
     addAndMakeVisible(*inputMeter);
     addAndMakeVisible(*outputMeter);
 
-    processor.getProgramBroadcaster().addChangeListener(this);
     startTimerHz(30);
-    setSize(kWidth, kHeight);
+    const int savedWidth = processor.getEditorWidth();
+    setSize(savedWidth, savedWidth / 2);
 }
 
 SpringTankEditor::~SpringTankEditor()
 {
     stopTimer();
-    processor.getProgramBroadcaster().removeChangeListener(this);
     setConstrainer(nullptr);
     presetBox.setLookAndFeel(nullptr);
     presetPrev.setLookAndFeel(nullptr);
@@ -391,11 +403,6 @@ void SpringTankEditor::detachLookAndFeel()
             knob->detachLookAndFeel();
 }
 
-void SpringTankEditor::changeListenerCallback(juce::ChangeBroadcaster*)
-{
-    syncPresetBox();
-}
-
 void SpringTankEditor::timerCallback()
 {
     phase += 0.035f;
@@ -403,19 +410,18 @@ void SpringTankEditor::timerCallback()
         if (knob != nullptr)
             knob->advance();
 
+    const float inL = processor.takeInputPeak(0);
+    const float inR = processor.takeInputPeak(1);
+    const float outL = processor.takeOutputPeak(0);
+    const float outR = processor.takeOutputPeak(1);
+    shownOutput = juce::jmax(outL, outR);
     if (inputMeter != nullptr)
-        inputMeter->setLevels(processor.getInputMeter(0), processor.getInputMeter(1));
+        inputMeter->setLevels(inL, inR);
     if (outputMeter != nullptr)
-        outputMeter->setLevels(processor.getOutputMeter(0), processor.getOutputMeter(1));
+        outputMeter->setLevels(outL, outR);
 
-    if (auto* bypass = processor.getApvts().getRawParameterValue("bypass"))
-    {
-        const bool bypassed = bypass->load() >= 0.5f;
-        if (power.getToggleState() != bypassed)
-            power.setToggleState(bypassed, juce::dontSendNotification);
-    }
-
-    repaint();
+    syncPresetBox();
+    repaint(waveArea);
 }
 
 void SpringTankEditor::syncPresetBox()
@@ -435,7 +441,7 @@ void SpringTankEditor::stepPreset(int delta)
         index = count - 1;
     else if (index >= count)
         index = 0;
-    processor.setCurrentProgram(index);
+    processor.selectProgramFromEditor(index);
 }
 
 float SpringTankEditor::uiScale() const noexcept
@@ -460,12 +466,13 @@ void SpringTankEditor::paint(juce::Graphics& g)
                             ? processor.getApvts().getRawParameterValue("decay")->load()
                             : 2.2f;
     const float decayNorm = juce::jlimit(0.0f, 1.0f, (decay - 0.15f) / 5.35f);
-    const float energy = 0.25f + 0.75f * juce::jmax(processor.getOutputMeter(0), processor.getOutputMeter(1));
+    const float energy = 0.25f + 0.75f * shownOutput;
     juce::Path wave;
-    const float yBase = static_cast<float>(getHeight()) * 0.40f;
-    const float amp = (6.0f + 10.0f * decayNorm) * scale * (0.45f + 0.55f * energy);
-    const float x0 = static_cast<float>(getWidth()) * 0.40f;
-    const float span = static_cast<float>(getWidth()) * 0.20f;
+    const float yBase = static_cast<float>(waveArea.getCentreY());
+    const float amp = juce::jmin((6.0f + 8.0f * decayNorm) * scale * (0.45f + 0.55f * energy),
+                                 static_cast<float>(waveArea.getHeight()) * 0.4f);
+    const float x0 = static_cast<float>(waveArea.getX());
+    const float span = static_cast<float>(waveArea.getWidth());
     const int steps = 48;
     for (int i = 0; i <= steps; ++i)
     {
@@ -496,6 +503,11 @@ void SpringTankEditor::paint(juce::Graphics& g)
 void SpringTankEditor::resized()
 {
     const float scale = uiScale();
+    waveArea = juce::Rectangle<float>(getWidth() * 0.40f, getHeight() * 0.40f - 12.0f * scale,
+                                      getWidth() * 0.20f, 24.0f * scale)
+                   .getSmallestIntegerContainer()
+                   .expanded(2);
+    processor.setEditorWidth(getWidth());
     auto area = getLocalBounds().reduced(juce::roundToInt(28.0f * scale), juce::roundToInt(20.0f * scale));
 
     auto header = area.removeFromTop(juce::roundToInt(40.0f * scale));

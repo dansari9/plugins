@@ -77,6 +77,15 @@ public:
         return s0 + frac * (s1 - s0);
     }
 
+    // Same sample as readAge() when age is an integer. No lerp.
+    float readInt(int age) const noexcept
+    {
+        const int a = std::clamp(age, 0, static_cast<int>(maxAge));
+        const auto index = (static_cast<unsigned>(writePos) - 1u - static_cast<unsigned>(a))
+                           & static_cast<unsigned>(mask);
+        return buffer[static_cast<size_t>(index)];
+    }
+
     int capacity() const noexcept { return mask + 1; }
 
 private:
@@ -99,7 +108,7 @@ struct StretchAllpass
     float process(float x, int delaySamples, float a)
     {
         const int d = std::max(1, delaySamples);
-        const float z = line.readAge(static_cast<float>(d - 1));
+        const float z = line.readInt(d - 1);
         const float y = a * x + z;
         line.write(x - a * y);
         return y;
@@ -331,6 +340,15 @@ struct SpringReverb::Impl
 
     SpringReverb::Params params {};
     juce::SmoothedValue<float> decaySm, tensionSm, toneSm, dripSm, preSm, mixSm, outSm;
+    SharedCoeffs coeffs;
+    bool coeffsDirty = true;
+
+    bool smoothing() const noexcept
+    {
+        return decaySm.isSmoothing() || tensionSm.isSmoothing() || toneSm.isSmoothing()
+            || dripSm.isSmoothing() || preSm.isSmoothing() || mixSm.isSmoothing()
+            || outSm.isSmoothing();
+    }
 
     std::array<Channel, 2> channels {};
 
@@ -354,7 +372,7 @@ struct SpringReverb::Impl
         tensionSm.reset(sr, 0.06);
         toneSm.reset(sr, 0.03);
         dripSm.reset(sr, 0.02);
-        preSm.reset(sr, 0.04);
+        preSm.reset(sr, 0.25);
         mixSm.reset(sr, 0.02);
         outSm.reset(sr, 0.02);
 
@@ -366,6 +384,7 @@ struct SpringReverb::Impl
         mixSm.setCurrentAndTargetValue(params.mix);
         outSm.setCurrentAndTargetValue(params.outputDb);
         juce::ignoreUnused(snap);
+        coeffsDirty = true;
     }
 
     SharedCoeffs tick()
@@ -457,7 +476,7 @@ struct SpringReverb::Impl
                                            static_cast<int>(std::lround(spring.baseHigh + mod * 0.65f)));
 
         const int stretch = stretchLf[index];
-        const float lowTap = spring.lowDelay.readAge(static_cast<float>(lowDelay - 1));
+        const float lowTap = spring.lowDelay.readInt(lowDelay - 1);
         float low = cascade(spring.lowDisp.data(), kLfStages, lowTap, stretch, c.aLf[index]);
         low = dcBlock(low, spring.lowDcX, spring.lowDcY, dcR);
         low = onePoleLp(low, spring.lowLp, c.lpLf);
@@ -465,7 +484,7 @@ struct SpringReverb::Impl
             low = 0.0f;
         spring.lowDelay.write(input + c.fbLf[index] * low);
 
-        const float highTap = spring.highDelay.readAge(static_cast<float>(highDelay - 1));
+        const float highTap = spring.highDelay.readInt(highDelay - 1);
         float high = cascade(spring.highDisp.data(), kHfStages, highTap, stretch, c.aHf[index]);
         high = dcBlock(high, spring.highHpX, spring.highHpY, c.hpHf);
         high = onePoleLp(high, spring.highLp, c.lpHf);
@@ -489,14 +508,10 @@ struct SpringReverb::Impl
         const float excited = saturate(channel.preDelay.readAge(c.preSamples) * kInputTrim);
 
         float wet = 0.0f;
-        const int hold = std::max(1, static_cast<int>(0.018 * sampleRate));
-        const float smooth = 1.0f - std::exp(-juce::MathConstants<float>::twoPi * 6.0f
-                                              / static_cast<float>(sampleRate));
         for (int s = 0; s < kSprings; ++s)
         {
             auto& spring = channel.springs[static_cast<size_t>(s)];
-            const float mod = spring.mod.next(c.modDepth, hold, smooth);
-            wet += processSpring(spring, excited, c, s, chIndex, mod);
+            wet += processSpring(spring, excited, c, s, chIndex, 0.0f);
         }
 
         wet *= kMakeup;
@@ -625,6 +640,7 @@ void SpringReverb::setParameters(const Params& newParams, bool snap)
         impl->preSm.setCurrentAndTargetValue(p.preDelayMs);
         impl->mixSm.setCurrentAndTargetValue(p.mix);
         impl->outSm.setCurrentAndTargetValue(p.outputDb);
+        impl->coeffsDirty = true;
     }
 }
 
@@ -645,7 +661,12 @@ void SpringReverb::process(juce::AudioBuffer<float>& buffer)
 
     for (int i = 0; i < numSamples; ++i)
     {
-        const SharedCoeffs c = impl->tick();
+        if (impl->coeffsDirty || impl->smoothing())
+        {
+            impl->coeffs = impl->tick();
+            impl->coeffsDirty = false;
+        }
+        const SharedCoeffs& c = impl->coeffs;
         float dry[2] = { data[0][i], 0.0f };
         float wet[2] = { 0.0f, 0.0f };
 

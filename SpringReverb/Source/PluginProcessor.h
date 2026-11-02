@@ -32,14 +32,17 @@ public:
     void setCurrentProgram(int index) override;
     const juce::String getProgramName(int index) override;
     void changeProgramName(int, const juce::String&) override {}
+    /** Message thread only. Opens parameter gestures and tells the host the program changed. */
+    void selectProgramFromEditor(int index);
 
     void getStateInformation(juce::MemoryBlock& destData) override;
     void setStateInformation(const void* data, int sizeInBytes) override;
 
     juce::AudioProcessorValueTreeState& getApvts() noexcept { return apvts; }
-    juce::ChangeBroadcaster& getProgramBroadcaster() noexcept { return programBroadcaster; }
-    float getInputMeter(int channel) const noexcept;
-    float getOutputMeter(int channel) const noexcept;
+    float takeInputPeak(int channel) noexcept;
+    float takeOutputPeak(int channel) noexcept;
+    int getEditorWidth() const noexcept { return editorWidth.load(); }
+    void setEditorWidth(int width) noexcept;
 
 private:
     void applyProgram(int index);
@@ -48,8 +51,9 @@ private:
 
     SpringReverb reverb;
     juce::AudioProcessorValueTreeState apvts;
-    juce::ChangeBroadcaster programBroadcaster;
     std::atomic<int> currentProgram { 0 };
+    std::atomic<int> editorWidth { 840 };
+    bool hostBypassed = false;
     std::atomic<float> inputMeter[2] { 0.0f, 0.0f };
     std::atomic<float> outputMeter[2] { 0.0f, 0.0f };
     juce::SmoothedValue<float> bypassMix { 1.0f };
