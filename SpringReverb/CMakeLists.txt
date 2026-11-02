@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.22)
 
-project(SpringTank VERSION 1.0.0 LANGUAGES C CXX)
+project(SpringTank VERSION 2.0.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -53,6 +53,7 @@ juce_add_plugin(SpringTank
     PLUGIN_CODE SpTk
     PLUGIN_NAME "Spring Tank"
     PRODUCT_NAME "Spring Tank"
+    VERSION 2.0.0
     DESCRIPTION "Vintage surf-amp spring tank reverb"
     IS_SYNTH FALSE
     NEEDS_MIDI_INPUT FALSE
@@ -131,8 +132,39 @@ set_target_properties(SpringTankIRTest PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
 )
 
+# Headless GUI check. Links the plugin shared code, opens the real editor, and
+# can write a PNG snapshot. Fails if the window has no knobs or a zero size.
+add_executable(SpringTankEditorTest
+    tests/EditorSmokeTest.cpp
+)
+target_compile_definitions(SpringTankEditorTest
+    PRIVATE
+        JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+        JUCE_USE_CURL=0
+        JUCE_WEB_BROWSER=0
+)
+target_include_directories(SpringTankEditorTest
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/Source
+        $<TARGET_PROPERTY:SpringTank,JUCE_GENERATED_SOURCES_DIRECTORY>
+)
+target_link_libraries(SpringTankEditorTest
+    PRIVATE
+        SpringTank
+        juce::juce_audio_utils
+        juce::juce_recommended_config_flags
+        juce::juce_recommended_warning_flags
+)
+set_target_properties(SpringTankEditorTest PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
+)
+
 enable_testing()
 add_test(
     NAME spring_tank_impulse
     COMMAND $<TARGET_FILE:SpringTankIRTest> "${CMAKE_BINARY_DIR}/spring_tank_impulse.wav"
+)
+add_test(
+    NAME spring_tank_editor
+    COMMAND $<TARGET_FILE:SpringTankEditorTest> "${CMAKE_BINARY_DIR}/spring_tank_editor.png"
 )

@@ -92,6 +92,11 @@ juce::AudioProcessorValueTreeState::ParameterLayout createLayout()
                 return String(value, 1) + " dB";
             })));
 
+    layout.add(std::make_unique<AudioParameterBool>(
+        ParameterID { "bypass", 1 },
+        "Bypass",
+        false));
+
     return layout;
 }
 
@@ -137,6 +142,7 @@ SpringTankProcessor::SpringTankProcessor()
     predelayRaw = apvts.getRawParameterValue("predelay");
     mixRaw = apvts.getRawParameterValue("mix");
     outputRaw = apvts.getRawParameterValue("output");
+    bypassRaw = apvts.getRawParameterValue("bypass");
 }
 
 void SpringTankProcessor::prepareToPlay(double sampleRate, int samplesPerBlock)
@@ -144,6 +150,10 @@ void SpringTankProcessor::prepareToPlay(double sampleRate, int samplesPerBlock)
     const int channels = juce::jlimit(1, 2, getTotalNumOutputChannels());
     reverb.prepare(sampleRate, samplesPerBlock, channels);
     reverb.setParameters(readParams(), true);
+    dryBuffer.setSize(2, juce::jmax(1, samplesPerBlock), false, false, true);
+    bypassMix.reset(sampleRate, 0.02);
+    const bool bypassed = bypassRaw != nullptr && bypassRaw->load() >= 0.5f;
+    bypassMix.setCurrentAndTargetValue(bypassed ? 0.0f : 1.0f);
 }
 
 void SpringTankProcessor::releaseResources()
@@ -163,21 +173,85 @@ bool SpringTankProcessor::isBusesLayoutSupported(const BusesLayout& layouts) con
         || mainIn == juce::AudioChannelSet::stereo();
 }
 
+void SpringTankProcessor::storePeaks(const juce::AudioBuffer<float>& buffer, std::atomic<float>* dest) noexcept
+{
+    const int numSamples = buffer.getNumSamples();
+    for (int ch = 0; ch < 2; ++ch)
+    {
+        float peak = 0.0f;
+        if (ch < buffer.getNumChannels() && numSamples > 0)
+            peak = buffer.getMagnitude(ch, 0, numSamples);
+        dest[ch].store(peak, std::memory_order_relaxed);
+    }
+}
+
+float SpringTankProcessor::getInputMeter(int channel) const noexcept
+{
+    return channel >= 0 && channel < 2 ? inputMeter[channel].load(std::memory_order_relaxed) : 0.0f;
+}
+
+float SpringTankProcessor::getOutputMeter(int channel) const noexcept
+{
+    return channel >= 0 && channel < 2 ? outputMeter[channel].load(std::memory_order_relaxed) : 0.0f;
+}
+
+juce::AudioProcessorParameter* SpringTankProcessor::getBypassParameter() const
+{
+    return apvts.getParameter("bypass");
+}
+
 void SpringTankProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midi)
 {
     juce::ignoreUnused(midi);
     juce::ScopedNoDenormals noDenormals;
 
+    const int numSamples = buffer.getNumSamples();
     const int numIn = getTotalNumInputChannels();
     const int numOut = getTotalNumOutputChannels();
+    const int channels = juce::jmin(2, buffer.getNumChannels());
     for (int ch = numIn; ch < numOut; ++ch)
-        buffer.clear(ch, 0, buffer.getNumSamples());
+        buffer.clear(ch, 0, numSamples);
 
-    if (!reverb.isPrepared())
+    storePeaks(buffer, inputMeter);
+
+    if (!reverb.isPrepared() || numSamples <= 0)
+    {
+        storePeaks(buffer, outputMeter);
         return;
+    }
+
+    if (dryBuffer.getNumChannels() < channels || dryBuffer.getNumSamples() < numSamples)
+        dryBuffer.setSize(juce::jmax(2, channels), juce::jmax(numSamples, dryBuffer.getNumSamples()),
+                          false, false, true);
+
+    for (int ch = 0; ch < channels; ++ch)
+        dryBuffer.copyFrom(ch, 0, buffer, ch, 0, numSamples);
 
     reverb.setParameters(readParams(), false);
     reverb.process(buffer);
+
+    const bool bypassed = bypassRaw != nullptr && bypassRaw->load() >= 0.5f;
+    bypassMix.setTargetValue(bypassed ? 0.0f : 1.0f);
+    for (int i = 0; i < numSamples; ++i)
+    {
+        const float wet = bypassMix.getNextValue();
+        for (int ch = 0; ch < channels; ++ch)
+        {
+            float* out = buffer.getWritePointer(ch);
+            const float dry = dryBuffer.getReadPointer(ch)[i];
+            out[i] = dry + (out[i] - dry) * wet;
+        }
+    }
+
+    storePeaks(buffer, outputMeter);
+}
+
+void SpringTankProcessor::processBlockBypassed(juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midi)
+{
+    juce::ignoreUnused(midi);
+    storePeaks(buffer, inputMeter);
+    storePeaks(buffer, outputMeter);
+    bypassMix.setCurrentAndTargetValue(0.0f);
 }
 
 juce::AudioProcessorEditor* SpringTankProcessor::createEditor()

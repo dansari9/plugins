@@ -81,7 +81,14 @@ codesign --force --deep --sign - ~/Library/Audio/Plug-Ins/VST3/Spring\ Tank.vst3
 
 Pass `-DSPRINGTANK_COPY_AFTER_BUILD=ON` at configure time if you would rather have the build copy the plug-ins into those user folders itself.
 
-Rescan in Logic Pro (Plug-in Manager) if the tank does not appear. The Audio Unit type is an effect (`aufx`).
+This build is version 2.0.0. Logic caches Audio Units by bundle version, so a 1.0.0 component can stay on screen as an empty window titled Spring Tank, with the preset menu stuck on Manual. After installing 2.0.0, clear that cache and rescan:
+
+```bash
+killall -9 AudioComponentRegistrar 2>/dev/null || true
+rm -rf ~/Library/Caches/AudioUnitCache ~/Library/Caches/com.apple.audiounits.cache
+```
+
+Then in Logic, Plug-in Manager, reset and rescan. The Audio Unit type is an effect (`aufx`). The faceplate shows `v2.0.0` under the name when the new component is the one that loaded.
 
 ### Validate with auval
 
@@ -142,4 +149,4 @@ A rendered copy is checked in at `artifacts/spring_tank_impulse.wav`.
 
 ## Continuous integration
 
-The workflow source is [ci/github-actions-ci.yml](../ci/github-actions-ci.yml) at the repository root. Copy it to `.github/workflows/ci.yml` to enable Actions. It builds this directory: VST3 and Standalone on Linux, AU and VST3 on macOS, runs the impulse-response check, and uploads the plug-ins plus the WAV.
+The workflow source is [ci/github-actions-ci.yml](../ci/github-actions-ci.yml) at the repository root. Copy that file over `.github/workflows/ci.yml` to enable Actions. The copy in this branch also runs `SpringTankEditorTest` (a headless check that the editor is non-zero and has its knobs, preset controls, meters, and power switch), writes `artifacts/spring_tank_editor.png`, uploads that screenshot, and on macOS runs `auval -v aufx SpTk Dwks` after installing the component. None of that runs until the workflow file under `.github/workflows/` is updated, because this repository's token cannot push workflow changes.
