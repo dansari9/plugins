@@ -20,4 +20,4 @@ Run the commands in that README from inside `SpringReverb/`.
 
 The Actions workflow is checked in at [ci/github-actions-ci.yml](ci/github-actions-ci.yml), not under `.github/workflows`, because the token used to push this repository cannot create workflow files.
 
-To turn it on, copy that file to `.github/workflows/ci.yml`. In the GitHub web editor, add a file at that path and paste the contents. It builds Spring Tank on Linux (VST3 and Standalone) and macOS (AU and VST3).
+Replace `.github/workflows/ci.yml` with that file (the web editor can do it; this token cannot push workflow changes). The proposed workflow builds Spring Tank on Linux (VST3 and Standalone) and macOS (AU and VST3), runs the impulse-response check and a headless editor check, uploads `artifacts/spring_tank_editor.png`, and on macOS runs `auval -v aufx SpTk Dwks`.
