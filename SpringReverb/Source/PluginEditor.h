@@ -11,8 +11,8 @@ class SpringTankEditor : public juce::AudioProcessorEditor,
                          private juce::Timer
 {
 public:
-    static constexpr int kWidth = 760;
-    static constexpr int kHeight = 380;
+    static constexpr int kWidth = 840;
+    static constexpr int kHeight = 420;
 
     explicit SpringTankEditor(SpringTankProcessor&);
     ~SpringTankEditor() override;
@@ -31,6 +31,8 @@ private:
     void syncPresetBox();
     void stepPreset(int delta);
     float uiScale() const noexcept;
+
+    float phase = 0.0f;
 
     SpringTankProcessor& processor;
     juce::ComponentBoundsConstrainer constrainer;

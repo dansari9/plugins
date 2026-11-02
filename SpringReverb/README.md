@@ -81,14 +81,14 @@ codesign --force --deep --sign - ~/Library/Audio/Plug-Ins/VST3/Spring\ Tank.vst3
 
 Pass `-DSPRINGTANK_COPY_AFTER_BUILD=ON` at configure time if you would rather have the build copy the plug-ins into those user folders itself.
 
-This build is version 2.0.0. Logic caches Audio Units by bundle version, so a 1.0.0 component can stay on screen as an empty window titled Spring Tank, with the preset menu stuck on Manual. After installing 2.0.0, clear that cache and rescan:
+This build is version 2.1.0. Logic caches Audio Units by bundle version, so an older component can stay on screen as an empty window titled Spring Tank, with the preset menu stuck on Manual. After installing 2.1.0, clear that cache and rescan:
 
 ```bash
 killall -9 AudioComponentRegistrar 2>/dev/null || true
 rm -rf ~/Library/Caches/AudioUnitCache ~/Library/Caches/com.apple.audiounits.cache
 ```
 
-Then in Logic, Plug-in Manager, reset and rescan. The Audio Unit type is an effect (`aufx`). The faceplate shows `v2.0.0` under the name when the new component is the one that loaded.
+Then in Logic, Plug-in Manager, reset and rescan. The Audio Unit type is an effect (`aufx`). The panel shows `2.1.0` next to the name when the new component is the one that loaded.
 
 ### Validate with auval
 

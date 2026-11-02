@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.22)
 
-project(SpringTank VERSION 2.0.0 LANGUAGES C CXX)
+project(SpringTank VERSION 2.1.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -53,7 +53,7 @@ juce_add_plugin(SpringTank
     PLUGIN_CODE SpTk
     PLUGIN_NAME "Spring Tank"
     PRODUCT_NAME "Spring Tank"
-    VERSION 2.0.0
+    VERSION 2.1.0
     DESCRIPTION "Vintage surf-amp spring tank reverb"
     IS_SYNTH FALSE
     NEEDS_MIDI_INPUT FALSE
@@ -68,6 +68,12 @@ juce_add_plugin(SpringTank
 )
 
 juce_generate_juce_header(SpringTank)
+
+juce_add_binary_data(SpringTankFonts
+    SOURCES
+        Resources/InterRegular.ttf
+        Resources/InterMedium.ttf
+)
 
 add_library(SpringTankDSP STATIC
     Source/DSP/SpringReverb.cpp
@@ -104,6 +110,8 @@ target_compile_definitions(SpringTank
 )
 
 target_link_libraries(SpringTank
+    PUBLIC
+        SpringTankFonts
     PRIVATE
         SpringTankDSP
         juce::juce_audio_utils
