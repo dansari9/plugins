@@ -74,8 +74,9 @@ void RootnoteProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::Mid
     int position = 0;
     for (const auto metadata : midi)
     {
+        // Longer messages (sysex) are of no interest, and building one would allocate.
         MidiEvent event;
-        if (!toEngineEvent(metadata.getMessage(), event))
+        if (metadata.numBytes > 3 || !toEngineEvent(metadata.getMessage(), event))
             continue;
         const int at = juce::jlimit(position, numSamples, metadata.samplePosition);
         processSpan(channels, numChannels, position, at);

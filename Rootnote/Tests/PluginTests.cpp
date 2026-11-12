@@ -296,6 +296,7 @@ TEST_CASE("Plugin: processing never produces NaN, at any layout, rate or block s
             juce::MidiBuffer midi;
             midi.addEvent(juce::MidiMessage::noteOn(1 + n % 3, 24 + (n * 7) % 60, 0.8f), config.blockSize / 2);
             midi.addEvent(juce::MidiMessage::pitchWheel(1, 9000), 0);
+            midi.addEvent(juce::MidiMessage::createSysExMessage("0123456789abcdef", 16), 1);
             if (n % 5 == 4)
                 midi.addEvent(juce::MidiMessage::allNotesOff(1), config.blockSize - 1);
             processor.processBlock(block, midi);
