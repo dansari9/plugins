@@ -22,7 +22,7 @@ bool isSharp(int pc)
 } // namespace
 
 RootnoteEditor::RootnoteEditor(RootnoteProcessor& p)
-    : AudioProcessorEditor(p), processor(p), apvts(p.getApvts()), screen(p)
+    : AudioProcessorEditor(p), plugin(p), apvts(p.getApvts()), screen(p)
 {
     setLookAndFeel(&lookAndFeel);
     addAndMakeVisible(plate);
@@ -31,16 +31,16 @@ RootnoteEditor::RootnoteEditor(RootnoteProcessor& p)
     // Header.
     preset.onStep = [this](int by) {
         const int count = RootnoteProcessor::numPresets();
-        processor.loadPreset((processor.currentPreset() + by + count) % count);
+        plugin.loadPreset((plugin.currentPreset() + by + count) % count);
     };
     preset.onMenu = [this] {
         juce::PopupMenu menu;
         for (int i = 0; i < RootnoteProcessor::numPresets(); ++i)
-            menu.addItem(i + 1, RootnoteProcessor::presetName(i), true, i == processor.currentPreset());
-        showMenu(menu, preset, [this](int chosen) { processor.loadPreset(chosen - 1); });
+            menu.addItem(i + 1, RootnoteProcessor::presetName(i), true, i == plugin.currentPreset());
+        showMenu(menu, preset, [this](int chosen) { plugin.loadPreset(chosen - 1); });
     };
-    slotA.onPress = [this](const juce::ModifierKeys&) { processor.selectAbSlot(0); };
-    slotB.onPress = [this](const juce::ModifierKeys&) { processor.selectAbSlot(1); };
+    slotA.onPress = [this](const juce::ModifierKeys&) { plugin.selectAbSlot(0); };
+    slotB.onPress = [this](const juce::ModifierKeys&) { plugin.selectAbSlot(1); };
     settings.onClick = [this] { showSettings(); };
     power.onClick = [this] { toggleParameter(ids::bypass); };
     power.setTooltip("Bypass");
@@ -59,12 +59,12 @@ RootnoteEditor::RootnoteEditor(RootnoteProcessor& p)
             const double note = juce::jlimit(kMinNote, kMaxNote, static_cast<double>((octave + 1) * 12 + pc));
             if (mods.isAltDown())
             {
-                processor.setKnobNote(NoteControl::cut, note);
+                plugin.setKnobNote(NoteControl::cut, note);
                 setParameter(ids::cutOn, 1.0);
             }
             else
             {
-                processor.setKnobNote(NoteControl::boost, note);
+                plugin.setKnobNote(NoteControl::boost, note);
             }
         };
         place(*key, 24.0f + static_cast<float>(pc) * 46.545f, 318, 42, 56);
@@ -78,11 +78,11 @@ RootnoteEditor::RootnoteEditor(RootnoteProcessor& p)
     matchCut.onPress = [this](const juce::ModifierKeys&) {
         if (parameter(ids::cutOn) >= 0.5)
             setParameter(ids::cutOn, 0.0);
-        else if (!processor.matchCutToHit())
+        else if (!plugin.matchCutToHit())
             matchBlink = kBlinkFrames;
     };
     tuneToKey.onPress = [this](const juce::ModifierKeys&) {
-        if (!processor.tuneBoostToKey())
+        if (!plugin.tuneBoostToKey())
             tuneBlink = kBlinkFrames;
     };
     keyLock.onPress = [this](const juce::ModifierKeys&) { toggleParameter(ids::keyLock); };
@@ -131,11 +131,11 @@ RootnoteEditor::RootnoteEditor(RootnoteProcessor& p)
     place(link, 810, 390, 62, 30);
     place(limit, 876, 390, 60, 30);
 
-    page = juce::jlimit(0, kNumPages - 1, processor.storedEditorPage());
+    page = juce::jlimit(0, kNumPages - 1, plugin.storedEditorPage());
     screen.setPage(page);
     bindEncoders();
 
-    const auto stored = processor.storedEditorSize(); // read first: setting the limits already resizes
+    const auto stored = plugin.storedEditorSize(); // read first: setting the limits already resizes
     setResizable(true, false); // hosts resize; the settings menu has sizes too
     setResizeLimits(kPlateWidth * 3 / 4, kPlateHeight * 3 / 4, kPlateWidth * 2, kPlateHeight * 2);
     getConstrainer()->setFixedAspectRatio(static_cast<double>(kPlateWidth) / kPlateHeight);
@@ -144,14 +144,14 @@ RootnoteEditor::RootnoteEditor(RootnoteProcessor& p)
                                    stored.x > 0 ? stored.x : kDefaultWidth);
     setSize(width, width * kPlateHeight / kPlateWidth);
 
-    processor.setDisplayActive(true);
+    plugin.setDisplayActive(true);
     startTimerHz(30);
     refresh();
 }
 
 RootnoteEditor::~RootnoteEditor()
 {
-    processor.setDisplayActive(false);
+    plugin.setDisplayActive(false);
     setLookAndFeel(nullptr);
 }
 
@@ -167,7 +167,7 @@ void RootnoteEditor::resized()
 {
     plate.setTransform(juce::AffineTransform::scale(static_cast<float>(getWidth()) / kPlateWidth,
                                                     static_cast<float>(getHeight()) / kPlateHeight));
-    processor.storeEditorSize(getWidth(), getHeight());
+    plugin.storeEditorSize(getWidth(), getHeight());
 }
 
 double RootnoteEditor::parameter(const char* id) const
@@ -194,7 +194,7 @@ void RootnoteEditor::selectPage(int newPage)
     if (newPage == page)
         return;
     page = newPage;
-    processor.storeEditorPage(page);
+    plugin.storeEditorPage(page);
     bindEncoders();
     screen.setPage(page);
     refresh();
@@ -266,16 +266,16 @@ void RootnoteEditor::shiftOctave(NoteControl::Target bank, int semitones)
     Played& p = played[bank];
     const double from = p.midi ? p.note : parameter(bank == NoteControl::boost ? ids::boostNote : ids::cutNote);
     p.midi = false;
-    processor.setKnobNote(bank, juce::jlimit(kMinNote, kMaxNote, from + semitones));
+    plugin.setKnobNote(bank, juce::jlimit(kMinNote, kMaxNote, from + semitones));
 }
 
 void RootnoteEditor::showMenu(juce::PopupMenu menu, juce::Component& target, std::function<void(int)> onChosen)
 {
     // The choice arrives asynchronously, possibly after the editor has gone.
     menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(&target),
-                       [safe = juce::Component::SafePointer<RootnoteEditor>(this), onChosen = std::move(onChosen)](int chosen) {
+                       [safe = juce::Component::SafePointer<RootnoteEditor>(this), apply = std::move(onChosen)](int chosen) {
                            if (safe != nullptr && chosen != 0)
-                               onChosen(chosen);
+                               apply(chosen);
                        });
 }
 
@@ -317,15 +317,15 @@ void RootnoteEditor::showSettings()
 
 void RootnoteEditor::refresh()
 {
-    const auto state = processor.displayState();
-    const auto hit = processor.tunerReading();
+    const auto state = plugin.displayState();
+    const auto hit = plugin.tunerReading();
     screen.update(state, hit);
 
     if (state.midiNoteOns != lastNoteOns)
         midiLit = 6;
     lastNoteOns = state.midiNoteOns;
     midiLit = juce::jmax(0, midiLit - 1);
-    const float peak = juce::jmax(processor.takeOutputPeak(0), processor.takeOutputPeak(1));
+    const float peak = juce::jmax(plugin.takeOutputPeak(0), plugin.takeOutputPeak(1));
     meterDb = juce::jmax(juce::Decibels::gainToDecibels(peak, -100.0f), meterDb - 1.5f);
 
     // Keys follow the parameters, whoever changed them (host, preset, MIDI).
@@ -376,10 +376,10 @@ void RootnoteEditor::refresh()
         pageKeys[i]->setLed(i == page ? Key::Led::on : Key::Led::none);
     }
 
-    const int presetIndex = processor.currentPreset();
+    const int presetIndex = plugin.currentPreset();
     preset.set(presetIndex, RootnoteProcessor::presetName(presetIndex).toLowerCase());
-    slotA.setLook(processor.abSlot() == 0 ? Key::Look::lcdOn : Key::Look::lcd);
-    slotB.setLook(processor.abSlot() == 1 ? Key::Look::lcdOn : Key::Look::lcd);
+    slotA.setLook(plugin.abSlot() == 0 ? Key::Look::lcdOn : Key::Look::lcd);
+    slotB.setLook(plugin.abSlot() == 1 ? Key::Look::lcdOn : Key::Look::lcd);
     power.setLit(parameter(ids::bypass) < 0.5);
 
     Footer now;

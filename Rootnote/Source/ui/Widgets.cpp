@@ -121,7 +121,7 @@ void Encoder::setCap(juce::Colour colour, const juce::String& newLabel)
 
 void Encoder::paint(juce::Graphics& g)
 {
-    const juce::Point<float> centre { getWidth() * 0.5f, 30.0f };
+    const juce::Point<float> centre { static_cast<float>(getWidth()) * 0.5f, 30.0f };
     const auto ring = juce::Rectangle<float>(60.0f, 60.0f).withCentre(centre);
     const auto top = juce::Rectangle<float>(36.0f, 36.0f).withCentre(centre);
 

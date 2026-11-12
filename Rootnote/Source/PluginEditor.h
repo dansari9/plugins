@@ -69,7 +69,7 @@ private:
     void shiftOctave(rootnote::NoteControl::Target, int semitones);
     void place(juce::Component&, float x, float y, float w, float h);
 
-    RootnoteProcessor& processor;
+    RootnoteProcessor& plugin; // not "processor": AudioProcessorEditor has one
     juce::AudioProcessorValueTreeState& apvts;
     rootnote::ui::FaceLookAndFeel lookAndFeel;
     Plate plate { *this };
