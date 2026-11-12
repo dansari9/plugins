@@ -36,76 +36,165 @@ Range logRange(float low, float high)
              [=](float, float, float v) { return juce::jlimit(low, high, v); } };
 }
 
-/** First number in the text; accepts a decimal comma and the typographic minus. */
-double leadingNumber(const juce::String& text)
-{
-    return text.replace(juce::String::fromUTF8("\xE2\x88\x92"), "-").replaceCharacter(',', '.').getDoubleValue();
-}
-
-/** "9.0 dB": a number with a fixed unit. Typed text only needs the number. */
+/** "9.0 dB": a number with a fixed unit. */
 Attributes withUnit(const char* unit, int decimals)
 {
     const juce::String suffix = juce::String(" ") + unit;
-    return Attributes()
-        .withStringFromValueFunction([=](float v, int) { return juce::String(v, decimals) + suffix; })
-        .withValueFromStringFunction([](const juce::String& text) { return static_cast<float>(leadingNumber(text)); });
+    return Attributes().withStringFromValueFunction([=](float v, int) { return juce::String(v, decimals) + suffix; });
 }
 
 /** "46.2 Hz" or "1.20 kHz". */
 Attributes hertz()
 {
-    return Attributes()
-        .withStringFromValueFunction([](float v, int) {
-            return v < 1000.0f ? juce::String(v, 1) + " Hz" : juce::String(v / 1000.0f, 2) + " kHz";
-        })
-        .withValueFromStringFunction([](const juce::String& text) {
-            return static_cast<float>(leadingNumber(text) * (text.containsIgnoreCase("k") ? 1000.0 : 1.0));
-        });
+    return Attributes().withStringFromValueFunction([](float v, int) {
+        return v < 1000.0f ? juce::String(v, 1) + " Hz" : juce::String(v / 1000.0f, 2) + " kHz";
+    });
 }
 
 /** "600 ms" or "1.20 s". */
 Attributes milliseconds()
 {
-    return Attributes()
-        .withStringFromValueFunction([](float v, int) {
-            return v < 1000.0f ? juce::String(juce::roundToInt(v)) + " ms" : juce::String(v / 1000.0f, 2) + " s";
-        })
-        .withValueFromStringFunction([](const juce::String& text) {
-            const bool seconds = text.containsIgnoreCase("s") && !text.containsIgnoreCase("ms");
-            return static_cast<float>(leadingNumber(text) * (seconds ? 1000.0 : 1.0));
-        });
+    return Attributes().withStringFromValueFunction([](float v, int) {
+        return v < 1000.0f ? juce::String(juce::roundToInt(v)) + " ms" : juce::String(v / 1000.0f, 2) + " s";
+    });
 }
 
-/** "50 / 50": odd / even share. Typed text is the even share, or "odd / even". */
+/** "50 / 50": odd / even share. */
 Attributes oddEven()
 {
-    return Attributes()
-        .withStringFromValueFunction([](float v, int) {
-            const int even = juce::roundToInt(v * 100.0f);
-            return juce::String(100 - even) + " / " + juce::String(even);
-        })
-        .withValueFromStringFunction([](const juce::String& text) {
-            return static_cast<float>(leadingNumber(text.fromLastOccurrenceOf("/", false, false)) / 100.0);
-        });
+    return Attributes().withStringFromValueFunction([](float v, int) {
+        const int even = juce::roundToInt(v * 100.0f);
+        return juce::String(100 - even) + " / " + juce::String(even);
+    });
 }
 
-/** "F#1", "F#1 +25 ct". Typed text may also be a frequency ("46 Hz"), converted with the current A4. */
-Attributes noteText(const Float* a4)
+/** "F#1", "F#1 +25 ct". */
+Attributes noteText()
 {
-    return Attributes()
-        .withStringFromValueFunction([](float v, int) { return juce::String(formatNote(static_cast<double>(v))); })
-        .withValueFromStringFunction([a4](const juce::String& text) {
-            double note = kMinNote;
-            parseNote(text.toStdString(), static_cast<double>(a4->get()), note);
-            return static_cast<float>(juce::jlimit(kMinNote, kMaxNote, note));
-        });
+    return Attributes().withStringFromValueFunction([](float v, int) { return juce::String(formatNote(static_cast<double>(v))); });
+}
+
+/** A number ("-3.1", "+5", ".5", "2,5"), then nothing or one of the units. Text is already in lower case. */
+std::optional<double> number(const juce::String& text, std::initializer_list<const char*> units)
+{
+    const auto t = text.replaceCharacter(',', '.');
+    int end = t[0] == '+' || t[0] == '-' ? 1 : 0;
+    const int start = end;
+    while (juce::CharacterFunctions::isDigit(t[end]) || t[end] == '.')
+        ++end;
+    const auto digits = t.substring(start, end);
+    if (digits.removeCharacters(".").isEmpty() || digits.indexOfChar('.') != digits.lastIndexOfChar('.'))
+        return {};
+    const auto unit = t.substring(end).trim();
+    if (unit.isNotEmpty() && std::none_of(units.begin(), units.end(), [&](const char* u) { return unit == u; }))
+        return {};
+    return t.substring(0, end).getDoubleValue();
+}
+
+/** Index of the first group of names that holds the text, compared without spaces. */
+std::optional<float> choice(const juce::String& text, std::initializer_list<std::initializer_list<const char*>> names)
+{
+    const auto wanted = text.removeCharacters(" ");
+    float index = 0.0f;
+    for (const auto& group : names)
+    {
+        for (const char* name : group)
+            if (wanted == juce::String(name).removeCharacters(" "))
+                return index;
+        index += 1.0f;
+    }
+    return {};
+}
+
+std::optional<float> toFloat(std::optional<double> value, double scale = 1.0)
+{
+    return value ? std::optional<float>(static_cast<float>(*value * scale)) : std::nullopt;
 }
 } // namespace
 
+std::optional<float> parseValue(const juce::String& id, const juce::String& rawText, double a4)
+{
+    const auto text = rawText.trim().toLowerCase()
+                          .replace(juce::String::fromUTF8("\xE2\x88\x92"), "-")
+                          .replace(juce::String::fromUTF8("\xE2\x99\xAF"), "#")
+                          .replace(juce::String::fromUTF8("\xE2\x99\xAD"), "b");
+    if (text.isEmpty())
+        return {};
+
+    if (id == ids::boostNote || id == ids::cutNote)
+    {
+        double note = 0.0;
+        if (!parseNote(text.toStdString(), a4, note))
+            return {};
+        return static_cast<float>(juce::jlimit(kMinNote, kMaxNote, note));
+    }
+    if (id == ids::cutOn || id == ids::focusLink || id == ids::keyLock || id == ids::limiter || id == ids::bypass)
+        return choice(text, { { "off", "no", "false", "0" }, { "on", "yes", "true", "1" } });
+    if (id == ids::series)
+        return choice(text, { { "harmonic", "harm" }, { "octaves", "octave", "oct" }, { "drum" } });
+    if (id == ids::qMode)
+        return choice(text, { { "constant q", "const q" }, { "constant width", "const width", "const w" } });
+    if (id == ids::midiMode)
+        return choice(text, { { "off" }, { "ch 1+2", "ch1+2" }, { "omni > boost", "omni" } });
+    if (id == ids::noteOff)
+        return choice(text, { { "hold" }, { "return", "return to knob" } });
+    if (id == ids::scale)
+        return choice(text, { { "chromatic", "chr" }, { "major", "maj" }, { "minor", "min" }, { "dorian", "dor" },
+                              { "phrygian", "phr" }, { "mixolydian", "mix" }, { "pent maj", "pentatonic major", "pmaj" },
+                              { "pent min", "pentatonic minor", "pmin" }, { "harmonic minor", "hmin" } });
+    if (id == ids::key)
+    {
+        if (text[0] < 'a' || text[0] > 'g')
+            return {};
+        static const int semitoneOf[7] = { 9, 11, 0, 2, 4, 5, 7 }; // a b c d e f g
+        int pitchClass = semitoneOf[text[0] - 'a'];
+        for (int i = 1; i < text.length(); ++i)
+        {
+            if (text[i] != '#' && text[i] != 'b')
+                return {};
+            pitchClass += text[i] == '#' ? 1 : -1;
+        }
+        return static_cast<float>((pitchClass % 12 + 12) % 12);
+    }
+
+    if (id == ids::boostFine)
+        return toFloat(number(text, { "ct", "c", "cent", "cents" }));
+    if (id == ids::boostGain || id == ids::cutDepth || id == ids::output)
+        return toFloat(number(text, { "db" }));
+    if (id == ids::tilt)
+        return toFloat(number(text, { "db", "db/oct" }));
+    if (id == ids::boostQ || id == ids::cutQ)
+        return toFloat(number(text.startsWith("q") ? text.substring(1).trim() : text, { "q" }));
+    if (id == ids::bands || id == ids::cutBands)
+        return toFloat(number(text, { "b", "band", "bands" }));
+    if (id == ids::blend) // the even share, or "odd / even"
+        return toFloat(number(text.fromLastOccurrenceOf("/", false, false).trim(), { "%" }), 0.01);
+    if (id == ids::focus || id == ids::a4)
+    {
+        const auto hz = number(text, { "hz", "khz", "k" });
+        return toFloat(hz, text.containsChar('k') ? 1000.0 : 1.0);
+    }
+    if (id == ids::range)
+        return toFloat(number(text, { "oct", "octave", "octaves" }));
+    if (id == ids::ringDecay || id == ids::glide)
+        return toFloat(number(text, { "ms", "s" }), text.endsWith("s") && !text.endsWith("ms") ? 1000.0 : 1.0);
+    if (id == ids::ringDrop)
+        return toFloat(number(text, { "st", "semitone", "semitones" }));
+    return toFloat(number(text, { "%" })); // cut overtones, ring, mix
+}
+
 juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout()
 {
-    auto a4 = std::make_unique<Float>(pid(ids::a4), "A4", Range(415.0f, 466.0f, 0.1f), 440.0f, withUnit("Hz", 1));
-    const Float* a4Ref = a4.get(); // owned by the layout, so it outlives the note parameters that read it
+    // Typed text, from the host or the editor, is read by parseValue(); text that is no value gives the default.
+    const Float* a4Ref = nullptr; // owned by the layout, so it outlives the note parameters that read it
+    const auto reader = [&a4Ref](const char* id, float fallback) {
+        return [a4 = a4Ref, id, fallback](const juce::String& text) {
+            return parseValue(id, text, a4 != nullptr ? static_cast<double>(a4->get()) : 440.0).value_or(fallback);
+        };
+    };
+    auto a4 = std::make_unique<Float>(pid(ids::a4), "A4", Range(415.0f, 466.0f, 0.1f), 440.0f,
+                                      withUnit("Hz", 1).withValueFromStringFunction(reader(ids::a4, 440.0f)));
+    a4Ref = a4.get();
 
     const auto noteRange = Range(static_cast<float>(kMinNote), static_cast<float>(kMaxNote), 0.01f);
     const juce::StringArray keys { "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B" };
@@ -114,19 +203,29 @@ juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout()
 
     juce::AudioProcessorValueTreeState::ParameterLayout layout;
     const auto addFloat = [&](const char* id, const char* name, Range range, float value, Attributes attributes) {
-        layout.add(std::make_unique<Float>(pid(id), name, std::move(range), value, std::move(attributes)));
+        layout.add(std::make_unique<Float>(pid(id), name, std::move(range), value,
+                                           attributes.withValueFromStringFunction(reader(id, value))));
     };
     const auto addInt = [&](const char* id, const char* name, int low, int high, int value) {
-        layout.add(std::make_unique<juce::AudioParameterInt>(pid(id), name, low, high, value));
+        const auto read = reader(id, static_cast<float>(value));
+        layout.add(std::make_unique<juce::AudioParameterInt>(
+            pid(id), name, low, high, value,
+            juce::AudioParameterIntAttributes().withValueFromStringFunction([read](const juce::String& t) { return juce::roundToInt(read(t)); })));
     };
     const auto addBool = [&](const char* id, const char* name, bool value) {
-        layout.add(std::make_unique<juce::AudioParameterBool>(pid(id), name, value));
+        const auto read = reader(id, value ? 1.0f : 0.0f);
+        layout.add(std::make_unique<juce::AudioParameterBool>(
+            pid(id), name, value,
+            juce::AudioParameterBoolAttributes().withValueFromStringFunction([read](const juce::String& t) { return read(t) >= 0.5f; })));
     };
     const auto addChoice = [&](const char* id, const char* name, const juce::StringArray& choices, int value = 0) {
-        layout.add(std::make_unique<juce::AudioParameterChoice>(pid(id), name, choices, value));
+        const auto read = reader(id, static_cast<float>(value));
+        layout.add(std::make_unique<juce::AudioParameterChoice>(
+            pid(id), name, choices, value,
+            juce::AudioParameterChoiceAttributes().withValueFromStringFunction([read](const juce::String& t) { return juce::roundToInt(read(t)); })));
     };
 
-    addFloat(ids::boostNote, "Boost Note", noteRange, 36.0f, noteText(a4Ref));
+    addFloat(ids::boostNote, "Boost Note", noteRange, 36.0f, noteText());
     addFloat(ids::boostFine, "Fine", { -50.0f, 50.0f, 0.1f }, 0.0f, withUnit("ct", 1));
     addFloat(ids::boostGain, "Boost", { 0.0f, 24.0f, 0.1f }, 9.0f, withUnit("dB", 1));
     addFloat(ids::boostQ, "Resonance (Q)", logRange(0.5f, 200.0f), 12.0f, withUnit("Q", 1));
@@ -140,7 +239,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout()
     addChoice(ids::qMode, "Q Mode", { "Constant Q", "Constant Width" });
 
     addBool(ids::cutOn, "Cut", false);
-    addFloat(ids::cutNote, "Cut Note", noteRange, 36.0f, noteText(a4Ref));
+    addFloat(ids::cutNote, "Cut Note", noteRange, 36.0f, noteText());
     addFloat(ids::cutDepth, "Cut Depth", { -30.0f, 0.0f, 0.1f }, -12.0f, withUnit("dB", 1));
     addFloat(ids::cutQ, "Cut Q", logRange(0.5f, 60.0f), 8.0f, withUnit("Q", 1));
     addFloat(ids::cutOvertones, "Cut Overtones", { 0.0f, 100.0f, 0.1f }, 50.0f, withUnit("%", 0));

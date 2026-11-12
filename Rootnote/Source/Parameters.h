@@ -4,6 +4,8 @@
 
 #include <juce_audio_processors/juce_audio_processors.h>
 
+#include <optional>
+
 namespace rootnote::ids
 {
 inline constexpr const char* boostNote = "boost_note";
@@ -43,6 +45,16 @@ inline constexpr const char* bypass = "bypass";
 namespace rootnote
 {
 juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
+
+/**
+    Reads a typed value of a parameter in its units: "-3.1 dB", "-3.1db", "8",
+    "50%", "C#1", "db1", "46 Hz", "+5 ct", "on", "minor". Case, spaces and the
+    unit are optional; the typographic minus, sharp and flat are understood.
+    Nothing for text that is not a value of the parameter. A note typed as a
+    frequency is converted with a4. The parameters' own text conversion (host
+    text entry) reads the same, falling back to the default.
+*/
+std::optional<float> parseValue(const juce::String& id, const juce::String& text, double a4);
 
 /** Reads every parameter into the engine's units. Lock-free; used on the audio thread. */
 class ParameterReader
