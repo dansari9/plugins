@@ -255,6 +255,24 @@ void Engine::processChunk(float* left, float* right, int numSamples) noexcept
         ring.listen(left, right, numSamples);
     }
 
+    // A non-finite upstream sample poisons recursive filters, even with the
+    // limiter on. The original dry chunk is still available here.
+    for (int i = 0; i < numSamples; ++i)
+    {
+        if (!std::isfinite(wl[i]) || (wr != nullptr && !std::isfinite(wr[i])))
+        {
+            clearProcessingState();
+            for (int j = 0; j < numSamples; ++j)
+            {
+                if (!std::isfinite(left[j]))
+                    left[j] = 0.0f;
+                if (right != nullptr && !std::isfinite(right[j]))
+                    right[j] = 0.0f;
+            }
+            return;
+        }
+    }
+
     for (int i = 0; i < numSamples; ++i)
     {
         const double dryL = static_cast<double>(left[i]);

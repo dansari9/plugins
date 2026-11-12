@@ -401,6 +401,78 @@ TEST_CASE("Plugin: mono input is copied to both outputs")
     CHECK(block.getMagnitude(0, 256) < 2.0f);
 }
 
+TEST_CASE("Plugin: incomplete host setup writes dry input and clears extra channels")
+{
+    for (const auto& channels : { std::pair { 1, 1 }, std::pair { 1, 2 }, std::pair { 2, 2 } })
+    {
+        RootnoteProcessor processor;
+        processor.setPlayConfigDetails(channels.first, channels.second, 48000.0, 64);
+        REQUIRE(processor.getBusesLayout() == layout(channels.first, channels.second));
+        juce::MidiBuffer midi;
+        for (int stage = 0; stage < 3; ++stage)
+        {
+            if (stage == 1)
+            {
+                processor.prepareToPlay(48000.0, 64);
+                processor.releaseResources();
+            }
+            if (stage == 2)
+                processor.setRateAndBufferSizeDetails(96000.0, 64);
+
+            juce::AudioBuffer<float> block(channels.second + 1, 17);
+            for (int ch = 0; ch < block.getNumChannels(); ++ch)
+                for (int i = 0; i < block.getNumSamples(); ++i)
+                    block.setSample(ch, i, ch < channels.first ? 0.01f * static_cast<float>(i + ch) : 123.0f);
+            processor.processBlock(block, midi);
+            for (int ch = 0; ch < channels.second; ++ch)
+                for (int i = 0; i < block.getNumSamples(); ++i)
+                    CHECK(block.getSample(ch, i) == 0.01f * static_cast<float>(i + std::min(ch, channels.first - 1)));
+            CHECK(block.getMagnitude(channels.second, 0, 17) == 0.0f);
+        }
+    }
+
+    RootnoteProcessor processor;
+    prepare(processor);
+    REQUIRE(!processor.setBusesLayout(layout(0, 2)));
+    REQUIRE(!processor.setBusesLayout(layout(2, 1)));
+    REQUIRE(!processor.setBusesLayout(layout(2, 6)));
+    juce::MidiBuffer midi;
+    juce::AudioBuffer<float> missingChannel(1, 17);
+    for (int i = 0; i < 17; ++i)
+        missingChannel.setSample(0, i, 0.25f);
+    processor.processBlock(missingChannel, midi);
+    for (int i = 0; i < 17; ++i)
+        CHECK(missingChannel.getSample(0, i) == 0.25f);
+    juce::AudioBuffer<float> empty;
+    processor.processBlock(empty, midi);
+}
+
+TEST_CASE("Plugin: non-finite upstream audio cannot poison the following silence")
+{
+    for (float invalid : { std::numeric_limits<float>::quiet_NaN(),
+                           std::numeric_limits<float>::infinity(), -std::numeric_limits<float>::infinity() })
+        for (bool limit : { false, true })
+        {
+            RootnoteProcessor processor;
+            prepare(processor, 48000.0, 64);
+            set(processor, ids::limiter, limit ? 1.0f : 0.0f);
+            set(processor, ids::ring, 100.0f);
+            juce::AudioBuffer<float> block(2, 64);
+            block.clear();
+            block.setSample(0, 0, 0.25f);
+            block.setSample(1, 17, invalid);
+            juce::MidiBuffer midi;
+            processor.processBlock(block, midi);
+            CHECK(allFinite(block));
+            CHECK(block.getSample(0, 0) == 0.25f); // recover with the available dry chunk
+            CHECK(block.getSample(1, 17) == 0.0f);
+            block.clear();
+            processor.processBlock(block, midi);
+            CHECK(allFinite(block));
+            CHECK(block.getMagnitude(0, 64) == 0.0f);
+        }
+}
+
 TEST_CASE("Plugin: the bypass parameter fades to the untouched input")
 {
     RootnoteProcessor processor;

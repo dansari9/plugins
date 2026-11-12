@@ -34,7 +34,7 @@ public:
     RootnoteProcessor();
 
     void prepareToPlay(double sampleRate, int samplesPerBlock) override;
-    void releaseResources() override {}
+    void releaseResources() override { prepared = false; }
     void reset() override;
     bool isBusesLayoutSupported(const BusesLayout& layouts) const override;
     void processBlock(juce::AudioBuffer<float>&, juce::MidiBuffer&) override;
@@ -159,6 +159,7 @@ private:
     std::atomic<int> editorWidth { 0 }, editorHeight { 0 };
 
     rootnote::Engine engine;
+    bool prepared = false;
     rootnote::AnalysisWorker analysis;
     rootnote::SpscFifo spectrumFifo { static_cast<size_t>(1) << 15 };
 

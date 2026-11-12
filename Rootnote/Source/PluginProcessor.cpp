@@ -66,6 +66,7 @@ void RootnoteProcessor::prepareToPlay(double sampleRate, int samplesPerBlock)
     displaySampleRate.store(sampleRate, std::memory_order_relaxed);
     engine.prepare(sampleRate, samplesPerBlock);
     analysis.setSampleRate(sampleRate);
+    prepared = true;
 }
 
 void RootnoteProcessor::reset()
@@ -75,6 +76,8 @@ void RootnoteProcessor::reset()
 
 bool RootnoteProcessor::isBusesLayoutSupported(const BusesLayout& layouts) const
 {
+    if (layouts.inputBuses.size() != 1 || layouts.outputBuses.size() != 1)
+        return false;
     const auto in = layouts.getMainInputChannelSet();
     const auto out = layouts.getMainOutputChannelSet();
     const bool outOk = out == juce::AudioChannelSet::mono() || out == juce::AudioChannelSet::stereo();
@@ -86,12 +89,21 @@ void RootnoteProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::Mid
     const juce::ScopedNoDenormals noDenormals;
 
     const int numSamples = buffer.getNumSamples();
-    const int numChannels = juce::jmin(2, getTotalNumOutputChannels(), buffer.getNumChannels());
-    if (numChannels < 1 || !engine.isPrepared())
-        return;
+    const int numInputs = getTotalNumInputChannels();
+    const int numChannels = getTotalNumOutputChannels();
+    // Only input channels contain valid audio on entry, even before prepareToPlay.
+    for (int ch = numInputs; ch < buffer.getNumChannels(); ++ch)
+    {
+        if (ch == 1 && numInputs == 1 && numChannels == 2)
+            buffer.copyFrom(ch, 0, buffer, 0, 0, numSamples);
+        else
+            buffer.clear(ch, 0, numSamples);
+    }
 
-    if (numChannels == 2 && getTotalNumInputChannels() == 1)
-        buffer.copyFrom(1, 0, buffer, 0, 0, numSamples);
+    if (numSamples == 0 || !prepared
+        || numInputs < 1 || numInputs > numChannels || numChannels > 2
+        || buffer.getNumChannels() != numChannels)
+        return;
 
     float* const channels[2] = { buffer.getWritePointer(0), numChannels == 2 ? buffer.getWritePointer(1) : nullptr };
     analysis.push(channels[0], channels[1], numSamples);
