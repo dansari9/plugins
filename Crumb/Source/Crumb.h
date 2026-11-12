@@ -22,9 +22,30 @@ struct Scope
     static constexpr int size = 1 << 14; // 85 ms at 192 kHz: a 20 ms window plus room to find a trigger
     std::array<std::atomic<float>, size> in {}, out {};
     std::atomic<uint32_t> write { 0 };
-    // Output meter feed, taken (exchanged with 0) by the editor: peak, sum of squares and the frames it covers.
-    std::atomic<float> peak[2] {}, energy[2] {};
-    std::atomic<uint32_t> frames { 0 };
+    // Output meter feed: running totals (sum of squares, frames) published as one record under a sequence count that
+    // is odd while the audio thread writes; the editor takes differences. clipAt: clock() of the last sample > 0 dBFS.
+    struct Meter { double energy[2] {}; uint64_t frames = 0; };
+    std::atomic<uint32_t> seq { 0 };
+    std::atomic<double> energy[2] {}, clipAt[2] { -1e9, -1e9 };
+    std::atomic<uint64_t> frames { 0 };
+    double (*clock)() = [] { return juce::Time::getMillisecondCounterHiRes(); }; // ms; tests substitute their own
+    void publish(const double* e, uint64_t n) // audio thread only: never waits
+    {
+        const auto s = seq.load(std::memory_order_relaxed);
+        seq.store(s + 1, std::memory_order_relaxed);
+        std::atomic_thread_fence(std::memory_order_release);
+        for (int c = 0; c < 2; ++c)
+            energy[c].store(energy[c].load(std::memory_order_relaxed) + e[c], std::memory_order_relaxed);
+        frames.store(frames.load(std::memory_order_relaxed) + n, std::memory_order_relaxed);
+        seq.store(s + 2, std::memory_order_release);
+    }
+    bool meter(Meter& m) const // false if a write was in progress: the caller keeps its previous record
+    {
+        const auto s = seq.load(std::memory_order_acquire);
+        const Meter r { { energy[0].load(std::memory_order_relaxed), energy[1].load(std::memory_order_relaxed) }, frames.load(std::memory_order_relaxed) };
+        std::atomic_thread_fence(std::memory_order_acquire);
+        return (s & 1) == 0 && seq.load(std::memory_order_relaxed) == s ? (m = r, true) : false;
+    }
     void push(uint32_t at, float i, float o) { in[(size_t) (at & (size - 1))].store(i, std::memory_order_relaxed), out[(size_t) (at & (size - 1))].store(o, std::memory_order_relaxed); }
     void read(float* i, float* o, int n) const // the newest n <= size pairs, oldest first
     {

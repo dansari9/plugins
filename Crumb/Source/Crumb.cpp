@@ -363,7 +363,8 @@ void CrumbProcessor::processBlock(AudioBuffer<float>& buffer, MidiBuffer&)
     f.jitCoef = 1 - std::exp(-2 * pi * 30 / d.fs), f.jitNorm = 0.5 / std::sqrt(f.jitCoef / (3 * (2 - f.jitCoef))); // ~5 ms walk, +-2 sigma
     float* x[2] = { buffer.getWritePointer(0), buffer.getWritePointer(channels - 1) };
     const auto w = scope.write.load(std::memory_order_relaxed);
-    float peak[2] {}, energy[2] {};
+    float peak[2] {};
+    double energy[2] {};
     for (int i = 0; i < n && channels > 0; ++i)
     {
         // Clip engagement, per sample (independent of the host's block size): preamp up, or the input passed the knee
@@ -385,13 +386,12 @@ void CrumbProcessor::processBlock(AudioBuffer<float>& buffer, MidiBuffer&)
         scope.push(w + (uint32_t) i, in, out);
     }
     scope.write.store(w + (uint32_t) n, std::memory_order_release);
-    for (int c = 0; c < 2; ++c) // the editor takes these (exchange with 0); a race only loses one block's worth
-    {
-        const int from = jmax(0, jmin(c, channels - 1));
-        scope.peak[c].store(jmax(scope.peak[c].load(std::memory_order_relaxed), peak[from]), std::memory_order_relaxed);
-        scope.energy[c].store(scope.energy[c].load(std::memory_order_relaxed) + energy[from], std::memory_order_relaxed);
-    }
-    scope.frames.fetch_add((uint32_t) n, std::memory_order_relaxed);
+    const int r = jmax(0, jmin(1, channels - 1)); // mono: both meters show channel 0
+    const double e[2] = { energy[0], energy[r] };
+    scope.publish(e, (uint64_t) n);
+    for (int c = 0; c < 2; ++c)
+        if (peak[c == 0 ? 0 : r] > 1.0f)
+            scope.clipAt[c].store(scope.clock(), std::memory_order_relaxed);
 }
 
 // Writers (presets, A/B, restore) serialize on txLock, which nothing else takes. While one publishes, `busy` makes

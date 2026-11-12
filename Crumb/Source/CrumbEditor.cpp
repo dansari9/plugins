@@ -124,8 +124,10 @@ struct Editor : AudioProcessorEditor, Timer
     std::vector<std::unique_ptr<ParameterAttachment>> keyAtt;
     ParameterAttachment* bitsAtt = nullptr;
     std::vector<float> in = std::vector<float>(crumb::Scope::size), out = std::vector<float>(crumb::Scope::size);
-    float scopePeak = 0.1f, needle[2] {}, speed[2] {};
-    double clipUntil[2] {};
+    float scopePeak = 0.1f, needle[2] {}, speed[2] {}, level[2] {};
+    crumb::Scope::Meter seen;   // the meter totals last read: opening the editor starts from the current position
+    double stepAt = 0, heard = 0; // ms: needle time integrated up to, last new audio
+    bool clip[2] {};
     String shown; // the parameter text on the plate: repaint all when it changes
 
     explicit Editor(CrumbProcessor& p) : AudioProcessorEditor(p), proc(p)
@@ -180,6 +182,7 @@ struct Editor : AudioProcessorEditor, Timer
         getConstrainer()->setFixedAspectRatio((double) W / H);
         const int width = stored > 0 ? jlimit(W / 2, W * 2, stored) : W;
         setSize(width, width * H / W);
+        proc.scope.meter(seen), stepAt = heard = proc.scope.clock();
         timerCallback();
         startTimerHz(30);
     }
@@ -249,17 +252,27 @@ struct Editor : AudioProcessorEditor, Timer
                 knobs[i].setAlpha(knobActive(knobSpecs[i]) ? 1.0f : 0.4f);
             dcShift.setAlpha(bits() > 0 ? 1.0f : 0.4f);
         }
-        // VU: mean square since the last frame drives a 2nd-order needle (99 % in 300 ms, 1.5 % overshoot) on the
-        // rectified level; 0 VU = -12 dBFS RMS (K-12). The clip LED lights on a sample over 0 dBFS and holds for 1 s.
-        const auto frames = proc.scope.frames.exchange(0);
-        const double t = Time::getMillisecondCounterHiRes();
+        // VU: the RMS of the audio since the last new block (held between blocks, silence after 0.5 s without audio)
+        // drives a 2nd-order needle (99 % in 300 ms, 1.5 % overshoot) in 1/240 s steps of elapsed time, at most 1 s of
+        // catch-up; 0 VU = -12 dBFS RMS (K-12). The clip LED lights for 1 s after a sample over 0 dBFS.
+        const double t = proc.scope.clock();
+        if (crumb::Scope::Meter m; proc.scope.meter(m) && m.frames != seen.frames)
+        {
+            for (int c = 0; c < 2; ++c)
+                level[c] = (float) std::sqrt((m.energy[c] - seen.energy[c]) / (double) (m.frames - seen.frames)) * Decibels::decibelsToGain(12.0f);
+            seen = m, heard = t;
+        }
+        else if (t - heard > 500)
+            level[0] = level[1] = 0;
+        int k = 0;
+        for (; stepAt + 1000.0 / 240 <= t && k < 240; ++k, stepAt += 1000.0 / 240)
+            for (int c = 0; c < 2; ++c)
+                speed[c] += (169 * (level[c] - needle[c]) - 20.8f * speed[c]) / 240, needle[c] += speed[c] / 240;
+        stepAt = k < 240 ? stepAt : t;
         for (int c = 0; c < 2; ++c)
         {
-            const float level = frames > 0 ? std::sqrt(proc.scope.energy[c].exchange(0.0f) / (float) frames) * Decibels::decibelsToGain(12.0f) : 0.0f;
-            for (int k = 0; k < 8; ++k)
-                speed[c] += (169 * (level - needle[c]) - 20.8f * speed[c]) / 240, needle[c] += speed[c] / 240;
-            if (proc.scope.peak[c].exchange(0.0f) > 1.0f)
-                clipUntil[c] = t + 1000;
+            clip[c] = proc.scope.clipAt[c].load() + 1000 > t;
+            getProperties().set("vu" + String(c), needle[c]), getProperties().set("clip" + String(c), clip[c]); // for tests
         }
         plate.repaint(24, 56, 976, 216);
     }
@@ -405,13 +418,12 @@ struct Editor : AudioProcessorEditor, Timer
         g.setColour(screen), g.fillRoundedRectangle(664, 56, 336, 216, 12);
         print(g, "out", label(), muted, 680, baseline(72, 32, 9));
         print(g, display("output"), label(), muted, 984, baseline(72, 32, 9), 1);
-        const double now = Time::getMillisecondCounterHiRes();
         for (int c = 0; c < 2; ++c)
         {
             const Point<float> led { 824 + 16 * (float) c, 88 }, pivot { 754 + 156 * (float) c, 232 };
-            if (clipUntil[c] > now)
+            if (clip[c])
                 g.setColour(orange.withAlpha(0.25f)), g.fillEllipse(Rectangle<float>(10, 10).withCentre(led));
-            g.setColour(clipUntil[c] > now ? orange : ledOff), g.fillEllipse(Rectangle<float>(6, 6).withCentre(led));
+            g.setColour(clip[c] ? orange : ledOff), g.fillEllipse(Rectangle<float>(6, 6).withCentre(led));
             // Scale position 0..1 from dB (the spec's stops), angle -140..-40 degrees from the x axis.
             auto at = [&](float t, float radius) { const float a = degreesToRadians(-140 + 100 * t); return pivot + Point<float>(std::cos(a), std::sin(a)) * radius; };
             auto pos = [](float db) {

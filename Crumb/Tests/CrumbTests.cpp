@@ -805,6 +805,91 @@ static void testScopeFifo()
 
 static void pump() { juce::MessageManager::getInstance()->runDispatchLoopUntil(5); }
 
+// VU meter on a test clock: the reading of a constant -12 dBFS (0 VU) signal is independent of the host block size,
+// follows elapsed time rather than timer calls, and is never torn by a concurrent block. Clips expire by age.
+static double testMs = 0;
+static double testClock() { return testMs; }
+static float vu(juce::Component& e, int c) { return (float) e.getProperties()["vu" + juce::String(c)]; }
+static void testMeter()
+{
+    const auto zeroVu = [](int) { return 0.25118864f; };
+    for (int block : { 256, 2048, 4096 }) // shorter and longer than the 33 ms editor interval
+    {
+        Proc p;
+        p.scope.clock = testClock, testMs = 0;
+        prepare(p, 48000, block, 2), set(p, "bypass", 1);
+        run(p, block, 2, 48000, zeroVu);
+        std::unique_ptr<juce::AudioProcessorEditor> e(p.createEditor());
+        auto& timer = dynamic_cast<juce::Timer&>(*e);
+        float lo = 2, hi = 0;
+        for (int frame = 1, done = 0; frame <= 90; ++frame) // 3 s; the audio runs ahead of each editor frame
+        {
+            for (testMs = frame * 1000.0 / 30; done * 1000.0 / 48000 < testMs; done += block)
+                run(p, block, 2, block, zeroVu);
+            timer.timerCallback();
+            lo = frame > 45 ? juce::jmin(lo, vu(*e, 0)) : lo, hi = frame > 45 ? juce::jmax(hi, vu(*e, 0)) : hi;
+        }
+        CHECK(lo > 0.99f && hi < 1.01f && std::abs(vu(*e, 1) - 0.7f) < 0.01f);
+        testMs += 600, timer.timerCallback(), testMs += 1000, timer.timerCallback(); // audio stopped: the needles fall
+        CHECK(vu(*e, 0) < 0.01f);
+    }
+    {
+        // A step seen after a 300 ms timer stall lands where nine regular frames take it.
+        float at[2] {};
+        for (int stalled = 0; stalled < 2; ++stalled)
+        {
+            Proc p;
+            p.scope.clock = testClock, testMs = 0;
+            prepare(p, 48000, 512, 2), set(p, "bypass", 1);
+            std::unique_ptr<juce::AudioProcessorEditor> e(p.createEditor());
+            run(p, 512, 2, 48000, zeroVu);
+            for (int frame = 1; frame <= 9; ++frame)
+                if (testMs = frame * 100.0 / 3; !stalled || frame == 9)
+                    dynamic_cast<juce::Timer&>(*e).timerCallback();
+            at[stalled] = vu(*e, 0);
+        }
+        CHECK(at[0] > 0.9f && std::abs(at[0] - at[1]) < 0.01f);
+    }
+    {
+        // Close -> clip -> wait past the hold -> silence -> open: the LED is off and no old audio reaches the needles.
+        Proc p;
+        p.scope.clock = testClock, testMs = 0;
+        prepare(p, 48000, 512, 2), set(p, "bypass", 1);
+        run(p, 512, 2, 512, [](int) { return 1.25f; });
+        testMs = 1150;
+        run(p, 512, 2, 512, [](int) { return 0.0f; });
+        std::unique_ptr<juce::AudioProcessorEditor> e(p.createEditor());
+        for (int frame = 0; frame < 10; ++frame)
+            testMs += 100.0 / 3, dynamic_cast<juce::Timer&>(*e).timerCallback();
+        CHECK(!(bool) e->getProperties()["clip0"] && !(bool) e->getProperties()["clip1"] && vu(*e, 0) == 0);
+        run(p, 512, 2, 512, [](int) { return 1.25f; }), dynamic_cast<juce::Timer&>(*e).timerCallback(); // a new clip lights
+        CHECK((bool) e->getProperties()["clip0"]);
+    }
+    {
+        // Mid-write the record is not read; under a concurrent writer every read delta is exactly one constant level.
+        Proc p;
+        prepare(p, 48000, 512, 2), set(p, "bypass", 1);
+        run(p, 512, 2, 48000, zeroVu);
+        crumb::Scope::Meter m, last;
+        p.scope.seq += 1;
+        CHECK(!p.scope.meter(m));
+        p.scope.seq += 1;
+        CHECK(p.scope.meter(last));
+        std::atomic<bool> stop { false };
+        std::thread audio([&] { while (!stop) run(p, 0, 2, 8192, zeroVu); }); // random block sizes 1..4096
+        int reads = 0, torn = 0;
+        for (auto end = juce::Time::getMillisecondCounter() + 300; juce::Time::getMillisecondCounter() < end;)
+            if (p.scope.meter(m) && m.frames != last.frames)
+            {
+                const double l = std::sqrt((m.energy[0] - last.energy[0]) / (double) (m.frames - last.frames)), r = std::sqrt((m.energy[1] - last.energy[1]) / (double) (m.frames - last.frames));
+                torn += std::abs(l / 0.25118864 - 1) > 1e-4 || std::abs(r / 0.25118864 / 0.7 - 1) > 1e-4, ++reads, last = m;
+            }
+        stop = true;
+        audio.join();
+        CHECK(reads > 10 && torn == 0);
+    }
+}
+
 static void testEditorState()
 {
     Proc p;
@@ -907,10 +992,12 @@ static int screenshot(const juce::File& file, bool preFilter)
     if (preFilter)
         set(p, "fOrder", 0);
     prepare(p, 48000, 512, 2);
+    p.scope.clock = testClock;
     run(p, 512, 2, 8400, groove);
     std::unique_ptr<juce::AudioProcessorEditor> e(p.createEditor());
     for (int frame = 0; frame < 30; ++frame) // one second of 30 fps editor frames: the VU needles settle
     {
+        testMs += 1000.0 / 30;
         run(p, 512, 2, 1600, [frame](int i) { return groove(8400 + frame * 1600 + i); }); // ends 50 ms after a snare hit
         dynamic_cast<juce::Timer&>(*e).timerCallback();
     }
@@ -938,6 +1025,7 @@ int main(int argc, char** argv)
     testEditor();
     testPresets();
     testScopeFifo();
+    testMeter();
     testEditorState();
     std::cout << (failures == 0 ? "All Crumb tests passed\n" : "Crumb tests FAILED\n");
     return failures == 0 ? 0 : 1;
