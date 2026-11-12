@@ -18,7 +18,7 @@ const char* const ids[] = { "preamp", "bits",     "dcShift", "dither", "rate",  
 constexpr int numParams = 17;
 enum { Preamp, Bits, DcShift, Dither, Rate, Jitter, ApproxOn, ApproxDev, ImagesOn, ImagesShift, FType, FOrder, Cutoff, Reso, Mix, Output, Bypass };
 // Smoothed per-sample controls. Rate and cutoff are smoothed as log2(Hz); the last four mix the filter outputs.
-enum { SPre, SRate, SDither, SJitter, SApprox, SDev, SImages, SShift, SCut, SReso, SOrder, SMix, SOut, SBypass, SDry, SLP, SBP, SHP, numSmoothed };
+enum { SPre, SRate, SDither, SJitter, SApprox, SDev, SImages, SShift, SCut, SReso, SOrder, SMix, SOut, SBypass, SDry, SLP, SBP, SHP, SClip, numSmoothed };
 constexpr double pi = MathConstants<double>::pi;
 constexpr int taps = 64, over = 64, ringMask = taps - 1; // minBLEP length (host samples) and table oversampling
 
@@ -141,9 +141,9 @@ struct Svf
 // Butterworth damping 2cos((2i+1)pi/2N) of the cascaded sections: 8th-order approx filter, 4th-order images filter.
 constexpr double approxK[] = { 1.9615705608, 1.6629392246, 1.1111404660, 0.3901806440 }, imagesK[] = { 1.8477590650, 0.7653668647 };
 
-// Full clip antiderivative for first-order ADAA. The linear region takes an explicit zero-delay path.
+// ADC soft clip (linear up to the knee, then a tanh shoulder to +-1) and its antiderivative for first-order ADAA.
 constexpr double knee = 0.5, soft = 1 - knee;
-double clip(double x) { return std::copysign(knee + soft * std::tanh((std::abs(x) - knee) / soft), x); }
+double clip(double x) { return std::abs(x) <= knee ? x : std::copysign(knee + soft * std::tanh((std::abs(x) - knee) / soft), x); }
 double clipIntegral(double x)
 {
     const double a = std::abs(x), u = (a - knee) / soft; // stable log cosh, continuous at the knee
@@ -179,28 +179,34 @@ struct Channel
         const auto o = s.run(x, f.filter);
         return f.v[SDry] * x + f.v[SLP] * o[0] + f.v[SBP] * f.filter.k * o[1] + f.v[SHP] * o[2];
     }
-    // Host-rate dither -> ideal quantizer. Track only converter-added DC for the fixed DAC coupling stage.
+    // Host-rate dither -> quantizer -> DAC with fixed vintage ladder errors on the four MSBs of the two's complement
+    // code (code 0 = silence has none). At host rate, so the approx lowpass and the S&H bandlimit them. The tracked
+    // converter-added DC (mid-riser idle offset, ladder errors) is removed by the fixed DAC coupling stage.
     double convert(double v, const Frame& f)
     {
         double q = v;
         if (f.bits > 0)
         {
+            static constexpr double ladder[] = { 0.6, -0.4, 0.3, -0.2 }; // MSB weight errors in LSB
             const double lsb = std::ldexp(1.0, 1 - f.bits), half = std::ldexp(1.0, f.bits - 1);
             const double u = (v + f.v[SDither] * lsb * (random() - 0.5)) / lsb;
             const double k = jlimit(-half, half - 1, f.tread ? std::round(u) : std::floor(u));
             q = (k + (f.tread ? 0 : 0.5)) * lsb;
+            for (int j = 0; j < jmin(4, f.bits); ++j)
+                q += (((uint32) (int) k >> (f.bits - 1 - j)) & 1) * ladder[j] * lsb;
         }
         dc += f.dcCoef * (q - v - dc);
         return q;
     }
     double process(double x, const Frame& f)
     {
-        // Preamp/ADC (ADAA), filter[pre], dither, quantizer, approx lowpass.
-        const double a = jlimit(-64.0, 64.0, x * f.v[SPre]), aD = clipIntegral(a);
-        const double mid = 0.5 * (a + adcPrev);
-        double y = std::abs(a) <= knee && std::abs(adcPrev) <= knee ? a
-            : std::abs(a - adcPrev) < 1e-6 ? (std::abs(mid) <= knee ? mid : clip(mid)) : (aD - adcPrevD) / (a - adcPrev);
+        // Preamp/ADC clip, filter[pre], dither, quantizer, approx lowpass. While the clip is engaged (preamp up or the
+        // block above the knee) it is pure first-order ADAA; idle it is the plain clip, here the identity, so a clean
+        // signal passes bit-exactly. SClip crossfades the two over 20 ms: no half-sample delay step at a switch.
+        const double a = jlimit(-64.0, 64.0, x * f.v[SPre]), aD = clipIntegral(a), plain = clip(a);
+        const double adaa = std::abs(a - adcPrev) < 1e-6 ? clip(0.5 * (a + adcPrev)) : (aD - adcPrevD) / (a - adcPrev);
         adcPrev = a, adcPrevD = aD;
+        double y = plain + f.v[SClip] * (adaa - plain);
         y += (1 - f.v[SOrder]) * (filter(pre, y, f) - y);
         y = convert(y, f);
         double lp = y;
@@ -238,6 +244,15 @@ struct Channel
         return y + f.v[SOrder] * (filter(post, y, f) - y);
     }
 };
+
+std::unique_ptr<XmlElement> decode(std::string_view x) { return crumb::isFlatCrumbXml(x) ? XmlDocument::parse(String::fromUTF8(x.data(), (int) x.size())) : nullptr; }
+std::optional<double> number(const String& t) // the whole text is one finite number (C locale); else nothing
+{
+    std::istringstream in(t.toStdString());
+    in.imbue(std::locale::classic());
+    double v = 0;
+    return in >> v && std::isfinite(v) && (in >> std::ws).eof() ? std::optional(jlimit(-1.0e6, 1.0e6, v)) : std::nullopt;
+}
 } // namespace
 
 void crumb::fft(std::vector<std::complex<double>>& x, bool inverse)
@@ -268,15 +283,12 @@ struct CrumbProcessor::Dsp
     std::array<std::atomic<float>*, numParams> raw {};
     std::array<SmoothedValue<double>, numSmoothed> smooth;
     std::array<Channel, 2> ch;
-    double fs = 48000;
+    double fs = 48000, clipOn = 0;
 
     void reset()
     {
         for (uint32 c = 0; c < 2; ++c)
-        {
-            ch[c] = Channel();
-            ch[c].seed = 0x9e3779b9u * (c + 1);
-        }
+            ch[c] = Channel(), ch[c].seed = 0x9e3779b9u * (c + 1);
         targets(true);
     }
     void targets(bool jump)
@@ -286,7 +298,7 @@ struct CrumbProcessor::Dsp
         const double t[numSmoothed] = { Decibels::decibelsToGain(p(Preamp)), std::log2(p(Rate)), p(Dither) / 100, p(Jitter) / 100, p(ApproxOn),
                                         p(ApproxDev) / 100, p(ImagesOn), p(ImagesShift) / 100, std::log2(p(Cutoff)), p(Reso) / 100, p(FOrder),
                                         p(Mix) / 100, Decibels::decibelsToGain(p(Output)), p(Bypass), type == 0 ? 1.0 : 0.0,
-                                        type == 1 || type == 4 ? 1.0 : 0.0, type == 2 ? 1.0 : 0.0, type == 3 || type == 4 ? 1.0 : 0.0 };
+                                        type == 1 || type == 4 ? 1.0 : 0.0, type == 2 ? 1.0 : 0.0, type == 3 || type == 4 ? 1.0 : 0.0, clipOn };
         for (int k = 0; k < numSmoothed; ++k)
             jump ? smooth[(size_t) k].setCurrentAndTargetValue(t[k]) : smooth[(size_t) k].setTargetValue(t[k]);
     }
@@ -331,7 +343,7 @@ void CrumbProcessor::prepareToPlay(double fs, int)
     sampleRate = d.fs;
     for (auto& s : d.smooth)
         s.reset(d.fs, 0.02);
-    d.reset();
+    resetPending = true; // the first block initializes the DSP from the parameters it then sees, restored or not
 }
 
 void CrumbProcessor::processBlock(AudioBuffer<float>& buffer, MidiBuffer&)
@@ -341,6 +353,9 @@ void CrumbProcessor::processBlock(AudioBuffer<float>& buffer, MidiBuffer&)
     for (int c = channels; c < buffer.getNumChannels(); ++c)
         buffer.clear(c, 0, n);
     auto& d = *dsp;
+    float level = 0;
+    for (int c = 0; c < channels; ++c) level = jmax(level, buffer.getMagnitude(c, 0, n));
+    d.clipOn = d.raw[Preamp]->load() > 0 || !(level <= knee) ? 1 : 0; // NaN input counts as loud
     if (resetPending.exchange(false, std::memory_order_acquire))
         d.reset();
     d.targets(false);
@@ -368,36 +383,33 @@ void CrumbProcessor::processBlock(AudioBuffer<float>& buffer, MidiBuffer&)
         scope.peak[c].store(jmax(scope.peak[c].load(std::memory_order_relaxed), peak[jmin(c, channels - 1)]), std::memory_order_relaxed);
 }
 
-// Compound changes serialize with saves. A synchronous host callback during publication gets the last
-// committed state, never a half-written preset. The recursive lock also permits nested preset helpers.
+// Writers (presets, A/B, restore) serialize on txLock, which nothing else takes. While one publishes, `busy` makes
+// saves return the state committed before it. stateLock only guards that switch and the user preset name, and is
+// never held across a host callback or I/O: any thread can always save, and the editor can always read.
 struct CrumbProcessor::Transaction
 {
     CrumbProcessor& p;
-    const ScopedLock guard;
-    explicit Transaction(CrumbProcessor& owner) : p(owner), guard(p.lock)
+    const ScopedLock writer;
+    const bool outer; // a writer nested on the same thread (from a listener) joins the open transaction
+    explicit Transaction(CrumbProcessor& owner) : p(owner), writer(p.txLock), outer(!p.busy)
     {
-        if (p.transactionDepth == 0)
-            p.getStateInformation(p.committedState);
-        ++p.transactionDepth;
+        if (const ScopedLock sl(p.stateLock); outer)
+            p.serialize(p.committed), p.busy = true;
     }
-    ~Transaction() { --p.transactionDepth; }
+    ~Transaction() { const ScopedLock sl(p.stateLock); p.busy = p.busy && !outer; }
 };
 
-void CrumbProcessor::getStateInformation(MemoryBlock& dest)
+void CrumbProcessor::getStateInformation(MemoryBlock& dest) { const ScopedLock sl(stateLock); busy ? (void) (dest = committed) : serialize(dest); }
+
+void CrumbProcessor::serialize(MemoryBlock& dest) // under stateLock
 {
-    const ScopedLock sl(lock);
-    if (transactionDepth > 0)
-    {
-        dest = committedState;
-        return;
-    }
     auto state = apvts.copyState();
     state.setProperty("stateVersion", stateVersion, nullptr);
     // Additive since 0.1.0 milestone 3 (older readers ignore them): preset, A/B slots ("preset;v0,..,v15" normalised), editor size.
     state.setProperty("preset", preset.load(), nullptr);
     if (preset < 0 && userName.isNotEmpty())
         state.setProperty("presetName", userName, nullptr);
-    state.setProperty("ab", ab, nullptr);
+    state.setProperty("ab", ab.load(), nullptr);
     for (int k = 0; k < 2; ++k)
         if (!slots[k].empty())
         {
@@ -414,20 +426,12 @@ void CrumbProcessor::getStateInformation(MemoryBlock& dest)
         copyXmlToBinary(*xml, dest);
 }
 
-void CrumbProcessor::setStateInformation(const void* data, int size) { parse(data, size, false); }
-
-// Validate the entire flat XML grammar before JUCE decodes attributes. Depth <= 2, no DTDs, and only
-// complete, valid character references reach its parser. Malformed documents never mutate state.
-bool CrumbProcessor::parse(const void* data, int size, bool paramsOnly)
+bool crumb::isFlatCrumbXml(std::string_view xml)
 {
-    const auto* bytes = static_cast<const char*>(data);
-    if (bytes == nullptr || size < 8 || ByteOrder::littleEndianInt(bytes) != 0x21324356 || ByteOrder::littleEndianInt(bytes + 4) > (uint32) size - 8)
-        return false;
-    const std::string_view xml(bytes + 8, ByteOrder::littleEndianInt(bytes + 4)), space(" \t\r\n");
     if (xml.size() > 1 << 20 || !CharPointer_UTF8::isValidString(xml.data(), (int) xml.size()))
         return false;
     size_t pos = 0;
-    auto skip = [&] { while (pos < xml.size() && space.find(xml[pos]) != std::string_view::npos) ++pos; };
+    auto skip = [&] { while (pos < xml.size() && std::string_view(" \t\r\n").find(xml[pos]) != std::string_view::npos) ++pos; };
     auto name = [&] {
         const size_t start = pos;
         auto first = [](char c) { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_' || c == ':'; };
@@ -454,7 +458,7 @@ bool CrumbProcessor::parse(const void* data, int size, bool paramsOnly)
         }
         else
         {
-            StringArray keys;
+            std::vector<std::string_view> keys;
             for (;;)
             {
                 const auto before = pos;
@@ -463,9 +467,8 @@ bool CrumbProcessor::parse(const void* data, int size, bool paramsOnly)
                 if (xml[pos] == '/' || xml[pos] == '>' || (decl && xml[pos] == '?')) break;
                 if (pos == before) return false; // attributes require separating whitespace
                 const auto key = name();
-                const String attr { std::string(key) };
-                if (key.empty() || keys.contains(attr)) return false;
-                keys.add(attr);
+                if (key.empty() || std::find(keys.begin(), keys.end(), key) != keys.end()) return false;
+                keys.push_back(key);
                 skip();
                 if (pos == xml.size() || xml[pos++] != '=') return false;
                 skip();
@@ -481,27 +484,20 @@ bool CrumbProcessor::parse(const void* data, int size, bool paramsOnly)
                     const auto ref = xml.substr(pos, end - pos);
                     if (ref != "amp" && ref != "lt" && ref != "gt" && ref != "quot" && ref != "apos")
                     {
-                        if (ref.empty() || ref[0] != '#') return false;
                         const bool hex = ref.size() > 1 && ref[1] == 'x';
-                        const size_t start = hex ? 2 : 1;
-                        uint32 code = 0;
-                        if (start == ref.size()) return false;
-                        for (size_t i = start; i < ref.size(); ++i)
-                        {
-                            const char r = ref[i];
-                            const int digit = r >= '0' && r <= '9' ? r - '0' : hex && r >= 'a' && r <= 'f' ? r - 'a' + 10 : hex && r >= 'A' && r <= 'F' ? r - 'A' + 10 : -1;
-                            if (digit < 0 || code > 0x10ffffu / (hex ? 16u : 10u)) return false;
-                            code = code * (hex ? 16u : 10u) + (uint32) digit;
-                        }
+                        const auto digits = ref.substr(hex ? 2 : 1);
+                        if (ref.empty() || ref[0] != '#' || digits.empty() || digits.size() > 7
+                            || digits.find_first_not_of(hex ? "0123456789abcdefABCDEF" : "0123456789") != std::string_view::npos)
+                            return false;
+                        const auto code = std::stoul(std::string(digits), nullptr, hex ? 16 : 10);
                         if (!(code == 9 || code == 10 || code == 13 || (code >= 32 && code <= 0xd7ff) || (code >= 0xe000 && code <= 0xfffd) || (code >= 0x10000 && code <= 0x10ffff))) return false;
                     }
                     pos = end + 1;
                 }
-                if (pos == xml.size()) return false;
-                ++pos;
+                if (pos++ == xml.size()) return false;
             }
             const bool empty = xml[pos] == '/';
-            if (decl || empty) { if (xml[pos++] != (decl ? '?' : '/')) return false; }
+            if ((decl || empty) && xml[pos++] != (decl ? '?' : '/')) return false;
             if (pos == xml.size() || xml[pos++] != '>') return false;
             if (decl) declaration = true;
             else
@@ -514,42 +510,43 @@ bool CrumbProcessor::parse(const void* data, int size, bool paramsOnly)
         }
         skip();
     }
-    if (!complete || pos != xml.size()) return false;
-    const auto tree = XmlDocument::parse(String::fromUTF8(xml.data(), (int) xml.size()));
-    if (!tree) return false;
-    const char* const rootKeys[] = { "preset", "presetName", "ab", "slotA", "slotB", "editorWidth", "slotNameA", "slotNameB" };
-    std::optional<String> found[numParams], root[8];
-    for (int k = 0; k < 8; ++k)
-        if (tree->hasAttribute(rootKeys[k])) root[k] = tree->getStringAttribute(rootKeys[k]);
-    for (auto* child : tree->getChildIterator())
-        if (child->hasTagName("PARAM"))
-            for (int i = 0; i < numParams; ++i)
-                if (!found[i] && child->getStringAttribute("id") == ids[i]) found[i] = child->getStringAttribute("value");
-    auto number = [](std::optional<String> t) -> std::optional<double> {
-        std::istringstream in(t.value_or("").toStdString());
-        in.imbue(std::locale::classic());
-        double v = 0;
-        return t && in >> v && std::isfinite(v) && (in >> std::ws).eof() ? std::optional(jlimit(-1.0e6, 1.0e6, v)) : std::nullopt;
-    };
-    const Transaction transaction(*this);
-    // Migration hook: stateVersion 1 is the only format so far. When a later version changes the meaning of stored
-    // data, read the root's stateVersion here and translate `found` before it is applied (append-only IDs need nothing).
-    for (int i = 0; i < numParams; ++i)
+    return complete && pos == xml.size();
+}
+
+void CrumbProcessor::applyParams(const XmlElement& state, int count)
+{
+    for (int i = 0; i < count; ++i)
     {
         auto* p = apvts.getParameter(ids[i]);
-        const auto v = number(found[i]);
-        if (!(paramsOnly && i == Bypass))
-            p->setValueNotifyingHost(v ? p->convertTo0to1(p->getNormalisableRange().snapToLegalValue((float) *v)) : p->getDefaultValue());
+        const auto* c = state.getChildByAttribute("id", ids[i]);
+        const auto v = number(c != nullptr && c->hasTagName("PARAM") ? c->getStringAttribute("value") : String());
+        p->setValueNotifyingHost(v ? p->convertTo0to1(p->getNormalisableRange().snapToLegalValue((float) *v)) : p->getDefaultValue());
     }
-    if (paramsOnly)
-        return true;
-    preset = (int) jlimit(-1.0, 24.0, number(root[0]).value_or(-1)); // a state from before presets: "custom"
-    userName = root[1].value_or("");
-    ab = number(root[2]).value_or(0) > 0.5 ? 1 : 0;
+}
+
+void CrumbProcessor::setIdentity(int index, const String& name)
+{
+    const ScopedLock sl(stateLock);
+    preset = index, userName = name;
+}
+
+// Malformed documents never mutate state. A restore does not reset the DSP: playback continues with 20 ms smoothing.
+void CrumbProcessor::setStateInformation(const void* data, int size)
+{
+    const auto* bytes = static_cast<const char*>(data);
+    if (bytes == nullptr || size < 8 || ByteOrder::littleEndianInt(bytes) != 0x21324356 || ByteOrder::littleEndianInt(bytes + 4) > (uint32) size - 8)
+        return;
+    const auto tree = decode({ bytes + 8, ByteOrder::littleEndianInt(bytes + 4) });
+    if (tree == nullptr)
+        return;
+    const Transaction transaction(*this);
+    // Migration hook: stateVersion 1 is the only format so far. When a later version changes the meaning of stored
+    // data, read the root's stateVersion here and translate before applying (append-only IDs need nothing).
+    applyParams(*tree, numParams);
     for (int k = 0; k < 2; ++k) // a slot counts only with a preset and 16 normalised values
     {
-        const auto t = StringArray::fromTokens(root[3 + k].value_or(""), ";,", "");
-        slots[k].clear(), slotName[k] = root[6 + k].value_or("");
+        const auto t = StringArray::fromTokens(tree->getStringAttribute(k == 0 ? "slotA" : "slotB"), ";,", "");
+        slots[k].clear(), slotName[k] = tree->getStringAttribute(k == 0 ? "slotNameA" : "slotNameB");
         slotPreset[k] = (int) jlimit(-1.0, 24.0, number(t[0]).value_or(-1));
         for (int i = 1; i < t.size() && t.size() == 17; ++i)
             if (const auto v = number(t[i]); v && *v >= 0 && *v <= 1)
@@ -557,9 +554,9 @@ bool CrumbProcessor::parse(const void* data, int size, bool paramsOnly)
         if (slots[k].size() != 16)
             slots[k].clear();
     }
-    editorWidth = (int) jlimit(0.0, 4096.0, number(root[5]).value_or(0));
-    resetPending.store(true, std::memory_order_release);
-    return true;
+    ab = number(tree->getStringAttribute("ab")).value_or(0) > 0.5 ? 1 : 0;
+    editorWidth = (int) jlimit(0.0, 4096.0, number(tree->getStringAttribute("editorWidth")).value_or(0));
+    setIdentity((int) jlimit(-1.0, 24.0, number(tree->getStringAttribute("preset")).value_or(-1)), tree->getStringAttribute("presetName")); // none: "custom"
 }
 
 // ================================ Factory presets (constexpr) ================================
@@ -611,42 +608,43 @@ void CrumbProcessor::setCurrentProgram(int index)
     {
         const Transaction transaction(*this);
         setAll(n);
-        preset = index;
+        setIdentity(index, {});
     }
-    updateHostDisplay(ChangeDetails().withProgramChanged(true));
+    updateHostDisplay(ChangeDetails().withProgramChanged(true)); // published: a host query here sees the new state
 }
 
 const String CrumbProcessor::getProgramName(int index) { return isPositiveAndBelow(index, 25) ? String::fromUTF8(crumb::presets[index].name) : String(); }
 
 File CrumbProcessor::presetFolder() const { return presetDirectory != File() ? presetDirectory : File::getSpecialLocation(File::userApplicationDataDirectory).getChildFile("daveydidit/crumb/Presets"); }
 
-String CrumbProcessor::presetName()
+String CrumbProcessor::presetName() const
 {
-    const ScopedLock sl(lock);
-    return preset >= 0 ? getProgramName(preset) : userName.isEmpty() ? String("custom") : userName;
+    const ScopedLock sl(stateLock);
+    return preset >= 0 ? String::fromUTF8(crumb::presets[preset].name) : userName.isEmpty() ? String("custom") : userName;
 }
 
 void CrumbProcessor::stepPreset(int delta)
 {
-    const Transaction transaction(*this);
     auto files = presetFolder().findChildFiles(File::findFiles, false, "*.xml");
     files.sort();
+    const auto current = presetName();
     int at = preset;
     for (int k = 0; k < files.size() && at < 0; ++k)
-        at = files[k].getFileNameWithoutExtension() == presetName() ? 25 + k : at;
+        at = files[k].getFileNameWithoutExtension() == current ? 25 + k : at;
     at = (jmax(0, at) + delta + 25 + files.size()) % (25 + files.size()); // an unknown position steps from "init"
     if (at < 25)
         return setCurrentProgram(at);
-    MemoryOutputStream m; // the file is plain XML: give it the state envelope and read it like a state
-    const auto text = files[at - 25].loadFileAsString();
-    m.writeInt(0x21324356), m.writeInt((int) text.getNumBytesAsUTF8()), m << text;
-    if (parse(m.getData(), (int) m.getDataSize(), true))
-        preset = -1, userName = files[at - 25].getFileNameWithoutExtension();
+    if (const auto xml = decode(files[at - 25].loadFileAsString().toStdString())) // a user file: parameters, no bypass
+    {
+        const Transaction transaction(*this);
+        applyParams(*xml, Bypass);
+        setIdentity(-1, files[at - 25].getFileNameWithoutExtension());
+    }
 }
 
 File CrumbProcessor::saveUserPreset()
 {
-    const Transaction transaction(*this);
+    const ScopedLock writer(txLock);
     const auto folder = presetFolder();
     folder.createDirectory();
     File file;
@@ -655,25 +653,23 @@ File CrumbProcessor::saveUserPreset()
     auto xml = apvts.copyState().createXml();
     if (xml == nullptr || !xml->writeTo(file))
         return {};
-    preset = -1, userName = file.getFileNameWithoutExtension();
+    setIdentity(-1, file.getFileNameWithoutExtension());
     return file;
 }
 
 void CrumbProcessor::selectAb(int slot)
 {
     const Transaction transaction(*this);
-    if (slot == ab || !isPositiveAndBelow(slot, 2))
+    const int from = ab;
+    if (slot == from || !isPositiveAndBelow(slot, 2))
         return;
-    auto& leaving = slots[ab];
-    leaving.resize(16);
+    slots[from].resize(16);
     for (int i = 0; i < Bypass; ++i)
-        leaving[(size_t) i] = apvts.getParameter(ids[i])->getValue();
-    slotPreset[ab] = preset, slotName[ab] = userName, ab = slot;
-    if (slots[slot].empty()) // never visited: it starts as a copy of the other slot
-        return;
-    const auto entering = slots[slot]; // a copy: a listener may save, which writes the slots
-    setAll(entering.data());
-    preset = slotPreset[slot], userName = slotName[slot];
+        slots[from][(size_t) i] = apvts.getParameter(ids[i])->getValue();
+    slotPreset[from] = preset, slotName[from] = userName;
+    if (!slots[slot].empty()) // never visited: it starts as a copy of the other slot
+        setAll(slots[slot].data()), setIdentity(slotPreset[slot], slotName[slot]);
+    ab = slot;
 }
 
 AudioProcessor* JUCE_CALLTYPE createPluginFilter() { return new CrumbProcessor(); }

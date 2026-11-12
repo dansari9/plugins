@@ -87,7 +87,4 @@ if(NOT MSVC)
     set_source_files_properties(Tests/CrumbTests.cpp PROPERTIES COMPILE_OPTIONS "-Wno-float-equal;-Wno-mismatched-new-delete")
 endif()
 set_target_properties(CrumbTests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
-
-if(APPLE)
-    target_link_libraries(CrumbTests PRIVATE "-framework CoreFoundation")
-endif()
+target_compile_definitions(CrumbTests PRIVATE JUCE_MODAL_LOOPS_PERMITTED=1) # public message pump for the editor tests

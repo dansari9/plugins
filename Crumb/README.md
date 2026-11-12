@@ -4,8 +4,10 @@ A vintage-sampler bit crusher by daveydidit. Version 0.1.0. Zero latency, mono o
 settings. One screen, no menus: 25 factory presets, user presets, A/B, a live scope and an output meter.
 
 Signal path: preamp (0 … +48 dB) into a soft ADC clip (tanh shoulder above 0.5, antiderivative antialiasing) →
-filter (pre) → dither and quantizer → approx (anti-alias) lowpass → sample & hold on a jittered virtual clock →
-images lowpass → fixed DAC coupling (converter-added DC removal) → filter (post) → mix → output.
+filter (pre) → dither, quantizer and DAC with fixed vintage ladder errors on the four MSBs → approx (anti-alias)
+lowpass → sample & hold on a jittered virtual clock → images lowpass → fixed DAC coupling (converter-added DC
+removal) → filter (post) → mix → output. Antialiasing is engaged while the preamp is up or the input passes the
+knee; below it the clip is exact identity, so clean settings null.
 
 The hold steps are bandlimited with a minimum-phase BLEP, and the virtual ADC reads the input through the same
 causal kernel, so the only aliasing is the emulated fold-down at the virtual rate. No oversampling, no lookahead.

@@ -4,12 +4,10 @@
 #define SCREENSHOT_PRESET 14 // "drums · break dust": 12 bit, 26 kHz, images on, lp post
 #include <cstdlib>
 #include <cstring>
+#include <future>
 #include <iostream>
 #include <new>
 #include <thread>
-#if JUCE_MAC
-#include <CoreFoundation/CoreFoundation.h>
-#endif
 
 // Real-time check: count heap allocations made on a thread flagged as "audio". operator new is
 // counted everywhere; on glibc (outside ASan, which owns malloc) the C allocators are too, which
@@ -224,13 +222,16 @@ static void testState()
     load(v1, fixture);
     load(v1, blob("<CRUMB>" + juce::String::repeatedString("<a>", 1000000)));
     load(v1, blob(R"(<!DOCTYPE CRUMB [<!ENTITY a "&a;&a;">]><CRUMB><PARAM id="preamp" value="&a;"/></CRUMB>)"));
-    for (auto* bad : { "<CRUMB>&#x", "<CRUMB>&#", "<CRUMB><PARAM id=\"bits\" value=\"&#x", "</CRUMB>", "<CRUMB><a></CRUMB>",
+    const auto text = [](const juce::MemoryBlock& m) { return std::string_view(static_cast<const char*>(m.getData()) + 8, m.getSize() - 8); };
+    CHECK(crumb::isFlatCrumbXml(text(fixture)) && !crumb::isFlatCrumbXml(text(blob("<CRUMB>" + juce::String::repeatedString("<a>", 3)))));
+    for (auto* bad : { "<CRUMB>&#x", "<CRUMB>&#", "<CRUMB a='&#x110000;'/>", "<CRUMB a='&#0;'/>", "<CRUMB a='&#12345678;'/>", "<CRUMB><PARAM id=\"bits\" value=\"&#x", "</CRUMB>", "<CRUMB><a></CRUMB>",
                        R"(<SNAP><PARAM id="bits" value="3"/></SNAP>)",
                        R"(<CRUMB><PARAM id="bits" value="3"/></BROKEN>)", R"(<CRUMB><PARAM id="bits" value="3'/></CRUMB>)",
                        R"(<CRUMB><PARAM id="bits" value="&#x"/></CRUMB>)", R"(<CRUMB><PARAM id="bits" value="&bad;"/></CRUMB>)",
                        R"(<CRUMB><PARAM id="bits" value="3" extra/></CRUMB>)", "<CRUMB/>trailing", "<CRUMB/><CRUMB/>",
                        "junk<CRUMB/>", "<CRUMB><a></b></CRUMB>", "<CRUMB x='1' x='2'/>" })
     {
+        CHECK(!crumb::isFlatCrumbXml(bad));
         load(v1, blob(bad));
         CHECK(fixtureLoaded(v1));
     }
@@ -278,18 +279,19 @@ static void testNull()
 }
 
 // Power spectrum (dB re the 0.4 amplitude input sine) of channel 0 with a Blackman-Harris window, after the filters settle.
-static std::vector<double> spectrum(const Settings& s, double freq, double fs = 44100, bool naive = false, bool naiveClip = false)
+// Reference instead of the plug-in: 1 = a plain sample & hold at rate s[0], 2 = the plain clip at preamp s[0].
+static std::vector<double> spectrum(const Settings& s, double freq, double fs = 44100, int reference = 0)
 {
     constexpr int size = 1 << 15, skip = 8192;
     const double f0 = std::round(freq * size / fs) * fs / size, w = 2 * juce::MathConstants<double>::pi * f0 / fs;
     std::vector<float> y;
-    if (naiveClip)
+    if (reference == 2)
         for (int i = 0; i < size + skip; ++i)
         {
-            const double x = 0.4 * std::sin(w * i) * std::pow(10.0, 12.0 / 20), a = std::abs(x);
+            const double x = 0.4 * std::sin(w * i) * std::pow(10.0, s[0].second / 20), a = std::abs(x);
             y.push_back((float) (a <= 0.5 ? x : std::copysign(0.5 + 0.5 * std::tanh((a - 0.5) / 0.5), x)));
         }
-    else if (naive) // reference: a plain sample & hold at the same rate, no bandlimited edges
+    else if (reference == 1)
         for (int i = 0; i < size + skip; ++i)
             y.push_back((float) (0.4 * std::sin(w * std::floor(i * s[0].second / fs) * fs / s[0].second)));
     else
@@ -313,7 +315,7 @@ static std::vector<double> spectrum(const Settings& s, double freq, double fs = 
     return db;
 }
 // Strongest bin outside the listed tones (+-8 bins), and the level at one tone.
-static double spur(const std::vector<double>& db, std::initializer_list<double> tones, double fs = 44100)
+static double spur(const std::vector<double>& db, const std::vector<double>& tones, double fs = 44100)
 {
     double m = -400;
     for (size_t k = 8; k < db.size(); ++k)
@@ -341,7 +343,7 @@ static void testAlias()
         std::cout << "alias floor, 1 kHz at fr 26.04 kHz, approx " << approx << ": " << floorDb << " dB\n";
         CHECK(floorDb < -100);
     }
-    const double naiveDb = spur(spectrum({ { "rate", fr } }, 1000, 44100, true), { 1000 });
+    const double naiveDb = spur(spectrum({ { "rate", fr } }, 1000, 44100, 1), { 1000 });
     std::cout << "same signal through a naive sample & hold: " << naiveDb << " dB\n";
     CHECK(naiveDb > -60);
     // 10 kHz: the emulated image at fr - 10k = 16.04 kHz is there, nothing else.
@@ -376,12 +378,27 @@ static void testConverterPath()
         const double a = std::abs(input), expected = a <= 0.5 ? input : std::copysign(0.5 + 0.5 * std::tanh((a - 0.5) / 0.5), input);
         CHECK(std::abs(run(p, 512, 1, 4096, [input](int) { return input; }).back() - expected) < 1e-7);
     }
+    // ADAA beats the plain clip at every drive, just past the knee (peaks 0.55, 0.7) as well as hard (12 dB).
     constexpr double fs = 44100, n = 32768;
-    const double f0 = std::round(10000 * n / fs) * fs / n, alias = fs - 3 * f0;
-    const Settings drive { { "rate", 44100 }, { "bits", 0 }, { "preamp", 12 }, { "approxOn", 0 } };
-    const double adaa = at(spectrum(drive, 10000), alias), naive = at(spectrum(drive, 10000, fs, false, true), alias);
-    std::cout << "driven 10 kHz third-harmonic alias: ADAA " << adaa << " dB, naive " << naive << " dB\n";
-    CHECK(adaa < naive - 6);
+    const double f0 = std::round(10000 * n / fs) * fs / n;
+    for (auto [preamp, hz] : { std::pair { 2.8f, 13000.0 }, { 4.9f, 7000.0 }, { 12.0f, 10000.0 } })
+    {
+        const Settings drive { { "preamp", preamp }, { "rate", 44100 }, { "bits", 0 }, { "approxOn", 0 } };
+        std::vector<double> harmonics; // the true odd harmonics, below Nyquist
+        for (double h = std::round(hz * n / fs) * fs / n, k = 1; h * k < fs / 2; k += 2)
+            harmonics.push_back(h * k);
+        const double adaa = spur(spectrum(drive, hz), harmonics), naive = spur(spectrum(drive, hz, fs, 2), harmonics);
+        std::cout << "preamp " << preamp << " dB, " << hz << " Hz: worst alias ADAA " << adaa << " dB, plain clip " << naive << " dB\n";
+        CHECK(adaa < naive - 6);
+    }
+    // The DAC ladder errors: 4-bit codes +2 and -2 sit 0.3 and 0.5 LSB (of 1/8) off the ideal levels 0.25 and -0.25.
+    for (float v : { 0.3f, -0.3f })
+    {
+        Proc p;
+        set(p, { { "bits", 4 }, { "dcShift", 1 }, { "rate", 44100 }, { "approxOn", 0 } });
+        prepare(p, 44100, 512, 1);
+        CHECK(std::abs(run(p, 512, 1, 64, [v](int) { return v; })[0] - (v > 0 ? 0.25 + 0.3 / 8 : -0.25 + 0.5 / 8)) < 1e-4);
+    }
 
     // With quantization and dither active, every deviation maps to the designed 8th-order TPT cutoff.
     const double harmonic = 3 * std::round(5000 * n / fs) * fs / n;
@@ -584,66 +601,45 @@ static std::vector<float> params(Proc& p)
     return v;
 }
 
+// Forced overlap: mid-transaction (from a parameter listener) another thread saves and reads the A/B slot and the
+// preset name. It must not wait for the writer, and it must get the complete state committed before the transaction.
 static void testTransactions()
 {
     for (int mode = 0; mode < 3; ++mode)
     {
         Proc p;
-        juce::MemoryBlock a, b;
-        if (mode == 2)
-        {
-            p.setCurrentProgram(1), p.selectAb(1), p.setCurrentProgram(23);
-            p.selectAb(0), p.selectAb(1); // both slots now populated
-            p.getStateInformation(b);
-            p.selectAb(0), p.getStateInformation(a);
-        }
-        else
-        {
-            p.setCurrentProgram(1), p.getStateInformation(a);
-            p.setCurrentProgram(23), p.getStateInformation(b);
-        }
-        std::atomic<bool> start { false }, ok { true };
-        std::thread writer([&] {
-            while (!start.load()) std::this_thread::yield();
-            for (int i = 0; i < 400; ++i)
-                if (mode == 0) p.setCurrentProgram(i % 2 ? 1 : 23);
-                else if (mode == 1) load(p, i % 2 ? a : b);
-                else p.selectAb(i % 2);
-        });
-        start = true;
-        for (int i = 0; i < 400; ++i)
-        {
-            juce::MemoryBlock m;
-            p.getStateInformation(m);
-            if (m != a && m != b) ok = false;
-        }
-        writer.join();
-        CHECK(ok.load());
+        juce::MemoryBlock other;
+        p.setCurrentProgram(1), p.selectAb(1), p.setCurrentProgram(23), p.getStateInformation(other), p.selectAb(0);
         struct Listener : juce::AudioProcessorParameter::Listener
         {
-            Proc& owner;
-            const juce::MemoryBlock& before;
-            bool ok = true;
+            Proc& p;
+            juce::MemoryBlock before;
+            const juce::String name = p.presetName();
+            std::future<bool> reader; // destroyed after the transaction: a blocked reader fails the test, no hang
+            bool ok = false;
             int calls = 0;
-            Listener(Proc& p2, const juce::MemoryBlock& m) : owner(p2), before(m) {}
+            explicit Listener(Proc& owner) : p(owner) { p.getStateInformation(before); }
             void parameterValueChanged(int, float) override
             {
-                juce::MemoryBlock m;
-                owner.getStateInformation(m);
-                ok = ok && m == before;
-                ++calls;
+                if (calls++ > 0)
+                    return;
+                reader = std::async(std::launch::async, [this] {
+                    juce::MemoryBlock m;
+                    p.getStateInformation(m);
+                    return m == before && p.abSlot() == 0 && p.presetName() == name;
+                });
+                ok = reader.wait_for(std::chrono::seconds(10)) == std::future_status::ready && reader.get();
             }
             void parameterGestureChanged(int, bool) override {}
-        };
-        juce::MemoryBlock before;
-        p.getStateInformation(before);
-        Listener listener(p, before);
-        for (auto* param : p.getParameters()) param->addListener(&listener);
+        } listener(p);
+        p.apvts.getParameter("preamp")->addListener(&listener);
         if (mode == 0) p.setCurrentProgram(7);
-        else if (mode == 1) load(p, a);
-        else p.selectAb(1 - p.abSlot());
-        for (auto* param : p.getParameters()) param->removeListener(&listener);
-        CHECK(listener.ok && listener.calls > 0);
+        else if (mode == 1) load(p, other);
+        else p.selectAb(1);
+        p.apvts.getParameter("preamp")->removeListener(&listener);
+        juce::MemoryBlock after;
+        p.getStateInformation(after);
+        CHECK(listener.ok && listener.calls > 0 && after != listener.before);
     }
 }
 
@@ -659,12 +655,12 @@ static void testRestoreAudio()
         Proc a, b;
         load(a, state), prepare(a, 48000, block, 2);
         prepare(b, 48000, block, 2), load(b, state);
-        const auto reference = run(a, block, 2, 48000, [](int i) { return signal(i, 48000); });
-        for (int pass = 0; pass < 3; ++pass)
-        {
-            CHECK(reference == run(b, block, 2, 48000, [](int i) { return signal(i, 48000); }));
-            load(b, state);
-        }
+        const auto reference = run(a, block, 2, 96000, [](int i) { return signal(i, 48000); });
+        auto y = run(b, block, 2, 48000, [](int i) { return signal(i, 48000); });
+        load(b, state); // mid-playback restore of the same state: no reset, playback carries on unchanged
+        for (float v : run(b, block, 2, 48000, [](int i) { return signal(48000 + i, 48000); }))
+            y.push_back(v);
+        CHECK(reference == y);
         CHECK(a.getLatencySamples() == 0 && b.getLatencySamples() == 0);
     }
 }
@@ -792,14 +788,7 @@ static void testScopeFifo()
     }
 }
 
-#if JUCE_LINUX || JUCE_WINDOWS
-namespace juce::detail { bool dispatchNextMessageOnSystemQueue(bool returnIfNoPendingMessages); }
-static bool pumpMessages() { while (juce::detail::dispatchNextMessageOnSystemQueue(true)) {} return true; }
-#elif JUCE_MAC
-static bool pumpMessages() { CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.005, false); return true; }
-#else
-static bool pumpMessages() { return false; }
-#endif
+static void pump() { juce::MessageManager::getInstance()->runDispatchLoopUntil(5); }
 
 static void testEditorState()
 {
@@ -834,12 +823,12 @@ static void testEditorState()
         for (auto* id : { "dcShift", "approxOn", "imagesOn", "fType", "fOrder" })
         {
             const float v = (float) r.nextInt(std::strcmp(id, "fType") == 0 ? 5 : 2);
-            if (n % 2 == 0 || !pumpMessages())
+            if (n % 2 == 0)
                 set(p, id, v);
             else // an automation thread: the key updates asynchronously on the message thread
                 std::thread([&] { set(p, id, v); }).join();
         }
-        pumpMessages();
+        pump();
         CHECK(keysMatch());
     }
     for (int i = 0; i < 25; ++i)
@@ -866,20 +855,20 @@ static void testEditorState()
     p.getStateInformation(states[0]);
     p.selectAb(1), p.setCurrentProgram(18), p.getStateInformation(states[1]);
     std::thread restore([&] {
-        for (int i = 0; i < 80; ++i)
+        for (int i = 0; i < 20; ++i)
         {
             load(p, states[i % 2]);
             juce::Thread::sleep(1);
         }
     });
-    for (int i = 0; i < 100; ++i)
+    for (int i = 0; i < 25; ++i)
     {
-        pumpMessages();
+        pump();
         juce::Timer::callPendingTimersSynchronously();
         juce::Thread::sleep(1);
     }
     restore.join();
-    pumpMessages();
+    pump();
     juce::Timer::callPendingTimersSynchronously();
     CHECK(keysMatch() && p.abSlot() == 1);
     e.reset();

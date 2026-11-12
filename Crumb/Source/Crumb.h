@@ -2,6 +2,7 @@
 #include <juce_audio_utils/juce_audio_utils.h>
 #include <array>
 #include <complex>
+#include <string_view>
 #include <vector>
 
 // crumb: vintage-sampler bit crusher by daveydidit (clean-room: textbook DSP only).
@@ -10,6 +11,9 @@
 namespace crumb
 {
 void fft(std::vector<std::complex<double>>& x, bool inverse); // radix-2 in place, size a power of two
+// The whole document is the flat state grammar: <CRUMB> with attributes, children at most one level deep, matching
+// closing tags, complete character references, no DTD. JUCE's XmlDocument checks none of that, so it is run first.
+bool isFlatCrumbXml(std::string_view xml);
 
 // Live display feed: the audio thread writes (in, out) pairs with relaxed atomic stores, the editor copies the newest n.
 // Lock-free and allocation-free on both sides; a frame torn by a concurrent write only shows as one odd sample.
@@ -73,22 +77,26 @@ public:
     juce::File presetFolder() const;
     void stepPreset(int delta); // through factory presets, then the user files
     juce::File saveUserPreset();
-    juce::String presetName();
+    juce::String presetName() const;
     std::atomic<int> preset { 0 };
-    int abSlot() const { const juce::ScopedLock sl(lock); return ab; }
+    int abSlot() const { return ab.load(); }
     void selectAb(int slot);
 
 private:
     void setAll(const float* normalised); // every parameter but bypass, as one gesture each
-    bool parse(const void* data, int size, bool paramsOnly);
+    void applyParams(const juce::XmlElement& state, int count); // the first `count` IDs; missing or unreadable -> default
+    void setIdentity(int index, const juce::String& name);
+    void serialize(juce::MemoryBlock&);
     struct Transaction;
-    mutable juce::CriticalSection lock; // A/B slots, user preset name, state transactions
-    int transactionDepth = 0;
-    juce::MemoryBlock committedState; // reentrant host saves see the previous complete transaction
+    juce::CriticalSection txLock; // writers only: presets, A/B, restore. May be held across host callbacks and I/O.
+    mutable juce::CriticalSection stateLock; // brief: `busy`, `committed`, userName. Never held across a callback.
+    bool busy = false; // a writer is publishing: saves return `committed`, the state before it
+    juce::MemoryBlock committed;
     const juce::File presetDirectory;
-    std::atomic<bool> resetPending { false };
-    std::vector<float> slots[2];
-    int slotPreset[2] { 0, 0 }, ab = 0;
+    std::atomic<bool> resetPending { false }; // set by prepareToPlay, taken by the first block after it
+    std::vector<float> slots[2]; // written by writers only, read by serialize()
+    int slotPreset[2] { 0, 0 };
+    std::atomic<int> ab { 0 };
     juce::String userName, slotName[2];
     struct Dsp;
     std::unique_ptr<Dsp> dsp; // allocated once in the constructor, never on the audio thread
