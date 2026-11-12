@@ -115,14 +115,15 @@ jobs:
           xvfb-run -a ./pluginval --strictness-level 10 --validate-in-process \
             --validate Rootnote/build/Rootnote_artefacts/Release/VST3/Rootnote.vst3
 
+      - name: Package (tar keeps the executable bit)
+        run: tar -C Rootnote/build/Rootnote_artefacts/Release -czf rootnote-linux.tar.gz VST3 Standalone
+
       - name: Upload VST3 + Standalone
         uses: actions/upload-artifact@v4
         with:
           name: rootnote-linux
           if-no-files-found: error
-          path: |
-            Rootnote/build/Rootnote_artefacts/Release/VST3/**
-            Rootnote/build/Rootnote_artefacts/Release/Standalone/**
+          path: rootnote-linux.tar.gz
 
   rootnote-macos:
     name: Rootnote macOS universal AU + VST3 + auval
@@ -156,11 +157,14 @@ jobs:
           auval -a | grep -i Dwks || true
           auval -v aumf RtNt Dwks
 
+      - name: Package (zip keeps bundle permissions)
+        run: cd Rootnote/build/Rootnote_artefacts/Release && ditto -c -k --keepParent AU/Rootnote.component "$GITHUB_WORKSPACE/Rootnote-AU-macos.zip" && ditto -c -k --keepParent VST3/Rootnote.vst3 "$GITHUB_WORKSPACE/Rootnote-VST3-macos.zip"
+
       - name: Upload AU + VST3
         uses: actions/upload-artifact@v4
         with:
           name: rootnote-macos-universal
           if-no-files-found: error
           path: |
-            Rootnote/build/Rootnote_artefacts/Release/AU/**
-            Rootnote/build/Rootnote_artefacts/Release/VST3/**
+            Rootnote-AU-macos.zip
+            Rootnote-VST3-macos.zip
