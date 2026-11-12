@@ -137,6 +137,14 @@ TEST_CASE("MIDI: a held key is a channel and a note, so omni keeps channels apar
     control.handleEvent(off(1, 40));
     CHECK(control.note(NoteControl::boost) == 36.0);
 
+    // Hold cannot keep a note from a channel the new routing ignores.
+    NoteControl held;
+    held.setConfig(config(MidiMode::omniBoost, NoteOffMode::hold));
+    held.handleEvent(on(5, 60));
+    held.handleEvent(off(5, 60));
+    held.setConfig(config(MidiMode::channels12, NoteOffMode::hold));
+    CHECK(!held.midiOwns(NoteControl::boost));
+
     // Every key of every channel fits.
     NoteControl full;
     full.setConfig(config(MidiMode::omniBoost, NoteOffMode::returnToKnob));

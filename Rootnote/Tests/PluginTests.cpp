@@ -396,6 +396,7 @@ TEST_CASE("Plugin: MIDI channel 1 plays the boost note and channel 2 the cut not
 {
     RootnoteProcessor processor;
     prepare(processor);
+    processor.setDisplayActive(true);
     juce::AudioBuffer<float> block(2, 512);
     block.clear();
 
@@ -445,6 +446,7 @@ TEST_CASE("Plugin: a restored state plays its own notes, whatever MIDI played be
 {
     RootnoteProcessor processor;
     prepare(processor);
+    processor.setDisplayActive(true);
     juce::MemoryBlock state;
     processor.getStateInformation(state);
 
@@ -724,6 +726,7 @@ TEST_CASE("Plugin: the display state has the live notes and bands, with or witho
 
     // The bands follow a MIDI note.
     prepare(processor);
+    processor.setDisplayActive(true);
     juce::AudioBuffer<float> block(2, 512);
     block.clear();
     juce::MidiBuffer midi;
@@ -738,6 +741,71 @@ TEST_CASE("Plugin: the display state has the live notes and bands, with or witho
     CHECK_NEAR(state.boostBands[1].hz, 220.0, 1.0e-3);
     CHECK_NEAR(state.cutBands[0].hz, noteToHz(26.0), 1.0e-3);
     CHECK_NEAR(state.cutBands[0].gainDb, -12.0, 1.0e-3);
+}
+
+TEST_CASE("Plugin: display frames contain smoothed gains and stop collecting when closed")
+{
+    RootnoteProcessor processor;
+    prepare(processor, 48000.0, 128);
+    processor.setDisplayActive(true);
+    juce::AudioBuffer<float> block(2, 128);
+    juce::MidiBuffer midi;
+    block.clear();
+    processor.processBlock(block, midi);
+    CHECK_NEAR(processor.displayState().boostBands[0].gainDb, 9.0, 1.0e-3);
+    set(processor, ids::boostGain, 24.0f);
+    processor.processBlock(block, midi);
+    const auto moving = processor.displayState();
+    CHECK(moving.boostBands[0].gainDb > 9.0 && moving.boostBands[0].gainDb < 24.0);
+
+    processor.setDisplayActive(false);
+    // Samples from the previous editor are discarded before the next opens.
+    processor.setDisplayActive(true);
+    float samples[512];
+    CHECK(processor.readSpectrumSamples(samples, 512) == 0);
+    CHECK(processor.takeOutputPeak(0) == 0.0f);
+    processor.setDisplayActive(false);
+    block.clear();
+    block.setSample(0, 0, 0.5f);
+    processor.processBlock(block, midi);
+    CHECK(processor.readSpectrumSamples(samples, 512) == 0);
+    CHECK(processor.takeOutputPeak(0) == 0.0f);
+}
+
+TEST_CASE("Plugin: UI snapshots stay whole while audio publishes and the consumer falls behind")
+{
+    RootnoteProcessor processor;
+    prepare(processor, 48000.0, 128);
+    processor.setDisplayActive(true);
+    std::atomic<bool> done { false };
+    std::thread audio([&] {
+        juce::AudioBuffer<float> block(2, 128);
+        juce::MidiBuffer midi;
+        midi.ensureSize(32);
+        for (int i = 0; i < 2000; ++i)
+        {
+            block.clear();
+            midi.clear();
+            midi.addEvent(juce::MidiMessage::noteOn(1, 36 + i % 24, 1.0f), 0);
+            processor.processBlock(block, midi);
+        }
+        done.store(true, std::memory_order_release);
+    });
+    int frames = 0;
+    bool whole = true;
+    do
+    {
+        const auto state = processor.displayState();
+        whole = whole && state.numBoostBands == 8 && state.numCutBands == 0
+            && std::abs(state.boostBands[0].hz - state.boostHz) < 1.0e-9
+            && std::abs(state.boostBands[1].hz - 2.0 * state.boostHz) < 1.0e-9;
+        ++frames;
+        juce::Thread::sleep(1);
+    } while (!done.load(std::memory_order_acquire));
+    audio.join();
+    CHECK(whole);
+    CHECK(frames > 1);
+    processor.setDisplayActive(false);
 }
 
 /**

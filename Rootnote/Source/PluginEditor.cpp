@@ -65,7 +65,7 @@ void FeedView::analyse()
     fft.forward(re.data(), im.data());
 
     // Each point takes the loudest bin of its slice of the log axis; a full-scale sine reads 0 dB.
-    const double binHz = juce::jmax(1.0, processor.getSampleRate()) / kFftSize;
+    const double binHz = state.sampleRate / kFftSize;
     const double step = std::pow(static_cast<double>(kHighHz / kLowHz), 1.0 / kPoints);
     double lowHz = kLowHz;
     for (float& db : spectrumDb)

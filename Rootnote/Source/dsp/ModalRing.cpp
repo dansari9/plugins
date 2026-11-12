@@ -151,12 +151,17 @@ void ModalRing::controlTick() noexcept
             continue;
         }
 
-        const double hz = std::min(rootHz * ratio[m] * dropFactor, kNyquistGuard * fs);
-        const double theta = 2.0 * kPi * hz / fs;
-        const double t60 = settings.decaySeconds / std::pow(std::max(1.0, ratio[m]), kDamping);
-        const double r = std::exp(-6.907755 / (t60 * fs));
-        mode.tc = r * std::cos(theta);
-        mode.ts = r * std::sin(theta);
+        const double hz = rootHz * ratio[m] * dropFactor;
+        if (hz > kLowSkipHz && hz < kNyquistGuard * fs)
+        {
+            const double theta = 2.0 * kPi * hz / fs;
+            const double t60 = settings.decaySeconds / std::pow(std::max(1.0, ratio[m]), kDamping);
+            const double r = std::exp(-6.907755 / (t60 * fs));
+            mode.tc = r * std::cos(theta);
+            mode.ts = r * std::sin(theta);
+        }
+        // Out-of-range modes fade at their last valid frequency. Never stack
+        // the fading modes on one clamped frequency at the guard.
 
         if (snap || !mode.active)
         {

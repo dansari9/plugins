@@ -35,15 +35,6 @@ BandBank::Settings cutSettings(const EngineParams& p) noexcept
     return s;
 }
 
-ModalRing::Settings ringSettings(const EngineParams& p) noexcept
-{
-    ModalRing::Settings s;
-    s.shape = boostSettings(p).shape();
-    s.decaySeconds = p.ringDecaySeconds;
-    s.dropSemitones = p.ringDropSemitones;
-    return s;
-}
-
 /**
     Upper bound for the T60 of every band a bank can have while its root is
     anywhere in [lowRootHz, highRootHz]. The slowest band is at one end of the
@@ -54,18 +45,27 @@ double bankRingBound(SeriesType series, int bands, QMode qMode, double q, double
                      double lowRootHz, double highRootHz, double sampleRate) noexcept
 {
     const double top = kNyquistGuard * sampleRate;
-    const int lastSlot = (series == SeriesType::octaves ? kOctaveSlots : std::clamp(bands, 1, kMaxSlots)) - 1;
-    const double lowest = std::clamp(lowRootHz * seriesRatio(series, 0), kLowSkipHz, top);
-    const double highest = std::clamp(highRootHz * seriesRatio(series, lastSlot), kLowSkipHz, top);
-
-    if (qMode == QMode::constantWidth)
+    const int slots = series == SeriesType::octaves ? kOctaveSlots : std::clamp(bands, 1, kMaxSlots);
+    double longest = 0.0;
+    for (int slot = 0; slot < slots; ++slot)
     {
-        // Every band rings as long as the root would; slotQ() keeps Q above 0.25.
-        const double analog = std::max(bellRingSeconds(lowRootHz, q, gainDb), bellRingSeconds(lowest, 0.25, gainDb));
-        return analog * bellRingStretch(highest, sampleRate);
+        const double ratio = seriesRatio(series, slot);
+        const double lowest = std::clamp(lowRootHz * ratio, kLowSkipHz, top);
+        const double highest = std::clamp(highRootHz * ratio, kLowSkipHz, top);
+        // Weighting can put the gain anywhere between zero and its maximum.
+        // Both gain endpoints matter: deep, wide cuts have slow real poles.
+        for (double hz : { lowest, highest })
+            for (double db : { 0.0, gainDb })
+                longest = std::max(longest, bellDigitalRingSeconds(hz, slotQ(qMode, q, ratio), db, sampleRate));
     }
-    return std::max(bellRingSeconds(lowest, q, gainDb) * bellRingStretch(lowest, sampleRate),
-                    bellRingSeconds(highest, q, gainDb) * bellRingStretch(highest, sampleRate));
+    return longest;
+}
+
+double blendSignals(double dry, double wet, double amount) noexcept
+{
+    if (amount <= 0.0) return dry;
+    if (amount >= 1.0) return wet;
+    return (1.0 - amount) * dry + amount * wet;
 }
 
 double decibelsToGain(double db) noexcept
@@ -150,9 +150,10 @@ void Engine::setParams(const EngineParams& newParams) noexcept
     // when the knob, fine tune, A4 or the key lock really moved the pitch.
     applyPitch(NoteControl::boostChanged | NoteControl::cutChanged, kParamPitchRampSeconds);
 
-    boost.setSettings(boostSettings(params));
+    const auto boostConfig = boostSettings(params);
+    boost.setSettings(boostConfig);
     cut.setSettings(cutSettings(params));
-    ring.setSettings(ringSettings(params));
+    ring.setSettings({ boostConfig.shape(), params.ringDecaySeconds, params.ringDropSemitones });
 
     const bool snap = snapLevels;
     snapLevels = false;
@@ -253,8 +254,8 @@ void Engine::processChunk(float* left, float* right, int numSamples) noexcept
 
         const double mix = mixRamp.next();
         const double gain = outputRamp.next();
-        double yl = (dryL + (wl[i] - dryL) * mix) * gain;
-        double yr = wr != nullptr ? (dryR + (wr[i] - dryR) * mix) * gain : yl;
+        double yl = blendSignals(dryL, wl[i], mix) * gain;
+        double yr = wr != nullptr ? blendSignals(dryR, wr[i], mix) * gain : yl;
 
         // The limiter always runs so its envelope is current when it is
         // switched in; the switch itself is a short crossfade.
@@ -264,15 +265,15 @@ void Engine::processChunk(float* left, float* right, int numSamples) noexcept
         // Blended as a weighted sum: "y + (limited - y) * limit" would lose
         // the limited signal to rounding when y is huge.
         const double limit = limiterRamp.next();
-        yl = (1.0 - limit) * yl + limit * ll;
-        yr = (1.0 - limit) * yr + limit * lr;
+        yl = blendSignals(yl, ll, limit);
+        yr = blendSignals(yr, lr, limit);
 
         // Linear, not equal-power: dry and processed are the same signal apart
         // from the EQ, so an equal-power fade would bump the level by up to 3 dB.
         const double wet = wetRamp.next();
-        left[i] = static_cast<float>(dryL + (yl - dryL) * wet);
+        left[i] = static_cast<float>(blendSignals(dryL, yl, wet));
         if (right != nullptr)
-            right[i] = static_cast<float>(dryR + (yr - dryR) * wet);
+            right[i] = static_cast<float>(blendSignals(dryR, yr, wet));
     }
 
     limiterGainNow = limiter.gainReduction();
@@ -301,9 +302,8 @@ double Engine::tailSeconds(const EngineParams& p, double sampleRate) noexcept
 
     if (p.cutOn && p.cutDepthDb < 0.0)
     {
-        // A cut rings shorter than a bell at 0 dB with the same Q.
         rootRange(p.cutNote, p.midiMode == MidiMode::channels12, lowHz, highHz);
-        longest = std::max(longest, bankRingBound(p.series, p.cutBands, p.qMode, p.cutQ, 0.0, lowHz, highHz, sampleRate));
+        longest = std::max(longest, bankRingBound(p.series, p.cutBands, p.qMode, p.cutQ, p.cutDepthDb, lowHz, highHz, sampleRate));
     }
 
     if (p.ring > 0.0)

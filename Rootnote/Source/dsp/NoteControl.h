@@ -83,7 +83,11 @@ public:
             if (config.mode == MidiMode::off)
                 voices[boost] = {};
             else if (config.mode == MidiMode::channels12)
+            {
                 voices[boost].removeIf([](int id) { return id / 128 != 0; });
+                if (voices[boost].numHeld == 0 && voices[boost].midiChannel != 1)
+                    voices[boost] = {};
+            }
         }
 
         for (auto& voice : voices)
@@ -109,6 +113,7 @@ public:
                 voice.removeIf([id](int held) { return held == id; });
                 voice.held[voice.numHeld++] = static_cast<uint16_t>(id);
                 voice.midiNote = midiNote;
+                voice.midiChannel = channel + 1;
                 voice.midiOwns = true;
                 ++noteOnCounter;
                 break;
@@ -153,6 +158,7 @@ private:
         uint16_t held[kMaxHeld] {}; // (channel - 1) * 128 + note, oldest first
         int numHeld = 0;
         int midiNote = 60;
+        int midiChannel = 1;
         bool midiOwns = false;
 
         template <typename Predicate>
@@ -183,7 +189,10 @@ private:
         if (!voice.midiOwns)
             return;
         if (voice.numHeld > 0)
+        {
             voice.midiNote = voice.held[voice.numHeld - 1] % 128;
+            voice.midiChannel = voice.held[voice.numHeld - 1] / 128 + 1;
+        }
         else if (config.noteOff == NoteOffMode::returnToKnob)
             voice.midiOwns = false;
     }

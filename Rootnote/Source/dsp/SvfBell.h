@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <cmath>
 
 namespace rootnote
@@ -78,16 +79,24 @@ inline double bellRingSeconds(double centreHz, double q, double gainDb) noexcept
     return 6.907755 * 2.0 * q * A / (2.0 * kPi * centreHz);
 }
 
-/**
-    How much longer the digital bell rings than the analog one. The bilinear
-    transform narrows the resonance, so the poles decay with sin(theta) where
-    the analog ones decay with theta = 2 pi hz / fs. 1 at low frequencies,
-    about 9 at 0.45 fs.
-*/
-inline double bellRingStretch(double centreHz, double sampleRate) noexcept
+/** T60 from the slowest digital pole, including overdamped (very wide) cuts. */
+inline double bellDigitalRingSeconds(double centreHz, double q, double gainDb, double sampleRate) noexcept
 {
-    const double theta = 2.0 * kPi * centreHz / sampleRate;
-    return theta < 1.0e-6 ? 1.0 : theta / std::sin(theta);
+    const double g = bellPrewarp(centreHz, sampleRate);
+    const double k = 1.0 / (q * std::exp(gainDb * (kLn10 / 40.0)));
+    double logRadius;
+    if (k <= 2.0)
+    {
+        // Complex conjugate poles: log(sqrt((1 + g*g - g*k) / (1 + g*g + g*k))).
+        logRadius = -std::atanh(g * k / (1.0 + g * g));
+    }
+    else
+    {
+        const double fast = 0.5 * (k + std::sqrt(k * k - 4.0));
+        const auto radius = [g](double pole) { return std::abs((1.0 - g * pole) / (1.0 + g * pole)); };
+        logRadius = std::log(std::max(radius(fast), radius(1.0 / fast)));
+    }
+    return -std::log(1000.0) / (sampleRate * logRadius);
 }
 
 /** One mono bell with fixed settings. Used by tests and as the reference implementation. */

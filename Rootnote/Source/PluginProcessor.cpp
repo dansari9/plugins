@@ -48,6 +48,7 @@ RootnoteProcessor::RootnoteProcessor()
 
 void RootnoteProcessor::prepareToPlay(double sampleRate, int samplesPerBlock)
 {
+    displaySampleRate.store(sampleRate, std::memory_order_relaxed);
     engine.prepare(sampleRate, samplesPerBlock);
     analysis.setSampleRate(sampleRate);
 }
@@ -81,7 +82,7 @@ void RootnoteProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::Mid
     analysis.push(channels[0], channels[1], numSamples);
 
     // A restored state plays its own notes, not a MIDI note left over from before.
-    if (stateRestored.exchange(false, std::memory_order_relaxed))
+    if (stateRestored.exchange(false, std::memory_order_acquire))
         engine.releaseMidi();
     engine.setParams(parameters.read());
 
@@ -113,21 +114,38 @@ void RootnoteProcessor::processSpan(float* const* channels, int numChannels, int
 
 void RootnoteProcessor::publishDisplay(const juce::AudioBuffer<float>& buffer, int numChannels) noexcept
 {
-    boostHz.store(engine.boostHz(), std::memory_order_relaxed);
-    cutHz.store(engine.cutHz(), std::memory_order_relaxed);
-    boostFromMidi.store(engine.boostFollowsMidi(), std::memory_order_relaxed);
-    cutFromMidi.store(engine.cutFollowsMidi(), std::memory_order_relaxed);
-    midiNoteOns.store(engine.midiNoteOnCount(), std::memory_order_relaxed);
-    limiterGain.store(static_cast<float>(engine.limiterGain()), std::memory_order_relaxed);
-
     if (displayUsers.load(std::memory_order_relaxed) <= 0)
         return;
+
+    const size_t w = displayWrite.load(std::memory_order_relaxed);
+    if (w - displayRead.load(std::memory_order_acquire) < kDisplayFrames)
+    {
+        auto& frame = displayFrames[w % kDisplayFrames];
+        frame.sampleRate = displaySampleRate.load(std::memory_order_relaxed);
+        frame.boostHz = engine.boostHz();
+        frame.cutHz = engine.cutHz();
+        frame.boostFromMidi = engine.boostFollowsMidi();
+        frame.cutFromMidi = engine.cutFollowsMidi();
+        frame.midiNoteOns = engine.midiNoteOnCount();
+        frame.limiterGain = static_cast<float>(engine.limiterGain());
+        const auto copyBands = [](const BandBank& bank, BandView* out) {
+            int count = 0;
+            for (int slot = 0; slot < kMaxSlots; ++slot)
+                if (bank.slotActive(slot))
+                    out[count++] = { bank.currentRootHz() * bank.slotRatio(slot), bank.slotGainDb(slot) };
+            return count;
+        };
+        frame.numBoostBands = copyBands(engine.boostBank(), frame.boostBands);
+        frame.numCutBands = copyBands(engine.cutBank(), frame.cutBands);
+        displayWrite.store(w + 1, std::memory_order_release);
+    }
 
     for (int ch = 0; ch < 2; ++ch)
     {
         const float peak = buffer.getMagnitude(juce::jmin(ch, numChannels - 1), 0, buffer.getNumSamples());
-        if (peak > outputPeak[ch].load(std::memory_order_relaxed))
-            outputPeak[ch].store(peak, std::memory_order_relaxed);
+        float previous = outputPeak[ch].load(std::memory_order_relaxed);
+        while (peak > previous && !outputPeak[ch].compare_exchange_weak(previous, peak, std::memory_order_relaxed)) {}
+
     }
 
     // A full FIFO only means the editor is not drawing; dropping the block is fine.
@@ -138,7 +156,7 @@ void RootnoteProcessor::publishDisplay(const juce::AudioBuffer<float>& buffer, i
 
 double RootnoteProcessor::getTailLengthSeconds() const
 {
-    const double sampleRate = getSampleRate() > 0.0 ? getSampleRate() : 48000.0;
+    const double sampleRate = displaySampleRate.load(std::memory_order_relaxed);
     return Engine::tailSeconds(parameters.read(), sampleRate);
 }
 
@@ -159,36 +177,45 @@ void RootnoteProcessor::setStateInformation(const void* data, int sizeInBytes)
     if (xml != nullptr && xml->hasTagName(apvts.state.getType()))
     {
         apvts.replaceState(juce::ValueTree::fromXml(*xml));
-        stateRestored.store(true, std::memory_order_relaxed);
-        abSlots[0] = abSlots[1] = {};
-        currentAbSlot = 0;
+        stateRestored.store(true, std::memory_order_release);
+        resetAbPending.store(true, std::memory_order_release);
     }
 }
 
-RootnoteProcessor::DisplayState RootnoteProcessor::displayState() const noexcept
+RootnoteProcessor::DisplayState RootnoteProcessor::displayState() noexcept
 {
-    const EngineParams p = parameters.read();
-    const double sampleRate = getSampleRate() > 0.0 ? getSampleRate() : 48000.0;
-
-    DisplayState state;
-    state.boostHz = boostHz.load(std::memory_order_relaxed);
-    state.cutHz = cutHz.load(std::memory_order_relaxed);
-    if (state.boostHz <= 0.0) // no audio block yet
+    size_t r = displayRead.load(std::memory_order_relaxed);
+    const size_t w = displayWrite.load(std::memory_order_acquire);
+    while (r != w)
     {
-        state.boostHz = noteToHz(p.boostNote + p.boostFineCents / 100.0, p.a4);
-        state.cutHz = noteToHz(p.cutNote, p.a4);
+        lastDisplay = displayFrames[r++ % kDisplayFrames];
+        haveDisplay = true;
     }
-    state.boostFromMidi = boostFromMidi.load(std::memory_order_relaxed);
-    state.cutFromMidi = cutFromMidi.load(std::memory_order_relaxed);
-    state.midiNoteOns = midiNoteOns.load(std::memory_order_relaxed);
-    state.limiterGain = limiterGain.load(std::memory_order_relaxed);
-    state.numBoostBands = Engine::boostBands(p, state.boostHz, sampleRate, state.boostBands);
-    state.numCutBands = Engine::cutBands(p, state.cutHz, sampleRate, state.cutBands);
+    displayRead.store(r, std::memory_order_release);
+    if (haveDisplay)
+        return lastDisplay;
+
+    const EngineParams p = parameters.read();
+    DisplayState state;
+    state.sampleRate = displaySampleRate.load(std::memory_order_relaxed);
+    state.boostHz = noteToHz(p.boostNote + p.boostFineCents / 100.0, p.a4);
+    state.cutHz = noteToHz(p.cutNote, p.a4);
+    state.numBoostBands = Engine::boostBands(p, state.boostHz, state.sampleRate, state.boostBands);
+    state.numCutBands = Engine::cutBands(p, state.cutHz, state.sampleRate, state.cutBands);
     return state;
 }
 
 void RootnoteProcessor::setDisplayActive(bool active) noexcept
 {
+    if (active && displayUsers.load(std::memory_order_relaxed) == 0)
+    {
+        // Consumer-side discard: reopening starts with fresh audio, not old spectra.
+        spectrumFifo.discard();
+        displayRead.store(displayWrite.load(std::memory_order_acquire), std::memory_order_release);
+        haveDisplay = false;
+        for (auto& peak : outputPeak)
+            peak.exchange(0.0f, std::memory_order_relaxed);
+    }
     analysis.enable(active);
     displayUsers.fetch_add(active ? 1 : -1, std::memory_order_relaxed);
 }
@@ -236,8 +263,24 @@ void RootnoteProcessor::loadPreset(int index)
     apvts.state.setProperty(kPreset, index, nullptr);
 }
 
+void RootnoteProcessor::resetAbIfRestored()
+{
+    if (resetAbPending.exchange(false, std::memory_order_acquire))
+    {
+        abSlots[0] = abSlots[1] = {};
+        currentAbSlot = 0;
+    }
+}
+
+int RootnoteProcessor::abSlot()
+{
+    resetAbIfRestored();
+    return currentAbSlot;
+}
+
 void RootnoteProcessor::selectAbSlot(int slot)
 {
+    resetAbIfRestored();
     if (slot == currentAbSlot || !juce::isPositiveAndBelow(slot, 2))
         return;
 

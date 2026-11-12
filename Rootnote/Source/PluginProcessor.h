@@ -16,6 +16,7 @@ public:
     */
     struct DisplayState
     {
+        double sampleRate = 48000.0;
         double boostHz = 0.0;
         double cutHz = 0.0;
         bool boostFromMidi = false; // the note comes from MIDI, not from the knob
@@ -65,8 +66,12 @@ public:
     // message thread. Nothing here blocks, locks or allocates on the audio
     // thread: the audio thread publishes through atomics and a FIFO.
 
-    /** Live notes, bands, MIDI activity and limiter gain. Cheap; call once per frame. */
-    DisplayState displayState() const noexcept;
+    /**
+        Drains complete audio snapshots, returns the newest, or a knob preview
+        before audio arrives. Actual band gains include smoothing. One message-
+        thread consumer; retains the last complete frame if none is available.
+    */
+    DisplayState displayState() noexcept;
 
     /** The drum tuner's reading of the input. Only updated while a display is active. */
     rootnote::TunerReading tunerReading() const { return analysis.reading(); }
@@ -109,7 +114,7 @@ public:
         parameters and preset in the slot being left and recalls the other
         one; B starts as a copy of A. Bypass is shared. Not saved in the state.
     */
-    int abSlot() const noexcept { return currentAbSlot; }
+    int abSlot();
     void selectAbSlot(int slot);
 
     /** Editor size kept in the plug-in state; {0, 0} until an editor has stored one. */
@@ -120,6 +125,8 @@ private:
     void processSpan(float* const* channels, int numChannels, int from, int to) noexcept;
     void publishDisplay(const juce::AudioBuffer<float>& buffer, int numChannels) noexcept;
     void setParameterValue(const char* id, double value);
+
+    void resetAbIfRestored(); // message thread only
 
     struct AbSlot
     {
@@ -139,12 +146,15 @@ private:
 
     std::atomic<bool> stateRestored { false }; // set by setStateInformation, consumed by the audio thread
     std::atomic<int> displayUsers { 0 };
-    std::atomic<double> boostHz { 0.0 };
-    std::atomic<double> cutHz { 0.0 };
-    std::atomic<bool> boostFromMidi { false };
-    std::atomic<bool> cutFromMidi { false };
-    std::atomic<uint32_t> midiNoteOns { 0 };
-    std::atomic<float> limiterGain { 1.0f };
+    // Bounded SPSC queue: audio writes whole frames; the message thread reads.
+    // A full queue drops a new frame. Neither side can access the other's slot.
+    static constexpr size_t kDisplayFrames = 4;
+    DisplayState displayFrames[kDisplayFrames];
+    std::atomic<size_t> displayWrite { 0 }, displayRead { 0 };
+    DisplayState lastDisplay;
+    bool haveDisplay = false; // message thread only
+    std::atomic<double> displaySampleRate { 48000.0 };
+    std::atomic<bool> resetAbPending { false };
     std::atomic<float> outputPeak[2] { { 0.0f }, { 0.0f } };
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(RootnoteProcessor)

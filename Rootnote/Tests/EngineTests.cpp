@@ -520,6 +520,38 @@ TEST_CASE("Engine: the limiter holds the ceiling and keeps the signal when the E
     CHECK(std::sqrt(sumOfSquares / 24000.0) > 0.2);
 }
 
+TEST_CASE("Engine: limiter endpoints retain limited audio even with enormous dry input")
+{
+    EngineParams p = neutral();
+    p.limiter = true;
+    const Signal out = processed(p, sine(196.0, 48000.0, 48000, 1.0e20), 48000.0);
+    CHECK(allFinite(out));
+    CHECK(peak(out, 0, out.size()) <= Limiter::kCeiling);
+    CHECK(peak(out, 24000, out.size()) > 0.5);
+}
+
+TEST_CASE("Engine: reported tail covers overdamped cuts at both spectrum edges")
+{
+    for (double hz : { 20.0, 20000.0 })
+    {
+        EngineParams p = neutral();
+        p.midiMode = MidiMode::off;
+        p.cutOn = true;
+        p.cutNote = hzToNote(hz);
+        p.cutQ = 0.5;
+        p.cutDepthDb = -30.0;
+        p.cutBands = 1;
+        const double tail = Engine::tailSeconds(p, 48000.0);
+        const size_t burst = 4800;
+        Signal input = noise(burst + static_cast<size_t>((tail + 0.1) * 48000.0), 0.25, 9);
+        std::fill(input.begin() + static_cast<std::ptrdiff_t>(burst), input.end(), 0.0f);
+        const auto out = processed(p, input, 48000.0);
+        const double start = peak(out, burst, burst + 48);
+        CHECK(start > 1.0e-6);
+        CHECK(peak(out, burst + static_cast<size_t>(tail * 48000.0), out.size()) < start * 1.0e-3);
+    }
+}
+
 TEST_CASE("Engine: the reported tail covers slow low bells, notes played by MIDI and bells near Nyquist")
 {
     const auto decayAtTail = [](const EngineParams& params, double fs, int midiNote) {
