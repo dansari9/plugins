@@ -203,6 +203,17 @@ void RootnoteProcessor::setStateInformation(const void* data, int sizeInBytes)
         for (const auto& property : { kPreset, kEditorWidth, kEditorHeight })
             state.removeProperty(property, nullptr);
         apvts.replaceState(state);
+
+        // The APVTS skips a parameter whose snapped value already matches, so a
+        // stepped one the host left between steps (a switch at 0.86) would keep
+        // that raw value although the state says 1. Settle every one.
+        for (auto* parameter : getParameters())
+        {
+            auto* ranged = static_cast<juce::RangedAudioParameter*>(parameter);
+            const float restored = ranged->convertTo0to1(apvts.getRawParameterValue(ranged->getParameterID())->load());
+            if (ranged->getValue() != restored)
+                ranged->setValueNotifyingHost(restored);
+        }
         stateRestored.store(true, std::memory_order_release);
         resetAbPending.store(true, std::memory_order_release);
     }

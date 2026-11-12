@@ -271,6 +271,15 @@ TEST_CASE("Plugin: state round trip restores every parameter and the editor size
     restored.getStateInformation(second);
     CHECK(second == state);
 
+    // A host can leave a switch or a step between legal values; restoring settles it on the saved one.
+    RootnoteProcessor between;
+    for (const auto& [id, raw] : { std::pair { ids::limiter, 0.86f }, { ids::keyLock, 0.107f }, { ids::bands, 0.5f } })
+        between.getApvts().getParameter(id)->setValueNotifyingHost(raw);
+    between.setStateInformation(state.getData(), static_cast<int>(state.getSize()));
+    for (int i = 0; i < source.getParameters().size(); ++i)
+        CHECK_NEAR_MSG(between.getParameters()[i]->getValue(), source.getParameters()[i]->getValue(), 1.0e-6,
+                       ("between steps: " + source.getParameters()[i]->getName(64)).toStdString());
+
     // Rubbish and foreign state are ignored.
     const char rubbish[] = "not a state";
     restored.setStateInformation(rubbish, sizeof(rubbish));
