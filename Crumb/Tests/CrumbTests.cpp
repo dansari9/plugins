@@ -761,6 +761,18 @@ static void testPresets()
     restored.stepPreset(1);
     CHECK(restored.presetName() == "user 01");
     CHECK(folder.deleteRecursively());
+
+    // A full numbering range must fail without replacing any existing file or changing the preset identity.
+    CHECK(folder.createDirectory().wasOk());
+    for (int k = 1; k < 1000; ++k)
+        CHECK(folder.getChildFile("user " + juce::String(k).paddedLeft('0', 2) + ".xml").replaceWithText("keep " + juce::String(k)));
+    const auto name = u.presetName();
+    const auto beforeFull = params(u);
+    const int index = u.preset;
+    CHECK(u.saveUserPreset() == juce::File() && u.presetName() == name && u.preset == index && params(u) == beforeFull);
+    for (int k = 1; k < 1000; ++k)
+        CHECK(folder.getChildFile("user " + juce::String(k).paddedLeft('0', 2) + ".xml").loadFileAsString() == "keep " + juce::String(k));
+    CHECK(folder.deleteRecursively());
 }
 
 static void testScopeFifo()

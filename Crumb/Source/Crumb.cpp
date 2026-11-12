@@ -665,6 +665,8 @@ File CrumbProcessor::saveUserPreset()
     File file;
     for (int k = 1; k < 1000 && (file == File() || file.exists()); ++k)
         file = folder.getChildFile("user " + String(k).paddedLeft('0', 2) + ".xml");
+    if (file.exists())
+        return {};
     auto xml = apvts.copyState().createXml();
     if (xml == nullptr || !xml->writeTo(file))
         return {};
