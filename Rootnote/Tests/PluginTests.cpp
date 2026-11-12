@@ -664,7 +664,7 @@ TEST_CASE("Plugin: a preset sets its exact values, everything else to default, a
     RootnoteProcessor other;
     other.setStateInformation(state.getData(), static_cast<int>(state.getSize()));
     CHECK(other.currentPreset() == 3);
-    CHECK(holds(other, ids::boostQ, 25.0f));
+    CHECK(holds(other, ids::boostQ, 18.0f)); // preset 3 is Snare Body Tune
 }
 
 TEST_CASE("Plugin: A/B keeps two settings apart")

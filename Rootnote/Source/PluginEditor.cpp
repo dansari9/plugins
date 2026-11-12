@@ -65,7 +65,7 @@ void FeedView::analyse()
     fft.forward(re.data(), im.data());
 
     // Each point takes the loudest bin of its slice of the log axis; a full-scale sine reads 0 dB.
-    const double binHz = processor.getSampleRate() / kFftSize;
+    const double binHz = juce::jmax(1.0, processor.getSampleRate()) / kFftSize;
     const double step = std::pow(static_cast<double>(kHighHz / kLowHz), 1.0 / kPoints);
     double lowHz = kLowHz;
     for (float& db : spectrumDb)
@@ -201,11 +201,11 @@ void RootnoteEditor::resized()
     presets.setBounds(top.reduced(4, 0));
 
     area.removeFromTop(6);
-    auto readout = area.removeFromTop(44);
-    tuneToKey.setBounds(readout.removeFromRight(100).reduced(0, 8));
-    readout.removeFromRight(6);
-    matchCut.setBounds(readout.removeFromRight(100).reduced(0, 8));
-    status.setBounds(readout);
+    status.setBounds(area.removeFromTop(64));
+    auto actions = area.removeFromTop(28);
+    matchCut.setBounds(actions.removeFromLeft(100));
+    actions.removeFromLeft(6);
+    tuneToKey.setBounds(actions.removeFromLeft(100));
 
     area.removeFromTop(6);
     feed.setBounds(area.removeFromTop(juce::jmax(100, area.getHeight() / 4)));
@@ -228,7 +228,7 @@ void RootnoteEditor::refresh()
 
     juce::String text;
     text << "Boost  " << describe(state.boostHz, a4) << (state.boostFromMidi ? "  (MIDI)" : "")
-         << "      Cut  " << describe(state.cutHz, a4) << (state.cutFromMidi ? "  (MIDI)" : "") << "\n"
+         << "\nCut  " << describe(state.cutHz, a4) << (state.cutFromMidi ? "  (MIDI)" : "") << "\n"
          << "Hit  " << (hit.valid ? describe(hit.hz, a4) : juce::String("-"))
          << "      Limiter  " << juce::String(toDb(state.limiterGain), 1) << " dB"
          << (midiLit > 0 ? "      MIDI in" : "");
