@@ -40,6 +40,8 @@ private:
     {
         explicit Plate(RootnoteEditor& e) : editor(e) {}
         void paint(juce::Graphics& g) override { editor.paintPlate(g); }
+        // A click on the bare plate ends typing on the display (the field commits on focus loss).
+        void mouseDown(const juce::MouseEvent&) override { unfocusAllComponents(); }
         RootnoteEditor& editor;
     };
 
@@ -64,6 +66,7 @@ private:
     void showSettings();
     void showMenu(juce::PopupMenu, juce::Component& target, std::function<void(int)> onChosen);
     void pageKeyChanged(int index);
+    void shiftOctave(rootnote::NoteControl::Target, int semitones);
     void place(juce::Component&, float x, float y, float w, float h);
 
     RootnoteProcessor& processor;
@@ -84,12 +87,16 @@ private:
 
     rootnote::ui::Encoder encoders[rootnote::ui::kNumEncoders];
     std::unique_ptr<rootnote::ui::EncoderBinding> bindings[rootnote::ui::kNumEncoders]; // after the encoders
+    int encoderSlot[rootnote::ui::kNumEncoders] {}; // the page slot each encoder shows
 
     int page = 0;
     int peekKey = -1;        // the page key held down, if any
     juce::uint32 peekStartMs = 0;
     bool peeked = false;     // the last press was a hold: its click selects nothing
-    int octave = 1;          // octave of the pitch keys
+    int octave = 1;          // octave of the pitch keys: the boost note's
+    struct Played { double note = 36.0; bool midi = false; };
+    Played played[2];        // per bank, from the last frame
+    int matchBlink = 0, tuneBlink = 0; // frames a key still blinks: it found no hit
     float meterDb = -100.0f;
     uint32_t lastNoteOns = 0;
     int midiLit = 0;         // frames the MIDI dots stay lit after a note

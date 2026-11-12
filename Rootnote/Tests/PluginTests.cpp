@@ -986,6 +986,13 @@ TEST_CASE("Plugin: the faceplate keys and encoders write the parameters")
     set(processor, ids::cutNote, 37.9f);
     CHECK_NEAR(fine->getValue(), -10.0, 0.05);
 
+    // The cut note has no encoder: its value is typed on the display or set by the keys.
+    CHECK(findControl<Encoder>(faceplate, "Note") == nullptr);
+    int shown = 0;
+    for (auto* child : editor->getChildComponent(0)->getChildren())
+        shown += dynamic_cast<Encoder*>(child) != nullptr && child->isVisible() ? 1 : 0;
+    CHECK(shown == 6);
+
     // Pages with fewer controls hide the rest.
     faceplate.selectPage(2);
     int visible = 0;
@@ -1713,7 +1720,9 @@ TEST_CASE("Plugin: encoders take typed values and arrow keys, each change one ge
     auto& faceplate = dynamic_cast<RootnoteEditor&>(*editor);
     Desk desk(*editor);
     GestureCounter gestures(processor);
-    const auto entryOf = [](Encoder& encoder) { return findFirst<juce::TextEditor>(encoder); };
+    auto* screen = findFirst<Screen>(*editor);
+    REQUIRE(screen != nullptr);
+    const auto entry = [&] { return findFirst<juce::TextEditor>(*screen); };
 
     // The encoders are in the focus order.
     auto* focus = findControl<Encoder>(*editor, "Focus");
@@ -1721,23 +1730,25 @@ TEST_CASE("Plugin: encoders take typed values and arrow keys, each change one ge
     const auto order = editor->createKeyboardFocusTraverser()->getAllComponents(editor.get());
     CHECK(std::find(order.begin(), order.end(), focus) != order.end());
 
-    // Alt-click opens a text field with the value; Return applies the parameter's own parser.
+    // Alt-click opens the value's field on the display; Return applies the parameter's own parser.
+    set(processor, ids::focusLink, 0.0f);
     desk.click(*focus, juce::ModifierKeys(juce::ModifierKeys::altModifier));
-    CHECK(focus->isShowingValueEntry());
-    CHECK(entryOf(*focus)->getText() == "65.0 Hz");
-    CHECK(entryOf(*focus)->hasKeyboardFocus(false));
-    entryOf(*focus)->setText("1.2 kHz");
+    CHECK(screen->isShowingEntry());
+    CHECK(entry()->getText() == "65.0 Hz");
+    CHECK(entry()->hasKeyboardFocus(false));
+    CHECK(entry()->getBounds().contains(legendPoint(3).toInt()));
+    entry()->setText("1.2 kHz");
     desk.key(juce::KeyPress(juce::KeyPress::returnKey));
-    CHECK(!focus->isShowingValueEntry());
+    CHECK(!screen->isShowingEntry());
     CHECK_NEAR(get(processor, ids::focus), 1200.0, 0.5);
     CHECK(gestures.begins(ids::focus) == 1 && gestures.ends(ids::focus) == 1);
 
-    // Escape keeps the value.
+    // Escape keeps the value and gives the keyboard back to the encoder.
     desk.click(*focus, juce::ModifierKeys(juce::ModifierKeys::popupMenuClickModifier));
-    REQUIRE(focus->isShowingValueEntry());
-    entryOf(*focus)->setText("80 Hz");
+    REQUIRE(screen->isShowingEntry());
+    entry()->setText("80 Hz");
     desk.key(juce::KeyPress(juce::KeyPress::escapeKey));
-    CHECK(!focus->isShowingValueEntry());
+    CHECK(!screen->isShowingEntry());
     CHECK_NEAR(get(processor, ids::focus), 1200.0, 0.5);
 
     // Arrow keys on the focused encoder: a step each, Shift finer.
@@ -1750,29 +1761,138 @@ TEST_CASE("Plugin: encoders take typed values and arrow keys, each change one ge
     CHECK(get(processor, ids::focus) > down && get(processor, ids::focus) < before);
     CHECK(gestures.begins(ids::focus) == 3 && gestures.ends(ids::focus) == 3);
 
+    // Return on the focused encoder opens its field too.
+    desk.key(juce::KeyPress(juce::KeyPress::returnKey));
+    CHECK(screen->isShowingEntry());
+    desk.key(juce::KeyPress(juce::KeyPress::escapeKey));
+
     // A stepped parameter moves a whole step per key.
     auto* bands = findControl<Encoder>(*editor, "Bands");
     desk.click(*bands);
     desk.key(juce::KeyPress(juce::KeyPress::upKey));
     CHECK(holds(processor, ids::bands, 9.0f));
 
-    // A click on a legend value opens the field of its encoder: an exact frequency for the cut note.
+    // A click on a legend value opens its field: an exact frequency for the cut note, which has no encoder.
     faceplate.selectPage(1);
-    auto* note = findControl<Encoder>(*editor, "Note");
-    desk.click(*findFirst<Screen>(*editor), legendPoint(4));
-    REQUIRE(note->isShowingValueEntry());
-    entryOf(*note)->setText("55 Hz");
+    desk.click(*screen, legendPoint(4));
+    REQUIRE(screen->isShowingEntry());
+    entry()->setText("55 Hz");
     desk.key(juce::KeyPress(juce::KeyPress::returnKey));
     CHECK_NEAR(get(processor, ids::cutNote), 33.0, 0.006);
 
-    // Cents of the cut note.
+    // Cents of the cut note, from its encoder.
     auto* fine = findControl<Encoder>(*editor, "Fine");
     desk.click(*fine, juce::ModifierKeys(juce::ModifierKeys::commandModifier));
-    REQUIRE(fine->isShowingValueEntry());
-    entryOf(*fine)->setText(juce::String::fromUTF8("\xe2\x88\x92" "20 ct"));
+    REQUIRE(screen->isShowingEntry());
+    CHECK(entry()->getBounds().contains(legendPoint(5).toInt()));
+    entry()->setText(juce::String::fromUTF8("\xe2\x88\x92" "20 ct"));
     desk.key(juce::KeyPress(juce::KeyPress::returnKey));
     CHECK_NEAR(get(processor, ids::cutNote), 32.8, 0.002);
+
+    // Clicking the bare plate commits, as losing the focus does.
+    desk.click(*screen, legendPoint(0));
+    entry()->setText("-3.1db");
+    desk.click(*editor->getChildComponent(0), { 300.0f, 440.0f });
+    dispatchMessages();
+    CHECK(!screen->isShowingEntry());
+    CHECK(holds(processor, ids::cutDepth, -3.1f));
     CHECK(gestures.balanced());
+}
+
+TEST_CASE("Plugin: every value on every page can be typed; text that is no value changes nothing")
+{
+    using rootnote::ui::Screen;
+    RootnoteProcessor processor;
+    auto editor = std::unique_ptr<juce::AudioProcessorEditor>(processor.createEditor());
+    auto& faceplate = dynamic_cast<RootnoteEditor&>(*editor);
+    Desk desk(*editor);
+    auto* screen = findFirst<Screen>(*editor);
+    REQUIRE(screen != nullptr);
+    set(processor, ids::focusLink, 0.0f); // a typed Focus would take over from the link
+    GestureCounter gestures(processor);
+
+    int fields = 0;
+    for (int page = 0; page < rootnote::ui::kNumPages; ++page)
+    {
+        faceplate.selectPage(page);
+        const auto& slots = rootnote::ui::pageSlots(page);
+        for (int slot = 0; slot < rootnote::ui::kNumEncoders; ++slot)
+        {
+            if (slots[static_cast<size_t>(slot)].id == nullptr)
+                continue;
+            std::vector<float> values;
+            for (auto* p : processor.getParameters())
+                values.push_back(p->getValue());
+            const auto unchanged = [&] {
+                for (int i = 0; i < processor.getParameters().size(); ++i)
+                    if (std::abs(processor.getParameters()[i]->getValue() - values[static_cast<size_t>(i)]) > 1.0e-4f)
+                        return false;
+                return true;
+            };
+
+            // Garbage is ignored; the field's own text reads back as the same value.
+            for (const char* text : { "abc", "5 parsecs", "", "1.2.3" })
+            {
+                desk.click(*screen, legendPoint(slot));
+                REQUIRE(screen->isShowingEntry());
+                findFirst<juce::TextEditor>(*screen)->setText(text);
+                desk.key(juce::KeyPress(juce::KeyPress::returnKey));
+                CHECK(unchanged());
+            }
+            desk.click(*screen, legendPoint(slot));
+            CHECK(findFirst<juce::TextEditor>(*screen)->getText().isNotEmpty());
+            desk.key(juce::KeyPress(juce::KeyPress::returnKey));
+            CHECK(unchanged());
+            ++fields;
+        }
+    }
+    CHECK(fields == 8 + 7 + 3 + 5 + 4);
+    CHECK(gestures.balanced());
+}
+
+TEST_CASE("Plugin: typed values in natural formats, for the display and the host alike")
+{
+    RootnoteProcessor processor;
+    const auto reads = [](const char* id, const char* text, float expected) {
+        const auto value = parseValue(id, juce::String::fromUTF8(text), 440.0);
+        return value.has_value() && std::abs(*value - expected) < 1.0e-3f;
+    };
+    CHECK(reads(ids::cutDepth, "-3.1", -3.1f));
+    CHECK(reads(ids::cutDepth, "-3.1db", -3.1f));
+    CHECK(reads(ids::cutDepth, "-3.1 DB", -3.1f));
+    CHECK(reads(ids::cutDepth, "\xe2\x88\x92" "3,1 dB", -3.1f));
+    CHECK(reads(ids::cutQ, "8", 8.0f));
+    CHECK(reads(ids::cutQ, "q8", 8.0f));
+    CHECK(reads(ids::cutOvertones, "50", 50.0f));
+    CHECK(reads(ids::cutOvertones, "50%", 50.0f));
+    CHECK(reads(ids::cutBands, "6", 6.0f));
+    CHECK(reads(ids::cutNote, "C#1", 25.0f));
+    CHECK(reads(ids::cutNote, "c#1", 25.0f));
+    CHECK(reads(ids::cutNote, "Db1", 25.0f));
+    CHECK(reads(ids::cutNote, "C\xe2\x99\xaf" "1", 25.0f));
+    CHECK(reads(ids::cutNote, "D\xe2\x99\xad" "1", 25.0f));
+    CHECK(reads(ids::boostFine, "+5", 5.0f));
+    CHECK(reads(ids::boostFine, "-12ct", -12.0f));
+    CHECK(reads(ids::boostFine, "5 cents", 5.0f));
+    CHECK(reads(ids::cutOn, "on", 1.0f) && reads(ids::cutOn, "OFF", 0.0f));
+    CHECK(reads(ids::cutOn, "1", 1.0f) && reads(ids::cutOn, "0", 0.0f));
+    CHECK(reads(ids::focus, "1.2k", 1200.0f) && reads(ids::focus, "65hz", 65.0f));
+    CHECK(reads(ids::ringDecay, "1.5s", 1500.0f) && reads(ids::glide, "40", 40.0f));
+    CHECK(reads(ids::blend, "30/70", 0.7f) && reads(ids::blend, "70", 0.7f));
+    CHECK(reads(ids::range, "2 oct", 2.0f) && reads(ids::ringDrop, "2st", 2.0f) && reads(ids::tilt, "-3 db/oct", -3.0f));
+    CHECK(reads(ids::scale, "MIN", 2.0f) && reads(ids::scale, "pent min", 7.0f) && reads(ids::scale, "Harmonic Minor", 8.0f));
+    CHECK(reads(ids::midiMode, "ch1+2", 1.0f) && reads(ids::qMode, "const w", 1.0f) && reads(ids::noteOff, "Return", 1.0f));
+    CHECK(reads(ids::key, "f#", 6.0f) && reads(ids::key, "Bb", 10.0f) && reads(ids::series, "OCT", 1.0f));
+    for (const char* id : { ids::cutDepth, ids::cutNote, ids::cutOn, ids::scale, ids::key, ids::boostFine, ids::bands })
+        for (const char* text : { "abc", "", "5 parsecs", "1.2.3", "h1" })
+            CHECK(!parseValue(id, text, 440.0).has_value());
+
+    // The host's text entry reads the same; text that is no value gives the default.
+    CHECK_NEAR(parsed(processor, ids::cutDepth, "-3.1db"), -3.1, 1.0e-3);
+    CHECK_NEAR(parsed(processor, ids::scale, "min"), 2.0, 1.0e-6);
+    CHECK_NEAR(parsed(processor, ids::cutOn, "on"), 1.0, 1.0e-6);
+    CHECK_NEAR(parsed(processor, ids::cutBands, "6 bands"), 6.0, 1.0e-6);
+    CHECK_NEAR(parsed(processor, ids::cutDepth, "garbage"), -12.0, 1.0e-3);
 }
 
 TEST_CASE("Plugin: after a remap an encoder formats and parses its own parameter")
@@ -1781,15 +1901,15 @@ TEST_CASE("Plugin: after a remap an encoder formats and parses its own parameter
     RootnoteProcessor processor;
     std::unique_ptr<juce::AudioProcessorEditor> editor(processor.createEditor());
     auto& faceplate = dynamic_cast<RootnoteEditor&>(*editor);
-    auto* blend = findControl<Encoder>(*editor, "Blend");
-    REQUIRE(blend != nullptr);
-    CHECK(blend->getTextFromValue(0.25) == "75 / 25");
+    auto* range = findControl<Encoder>(*editor, "Range");
+    REQUIRE(range != nullptr);
+    CHECK(range->getTextFromValue(1.5) == "1.50 oct");
 
-    faceplate.selectPage(1); // Blend's encoder is now the cut note's Fine
-    CHECK(blend->getTitle() == "Fine");
-    CHECK(blend->getTextFromValue(0.0) == "+0 ct");
-    CHECK(blend->getTextFromValue(-12.5) == juce::String::fromUTF8("\xe2\x88\x92" "12.5 ct"));
-    CHECK_NEAR(blend->getValueFromText("+25 ct"), 25.0, 1.0e-9);
+    faceplate.selectPage(1); // Range's encoder is now the cut note's Fine
+    CHECK(range->getTitle() == "Fine");
+    CHECK(range->getTextFromValue(0.0) == "+0 ct");
+    CHECK(range->getTextFromValue(-12.5) == juce::String::fromUTF8("\xe2\x88\x92" "12.5 ct"));
+    CHECK_NEAR(range->getValueFromText("+25 ct"), 25.0, 1.0e-9);
 
     faceplate.selectPage(3); // Q Mode is a choice
     auto* qMode = findControl<Encoder>(*editor, "Q Mode");
@@ -1827,11 +1947,216 @@ TEST_CASE("Plugin: holding a page key peeks at its page, a click selects it")
     CHECK(!encodersOnBoost() && findControl<Encoder>(*editor, "Amount") != nullptr);
 }
 
+TEST_CASE("Plugin: a page key held and released off the key selects nothing, and the next click works")
+{
+    using rootnote::ui::Encoder;
+    using rootnote::ui::Key;
+    RootnoteProcessor processor;
+    std::unique_ptr<juce::AudioProcessorEditor> editor(processor.createEditor());
+    Desk desk(*editor);
+    auto* ring = findControl<Key>(*editor, "ring");
+    const juce::Point<float> middle = ring->getLocalBounds().getCentre().toFloat();
+    desk.down(*ring, middle);
+    juce::Thread::sleep(static_cast<int>(RootnoteEditor::kPagePeekMs) + 50);
+    desk.drag(*ring, { middle.x, -200.0f });
+    desk.up(*ring, { middle.x, -200.0f });
+    dispatchMessages();
+    CHECK(findControl<Encoder>(*editor, "Gain") != nullptr);
+
+    desk.click(*findControl<Key>(*editor, "cut"));
+    CHECK(findControl<Encoder>(*editor, "Depth") != nullptr);
+}
+
+TEST_CASE("Plugin: the octave keys move the sounding note an octave, and the keys follow the note")
+{
+    using rootnote::ui::Key;
+    RootnoteProcessor processor;
+    prepare(processor);
+    set(processor, ids::boostNote, 36.0f);
+    set(processor, ids::cutNote, 40.0f);
+    std::unique_ptr<juce::AudioProcessorEditor> editor(processor.createEditor());
+    auto& faceplate = dynamic_cast<RootnoteEditor&>(*editor);
+    Desk desk(*editor);
+    GestureCounter gestures(processor);
+    auto* up = findControl<Key>(*editor, "oct +");
+    auto* down = findControl<Key>(*editor, juce::String::fromUTF8("oct \xe2\x88\x92"));
+    REQUIRE(up != nullptr && down != nullptr);
+
+    juce::AudioBuffer<float> block(2, 512);
+    juce::MidiBuffer midi;
+    const auto run = [&] {
+        for (int i = 0; i < 20; ++i)
+        {
+            block.clear();
+            processor.processBlock(block, midi);
+            midi.clear();
+        }
+        const auto state = processor.displayState();
+        faceplate.refresh();
+        return state;
+    };
+
+    // One gesture, heard at once: the engine's band doubles.
+    const double before = run().boostHz;
+    desk.click(*up);
+    CHECK(holds(processor, ids::boostNote, 48.0f));
+    CHECK(gestures.begins(ids::boostNote) == 1 && gestures.ends(ids::boostNote) == 1);
+    CHECK_NEAR(run().boostHz, 2.0 * before, 0.001 * before);
+
+    // The pitch keys are on the note's octave, however it got there.
+    desk.click(*findControl<Key>(*editor, "d"));
+    CHECK(holds(processor, ids::boostNote, 50.0f));
+    set(processor, ids::boostNote, 62.0f); // automation
+    run();
+    desk.click(*findControl<Key>(*editor, "c"));
+    CHECK(holds(processor, ids::boostNote, 60.0f));
+
+    // Alt moves the cut note; the ends of the range clamp.
+    desk.click(*down, juce::ModifierKeys(juce::ModifierKeys::altModifier));
+    CHECK(holds(processor, ids::cutNote, 28.0f) && holds(processor, ids::boostNote, 60.0f));
+    set(processor, ids::boostNote, 90.0f);
+    desk.click(*up);
+    CHECK(holds(processor, ids::boostNote, 96.0f));
+    set(processor, ids::boostNote, 15.0f);
+    desk.click(*down);
+    CHECK(holds(processor, ids::boostNote, 12.0f));
+
+    // With a MIDI note playing, the octave is of that note, and the knob takes the bank back.
+    set(processor, ids::boostNote, 30.0f);
+    set(processor, ids::midiMode, 1.0f);
+    midi.addEvent(juce::MidiMessage::noteOn(1, 40, 1.0f), 0);
+    REQUIRE(run().boostFromMidi);
+    desk.click(*up);
+    desk.click(*up); // twice before the next frame
+    CHECK(holds(processor, ids::boostNote, 64.0f));
+    const auto state = run();
+    CHECK(!state.boostFromMidi);
+    CHECK_NEAR(state.boostNote, 64.0, 1.0e-6);
+    CHECK(gestures.balanced());
+}
+
+TEST_CASE("Plugin: match cut toggles the cut and blinks without a hit; its LED follows the cut")
+{
+    using rootnote::ui::Key;
+    RootnoteProcessor processor;
+    prepare(processor);
+    std::unique_ptr<juce::AudioProcessorEditor> editor(processor.createEditor());
+    auto& faceplate = dynamic_cast<RootnoteEditor&>(*editor);
+    Desk desk(*editor);
+    auto* match = findControl<Key>(*editor, "match cut");
+    auto* tune = findControl<Key>(*editor, "tune to key");
+    REQUIRE(match != nullptr && tune != nullptr);
+    const auto frames = [&](int count) {
+        bool on = false, off = false;
+        for (int i = 0; i < count; ++i)
+        {
+            faceplate.refresh();
+            on = on || match->getLed() == Key::Led::on || tune->getLed() == Key::Led::on;
+            off = off || match->getLed() == Key::Led::off;
+        }
+        return on && off;
+    };
+
+    // No hit yet: nothing changes, and the keys blink, then settle.
+    desk.click(*match);
+    desk.click(*tune);
+    CHECK(holds(processor, ids::cutOn, 0.0f));
+    CHECK(frames(12));
+    frames(30);
+    CHECK(match->getLed() == Key::Led::off && tune->getLed() == Key::Led::none);
+
+    // With a hit: on at the hit, then off; the LED shows the cut.
+    playKicks(processor, noteToHz(26.2), 48000.0);
+    REQUIRE(waitForReading(processor, 3));
+    desk.click(*match);
+    CHECK(holds(processor, ids::cutOn, 1.0f));
+    CHECK_NEAR(get(processor, ids::cutNote), 26.2, 0.1);
+    faceplate.refresh();
+    CHECK(match->getLed() == Key::Led::on);
+    desk.click(*match);
+    CHECK(holds(processor, ids::cutOn, 0.0f));
+    faceplate.refresh();
+    CHECK(match->getLed() == Key::Led::off);
+
+    // Automation and the Cut encoder show the same.
+    set(processor, ids::cutOn, 1.0f);
+    faceplate.refresh();
+    CHECK(match->getLed() == Key::Led::on);
+}
+
+TEST_CASE("Plugin: the display draws the Focus window where the weighting puts it")
+{
+    using rootnote::ui::Screen;
+    RootnoteProcessor processor;
+    std::unique_ptr<juce::AudioProcessorEditor> editor(processor.createEditor());
+    auto& faceplate = dynamic_cast<RootnoteEditor&>(*editor);
+    auto* screen = findFirst<Screen>(*editor);
+    REQUIRE(screen != nullptr);
+    const double lowHz = 16.3516 * std::exp2(-1.0 / 24.0);
+    const auto xAt = [lowHz](double hz) { return 16.0 + 528.0 * std::log2(hz / lowHz) / 9.0; };
+    const double octave = 528.0 / 9.0;
+
+    set(processor, ids::focusLink, 0.0f);
+    set(processor, ids::focus, 200.0f);
+    set(processor, ids::range, 1.0f);
+    faceplate.refresh();
+    auto marks = screen->focusMarks();
+    CHECK(marks.visible && !marks.linked);
+    CHECK_NEAR(marks.centre, xAt(200.0), 0.05);
+    CHECK_NEAR(marks.high - marks.low, 2.0 * octave, 0.05);
+
+    set(processor, ids::range, 2.5f);
+    faceplate.refresh();
+    CHECK_NEAR(screen->focusMarks().high - screen->focusMarks().low, 5.0 * octave, 0.05);
+
+    // Linked, it follows the boost note.
+    set(processor, ids::focusLink, 1.0f);
+    set(processor, ids::boostNote, 48.0f);
+    faceplate.refresh();
+    marks = screen->focusMarks();
+    CHECK(marks.linked);
+    CHECK_NEAR(marks.centre, xAt(noteToHz(48.0)), 0.05);
+
+    set(processor, ids::boostGain, 0.0f);
+    faceplate.refresh();
+    CHECK(!screen->focusMarks().visible);
+}
+
+TEST_CASE("Plugin: the legend says when a value has no effect, and Focus takes over from the link")
+{
+    using rootnote::ui::Encoder;
+    using rootnote::ui::legendValue;
+    using rootnote::ui::pageSlots;
+    RootnoteProcessor processor;
+    auto& apvts = processor.getApvts();
+    const auto& boost = pageSlots(0);
+    CHECK(legendValue(boost[3], apvts) == "LINK");
+    CHECK(legendValue(boost[2], apvts) == "8" && legendValue(boost[5], apvts) == "50/50");
+    set(processor, ids::series, 1.0f); // octaves: every octave sounds, no odd/even
+    CHECK(legendValue(boost[2], apvts) == "ALL" && legendValue(boost[5], apvts) == "N/A");
+    CHECK(legendValue(pageSlots(1)[3], apvts) == "ALL");
+    set(processor, ids::series, 2.0f);
+    CHECK(legendValue(boost[2], apvts) == "8" && legendValue(boost[5], apvts) == "N/A");
+
+    std::unique_ptr<juce::AudioProcessorEditor> editor(processor.createEditor());
+    Desk desk(*editor);
+    GestureCounter gestures(processor);
+    auto* focus = findControl<Encoder>(*editor, "Focus");
+    desk.down(*focus, { 40.0f, 30.0f });
+    desk.drag(*focus, { 40.0f, 10.0f });
+    desk.up(*focus, { 40.0f, 10.0f });
+    CHECK(holds(processor, ids::focusLink, 0.0f));
+    CHECK(get(processor, ids::focus) > 65.0f);
+    CHECK(legendValue(boost[3], apvts) != "LINK");
+    CHECK(gestures.balanced());
+}
+
 /**
     Renders the editor with a demo state to a PNG: a kick ringing at D1, the
-    boost on F#1 played from MIDI, the cut matched to the hit.
+    boost on F#1 played from MIDI, the cut matched to the hit, the Focus
+    window around it. With entry, the cut page with its Depth being typed.
 */
-int writeSnapshot(const juce::File& file)
+int writeSnapshot(const juce::File& file, bool entry)
 {
     RootnoteProcessor processor;
     prepare(processor);
@@ -1878,6 +2203,13 @@ int writeSnapshot(const juce::File& file)
     }
 
     rootnoteEditor->refresh();
+    if (entry)
+    {
+        rootnoteEditor->selectPage(1);
+        auto* screen = findFirst<rootnote::ui::Screen>(*editor);
+        screen->showEntry(0);
+        findFirst<juce::TextEditor>(*screen)->setText("-3.1db");
+    }
     // At twice the size, as the mockup is rendered.
     const juce::Image image = editor->createComponentSnapshot(editor->getLocalBounds(), true, 2.0f);
     file.getParentDirectory().createDirectory();
@@ -1893,17 +2225,17 @@ int writeSnapshot(const juce::File& file)
 }
 
 
-/** "--snapshot <file.png> [copy.png]" renders once and optionally copies the PNG. */
+/** "--snapshot[-entry] <file.png> [copy.png]" renders once and optionally copies the PNG. */
 int main(int argc, char** argv)
 {
 #if JUCE_LINUX
     x11::defineWindowManagerAtoms();
 #endif
     const juce::ScopedJuceInitialiser_GUI gui;
-    if ((argc == 3 || argc == 4) && juce::String(argv[1]) == "--snapshot")
+    if ((argc == 3 || argc == 4) && juce::String(argv[1]).startsWith("--snapshot"))
     {
         const auto file = juce::File::getCurrentWorkingDirectory().getChildFile(juce::String(argv[2]));
-        const int result = writeSnapshot(file);
+        const int result = writeSnapshot(file, juce::String(argv[1]) == "--snapshot-entry");
         if (result == 0 && argc == 4)
         {
             const auto copy = juce::File::getCurrentWorkingDirectory().getChildFile(juce::String(argv[3]));

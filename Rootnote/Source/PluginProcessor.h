@@ -19,6 +19,8 @@ public:
         double sampleRate = 48000.0;
         double boostHz = 0.0;
         double cutHz = 0.0;
+        double boostNote = 36.0;    // the note each bank plays, knob or MIDI (key lock applied), without Fine or glide
+        double cutNote = 36.0;
         bool boostFromMidi = false; // the note comes from MIDI, not from the knob
         bool cutFromMidi = false;
         uint32_t midiNoteOns = 0;   // counts up; a change means MIDI activity

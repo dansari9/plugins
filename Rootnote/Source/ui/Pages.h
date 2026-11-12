@@ -16,6 +16,7 @@ struct Slot
     const char* label = "";
     Cap cap = Cap::orange;
     bool cents = false;       // the cents of the note parameter, not the parameter itself
+    bool readoutOnly = false; // shown and typed into on the display, but without an encoder
 };
 
 constexpr int kNumPages = 5;
@@ -23,6 +24,7 @@ constexpr int kNumEncoders = 8;
 using PageSlots = std::array<Slot, kNumEncoders>;
 
 const char* pageName(int page);
+/** The slots of a page; the encoders take the ones with a knob, in order. */
 const PageSlots& pageSlots(int page);
 juce::Colour capColour(Cap);
 
@@ -34,7 +36,11 @@ juce::String noteWithCents(double note);
 juce::String signedNumber(double value, int maxDecimals, int minDecimals = 0);
 juce::String number(double value, int maxDecimals, int minDecimals = 0);
 
-/** A parameter's value as the legend shows it: "+9.0", "65HZ", "50/50". */
+/**
+    A parameter's value as the legend shows it: "+9.0", "65HZ", "50/50"; "LINK"
+    for a Focus that follows the note, "ALL" for Bands of the octave series
+    (every octave sounds) and "N/A" for Blend outside the harmonic series.
+*/
 juce::String legendValue(const Slot&, juce::AudioProcessorValueTreeState&);
 
 /** Short scale names for the status line: "min", "maj", "pmin". */

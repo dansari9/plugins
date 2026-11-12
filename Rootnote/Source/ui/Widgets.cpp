@@ -109,49 +109,6 @@ Encoder::Encoder()
 {
     setRotaryParameters(juce::MathConstants<float>::pi * 1.25f, juce::MathConstants<float>::pi * 2.75f, true);
     setWantsKeyboardFocus(true);
-
-    // Over the name; only there while typing.
-    addChildComponent(entry);
-    entry.setBounds(2, 63, 76, 17);
-    entry.setFont(mono(11.0f));
-    entry.setJustification(juce::Justification::centred);
-    entry.setIndents(2, 1);
-    entry.setColour(juce::TextEditor::backgroundColourId, colours::key);
-    entry.setColour(juce::TextEditor::textColourId, colours::ink);
-    entry.setColour(juce::TextEditor::highlightColourId, colours::orange.withAlpha(0.3f));
-    entry.setColour(juce::TextEditor::outlineColourId, colours::orange);
-    entry.setColour(juce::TextEditor::focusedOutlineColourId, colours::orange);
-    entry.setColour(juce::CaretComponent::caretColourId, colours::ink);
-    entry.onReturnKey = [this] { commitEntry(); };
-    entry.onFocusLost = [this] { commitEntry(); };
-    entry.onEscapeKey = [this] {
-        entry.setVisible(false);
-        grabKeyboardFocus();
-    };
-}
-
-void Encoder::showValueEntry()
-{
-    entry.setText(getTextFromValue(getValue()), false);
-    entry.setVisible(true);
-    entry.selectAll();
-    entry.grabKeyboardFocus();
-}
-
-void Encoder::commitEntry()
-{
-    if (!entry.isVisible())
-        return;
-    const auto text = entry.getText().trim();
-    entry.setVisible(false); // first: hiding it loses the focus, which commits again
-    if (text.isNotEmpty())
-        setValue(getValueFromText(text), juce::sendNotificationSync);
-}
-
-void Encoder::cancelDrag()
-{
-    dragging = false;
-    entry.setVisible(false);
 }
 
 void Encoder::setCap(juce::Colour colour, const juce::String& newLabel)
@@ -227,10 +184,8 @@ bool Encoder::keyPressed(const juce::KeyPress& key)
     const double before = getValue();
     const double step = key.getModifiers().isShiftDown() ? 0.001 : 0.01;
     double value = proportionOfLengthToValue(juce::jlimit(0.0, 1.0, valueToProportionOfLength(before) + direction * step));
-    if (snapToInteger)
-        value = std::round(value);
     if (getNormalisableRange().snapToLegalValue(value) == before)
-        value = before + direction * (snapToInteger ? 1.0 : getInterval());
+        value = before + direction * getInterval();
     setValue(value, juce::sendNotificationSync);
     return true;
 }
@@ -243,10 +198,7 @@ void Encoder::mouseDrag(const juce::MouseEvent& e)
     const double pixels = static_cast<double>(lastY - e.position.y);
     lastY = e.position.y;
     dragProportion = juce::jlimit(0.0, 1.0, dragProportion + pixels / (e.mods.isShiftDown() ? 2000.0 : 200.0));
-    double value = proportionOfLengthToValue(dragProportion);
-    if (snapToInteger)
-        value = std::round(value);
-    setValue(value, juce::sendNotificationSync);
+    setValue(proportionOfLengthToValue(dragProportion), juce::sendNotificationSync);
 }
 
 EncoderBinding::EncoderBinding(juce::RangedAudioParameter& p, Encoder& e, bool centsOfNote)

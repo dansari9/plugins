@@ -11,11 +11,12 @@ multiple activity users, but only one consumer of the display/spectrum/peaks.
 
 | API | Meaning and threading |
 | --- | --- |
-| `displayState()` | Newest complete audio frame: sample rate, live boost/cut Hz, MIDI ownership and note-on counter, linear limiter gain, actual smoothed band Hz/gains. A triple buffer: audio swaps in each finished frame, the UI swaps out the newest, so it is never stale and never torn. Before audio arrives, or 250 ms after the host stopped processing, it is a preview computed from APVTS so knob moves still show. |
+| `displayState()` | Newest complete audio frame: sample rate, live boost/cut Hz, the note each bank plays (knob or MIDI, key lock applied, before Fine and glide), MIDI ownership and note-on counter, linear limiter gain, actual smoothed band Hz/gains. A triple buffer: audio swaps in each finished frame, the UI swaps out the newest, so it is never stale and never torn. Before audio arrives, or 250 ms after the host stopped processing, it is a preview computed from APVTS so knob moves still show. |
 | `tunerReading()` | Input pitch, hit counts, clarity and glide. Worker/UI share one short mutex; the audio producer never takes it. Invalid readings disable Match/Tune. |
 | `readSpectrumSamples(dest, count)` | Bounded SPSC FIFO of mono output samples at the display sample rate. One reader. FFT and windowing belong to the editor. A full FIFO drops an entire incoming block. |
 | `takeOutputPeak(channel)` | Atomic peak since the last read, linear amplitude, channel 0 or 1. UI applies meter decay. |
 | `setKnobNote(bank, note)` | Sets the boost or cut note as a gesture and takes that bank back from a held MIDI note, even if the value is unchanged (an atomic request the next audio block consumes). Use it for every explicit note choice. |
+| `parseValue(id, text, a4)` (Parameters.h) | Typed text in a parameter's units, or nothing for text that is no value. The parameters' host text conversion uses it too. |
 | `matchCutToHit()` / `tuneBoostToKey()` | Apply the detected pitch via host-notified APVTS gestures and `setKnobNote()`. Match also enables Cut; Tune snaps to the selected scale and clears Fine. |
 | `loadPreset()`, `selectAbSlot()` | Message-thread operations; all sound values go through APVTS. Host state restoration invalidates A/B using an atomic request consumed on the message thread. |
 | `currentPreset()`, `storedEditorSize()` / `storeEditorSize()` | Atomics, never `apvts.state`: a host may replace that tree on another thread. They are added to the saved state and read back from it. |

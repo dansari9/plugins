@@ -16,7 +16,7 @@ const PageSlots kPages[kNumPages] = {
         { ids::tilt, "Tilt", Cap::white }, { ids::boostFine, "Fine", Cap::white } } },
     { { { ids::cutDepth, "Depth", Cap::orange }, { ids::cutQ, "Q", Cap::orange },
         { ids::cutOvertones, "Overtones", Cap::blue }, { ids::cutBands, "Bands", Cap::blue },
-        { ids::cutNote, "Note", Cap::grey }, { ids::cutNote, "Fine", Cap::grey, true },
+        { ids::cutNote, "Note", Cap::grey, false, true }, { ids::cutNote, "Fine", Cap::grey, true },
         { ids::cutOn, "Cut", Cap::white }, {} } },
     { { { ids::ring, "Amount", Cap::orange }, { ids::ringDecay, "Decay", Cap::orange },
         { ids::ringDrop, "Drop", Cap::blue }, {}, {}, {}, {}, {} } },
@@ -111,7 +111,11 @@ juce::String legendValue(const Slot& slot, juce::AudioProcessorValueTreeState& a
         return signedNumber((v - std::round(v)) * 100.0, 0) + "CT";
     if (is(id, ids::boostGain)) return signedNumber(v, 1, 1);
     if (is(id, ids::boostQ) || is(id, ids::cutQ)) return number(v, v < 10.0 ? 1 : 0);
-    if (is(id, ids::bands) || is(id, ids::cutBands)) return juce::String(juce::roundToInt(v));
+    const auto series = static_cast<SeriesType>(juce::roundToInt(apvts.getRawParameterValue(ids::series)->load()));
+    if (is(id, ids::bands) || is(id, ids::cutBands))
+        return series == SeriesType::octaves ? juce::String("ALL") : juce::String(juce::roundToInt(v));
+    if (is(id, ids::focus) && apvts.getRawParameterValue(ids::focusLink)->load() >= 0.5f) return "LINK";
+    if (is(id, ids::blend) && series != SeriesType::harmonic) return "N/A";
     if (is(id, ids::focus)) return v < 1000.0 ? number(v, 0) + "HZ" : number(v / 1000.0, 2) + "KHZ";
     if (is(id, ids::range)) return number(v, 2, 1) + "OCT";
     if (is(id, ids::blend))

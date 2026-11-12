@@ -7,6 +7,7 @@ using namespace rootnote::ui;
 
 namespace
 {
+constexpr int kBlinkFrames = 24; // three blinks at 30 frames a second
 const juce::String kDot = juce::String::fromUTF8(" \xc2\xb7 ");
 const juce::String kArrow = juce::String::fromUTF8(" \xe2\x86\x92 ");
 
@@ -49,7 +50,6 @@ RootnoteEditor::RootnoteEditor(RootnoteProcessor& p)
     place(settings, 856, 9, 26, 26);
     place(power, 910, 9, 26, 26);
     place(screen, 24, 52, 560, 252);
-    screen.onValueClick = [this](int encoder) { encoders[encoder].showValueEntry(); };
 
     // Pitch keys: click sets the boost note, Alt-click the cut note.
     for (int pc = 0; pc < 12; ++pc)
@@ -71,13 +71,26 @@ RootnoteEditor::RootnoteEditor(RootnoteProcessor& p)
     }
 
     // Function keys.
-    octaveDown.onPress = [this](const juce::ModifierKeys&) { octave = juce::jmax(0, octave - 1); plate.repaint(kOctaveArea); };
-    octaveUp.onPress = [this](const juce::ModifierKeys&) { octave = juce::jmin(7, octave + 1); plate.repaint(kOctaveArea); };
-    matchCut.onPress = [this](const juce::ModifierKeys&) { processor.matchCutToHit(); };
-    tuneToKey.onPress = [this](const juce::ModifierKeys&) { processor.tuneBoostToKey(); };
+    // Octave keys move the boost note (Alt: the cut note) by an octave, as Alt-click on a pitch key sets the cut.
+    octaveDown.onPress = [this](const juce::ModifierKeys& mods) { shiftOctave(mods.isAltDown() ? NoteControl::cut : NoteControl::boost, -12); };
+    octaveUp.onPress = [this](const juce::ModifierKeys& mods) { shiftOctave(mods.isAltDown() ? NoteControl::cut : NoteControl::boost, 12); };
+    // Match cut toggles the cut: off when it is on, otherwise on at the detected hit. Without a hit it blinks.
+    matchCut.onPress = [this](const juce::ModifierKeys&) {
+        if (parameter(ids::cutOn) >= 0.5)
+            setParameter(ids::cutOn, 0.0);
+        else if (!processor.matchCutToHit())
+            matchBlink = kBlinkFrames;
+    };
+    tuneToKey.onPress = [this](const juce::ModifierKeys&) {
+        if (!processor.tuneBoostToKey())
+            tuneBlink = kBlinkFrames;
+    };
     keyLock.onPress = [this](const juce::ModifierKeys&) { toggleParameter(ids::keyLock); };
-    matchCut.setTooltip("Put the cut on the detected hit");
-    tuneToKey.setTooltip("Move the boost to the scale note nearest the hit");
+    octaveDown.setTooltip("Boost note an octave down (Alt: the cut note)");
+    octaveUp.setTooltip("Boost note an octave up (Alt: the cut note)");
+    matchCut.setTooltip("Cut on at the detected hit, or off. Blinks if no hit has been detected yet");
+    tuneToKey.setTooltip("Move the boost to the scale note nearest the hit. Blinks if no hit has been detected yet");
+    keyLock.setTooltip("MIDI notes snap to the key and scale");
     place(octaveDown, 24, 386, 62, 34);
     place(octaveUp, 90, 386, 62, 34);
     place(matchCut, 204, 386, 120, 34);
@@ -118,7 +131,6 @@ RootnoteEditor::RootnoteEditor(RootnoteProcessor& p)
     place(link, 810, 390, 62, 30);
     place(limit, 876, 390, 60, 30);
 
-    octave = juce::jlimit(0, 7, juce::roundToInt(parameter(ids::boostNote)) / 12 - 1);
     bindEncoders();
 
     const auto stored = processor.storedEditorSize(); // read first: setting the limits already resizes
@@ -199,6 +211,12 @@ void RootnoteEditor::pageKeyChanged(int index)
         // Comes before the click of the same release.
         peekKey = -1;
         peeked = juce::Time::getMillisecondCounter() - peekStartMs >= kPagePeekMs;
+        // The click of a release over the key comes in this same mouse-up; released elsewhere
+        // there is none, and the flag must not swallow the next click.
+        juce::MessageManager::callAsync([safe = juce::Component::SafePointer<RootnoteEditor>(this)] {
+            if (safe != nullptr)
+                safe->peeked = false;
+        });
         screen.setPage(page);
     }
 }
@@ -209,19 +227,43 @@ void RootnoteEditor::bindEncoders()
     for (auto& binding : bindings)
         binding.reset();
 
+    // The encoders take the page's slots that have a knob, in order.
     const auto& slots = pageSlots(page);
+    int next = 0;
     for (int i = 0; i < kNumEncoders; ++i)
     {
-        const Slot& slot = slots[static_cast<size_t>(i)];
         Encoder& encoder = encoders[i];
-        encoder.setVisible(slot.id != nullptr);
-        if (slot.id == nullptr)
+        while (next < kNumEncoders && (slots[static_cast<size_t>(next)].id == nullptr || slots[static_cast<size_t>(next)].readoutOnly))
+            ++next;
+        encoder.setVisible(next < kNumEncoders);
+        encoder.onValueEntry = nullptr;
+        if (next == kNumEncoders)
             continue;
 
+        const Slot& slot = slots[static_cast<size_t>(next)];
+        encoderSlot[i] = next++;
         encoder.setCap(capColour(slot.cap), slot.label);
-        encoder.snapToInteger = !slot.cents && std::strcmp(slot.id, ids::cutNote) == 0;
         bindings[i] = std::make_unique<EncoderBinding>(*apvts.getParameter(slot.id), encoder, slot.cents);
+        encoder.onValueEntry = [this, i] { screen.showEntry(encoderSlot[i]); };
+        if (std::strcmp(slot.id, ids::focus) == 0)
+        {
+            // Focus does nothing while it follows the note: turning it takes over from the link.
+            encoder.onValueChange = [this, bound = encoder.onValueChange] {
+                if (parameter(ids::focusLink) >= 0.5)
+                    setParameter(ids::focusLink, 0.0);
+                bound();
+            };
+        }
     }
+}
+
+void RootnoteEditor::shiftOctave(NoteControl::Target bank, int semitones)
+{
+    // From the note that sounds: a held MIDI note, or else the knob. The press takes the bank back from MIDI.
+    Played& p = played[bank];
+    const double from = p.midi ? p.note : parameter(bank == NoteControl::boost ? ids::boostNote : ids::cutNote);
+    p.midi = false;
+    processor.setKnobNote(bank, juce::jlimit(kMinNote, kMaxNote, from + semitones));
 }
 
 void RootnoteEditor::showMenu(juce::PopupMenu menu, juce::Component& target, std::function<void(int)> onChosen)
@@ -284,12 +326,20 @@ void RootnoteEditor::refresh()
     meterDb = juce::jmax(juce::Decibels::gainToDecibels(peak, -100.0f), meterDb - 1.5f);
 
     // Keys follow the parameters, whoever changed them (host, preset, MIDI).
-    const double a4 = parameter(ids::a4);
+    played[NoteControl::boost] = { state.boostNote, state.boostFromMidi };
+    played[NoteControl::cut] = { state.cutNote, state.cutFromMidi };
+    const int boostNote = juce::roundToInt(state.boostNote);
+    const int newOctave = juce::jlimit(0, 7, boostNote / 12 - 1);
+    if (newOctave != octave)
+    {
+        octave = newOctave;
+        plate.repaint(kOctaveArea);
+    }
     const int key = juce::roundToInt(parameter(ids::key));
     const auto scale = static_cast<Scale>(juce::roundToInt(parameter(ids::scale)));
-    const int boostPc = (juce::roundToInt(hzToNote(state.boostHz, a4)) % 12 + 12) % 12;
+    const int boostPc = boostNote % 12;
     const bool cutOn = parameter(ids::cutOn) >= 0.5;
-    const int cutPc = cutOn ? (juce::roundToInt(hzToNote(state.cutHz, a4)) % 12 + 12) % 12 : -1;
+    const int cutPc = cutOn ? juce::roundToInt(state.cutNote) % 12 : -1;
     for (int pc = 0; pc < 12; ++pc)
     {
         Key& k = *pitchKeys[pc];
@@ -301,7 +351,13 @@ void RootnoteEditor::refresh()
     }
 
     const auto led = [](bool on) { return on ? Key::Led::on : Key::Led::off; };
-    matchCut.setLed(led(hit.valid));
+    const auto blink = [](int& frames, Key::Led steady) {
+        if (frames == 0)
+            return steady;
+        return --frames / 4 % 2 == 0 ? Key::Led::off : Key::Led::on;
+    };
+    matchCut.setLed(blink(matchBlink, led(cutOn)));
+    tuneToKey.setLed(blink(tuneBlink, Key::Led::none));
     keyLock.setLed(led(parameter(ids::keyLock) >= 0.5));
     link.setLed(led(parameter(ids::focusLink) >= 0.5));
     limit.setLed(led(parameter(ids::limiter) >= 0.5));

@@ -22,6 +22,7 @@ public:
 
     void setLook(Look);
     void setLed(Led);
+    Led getLed() const { return led; }
     void setUnderline(std::optional<juce::Colour>);
     void setText(const juce::String&);
 
@@ -44,9 +45,9 @@ private:
     An encoder: a light ring, a coloured cap and a dot, with its name below.
     Drag up/down; Shift drags ten times finer; double-click resets. With the
     keyboard focus the arrow keys step it (Shift finer). Alt-, Cmd- or
-    right-click, or Return, opens a small text field over its name for a
-    typed value, read by the slider's valueFromTextFunction. An
-    EncoderBinding connects it to a parameter.
+    right-click, or Return, asks for typed entry (onValueEntry: the editor
+    opens the value's field on the display). An EncoderBinding connects it
+    to a parameter.
 */
 class Encoder : public juce::Slider
 {
@@ -55,15 +56,12 @@ public:
 
     void setCap(juce::Colour, const juce::String& label);
 
-    /** Whole semitones while dragging (the cut note; Fine sets the cents). */
-    bool snapToInteger = false;
+    /** Typed entry was asked for. */
+    std::function<void()> onValueEntry;
+    void showValueEntry() { if (onValueEntry) onValueEntry(); }
 
-    /** Opens the text field with the current value selected. */
-    void showValueEntry();
-    bool isShowingValueEntry() const { return entry.isVisible(); }
-
-    /** The rest of the current drag, and an open text field, are ignored. */
-    void cancelDrag();
+    /** The rest of the current drag is ignored. */
+    void cancelDrag() { dragging = false; }
 
     void paint(juce::Graphics&) override;
     void mouseDown(const juce::MouseEvent&) override;
@@ -71,11 +69,8 @@ public:
     bool keyPressed(const juce::KeyPress&) override;
 
 private:
-    void commitEntry();
-
     juce::Colour cap;
     juce::String label;
-    juce::TextEditor entry;
     bool dragging = false;
     double dragProportion = 0.0;
     float lastY = 0.0f;

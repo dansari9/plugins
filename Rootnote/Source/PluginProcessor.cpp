@@ -137,6 +137,8 @@ void RootnoteProcessor::publishDisplay(const juce::AudioBuffer<float>& buffer, i
     frame.sampleRate = displaySampleRate.load(std::memory_order_relaxed);
     frame.boostHz = engine.boostHz();
     frame.cutHz = engine.cutHz();
+    frame.boostNote = engine.boostTargetNote();
+    frame.cutNote = engine.cutTargetNote();
     frame.boostFromMidi = engine.boostFollowsMidi();
     frame.cutFromMidi = engine.cutFollowsMidi();
     frame.midiNoteOns = engine.midiNoteOnCount();
@@ -236,6 +238,8 @@ RootnoteProcessor::DisplayState RootnoteProcessor::displayState() noexcept
     state.sampleRate = displaySampleRate.load(std::memory_order_relaxed);
     state.boostHz = noteToHz(p.boostNote + p.boostFineCents / 100.0, p.a4);
     state.cutHz = noteToHz(p.cutNote, p.a4);
+    state.boostNote = p.boostNote;
+    state.cutNote = p.cutNote;
     state.numBoostBands = Engine::boostBands(p, state.boostHz, state.sampleRate, state.boostBands);
     state.numCutBands = Engine::cutBands(p, state.cutHz, state.sampleRate, state.cutBands);
     return state;
