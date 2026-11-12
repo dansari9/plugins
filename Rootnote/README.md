@@ -132,6 +132,17 @@ mv ~/Library/Caches/AudioUnitCache/*.cache ~/Desktop/Rootnote-AU-cache-backup/
 Restart macOS and reopen Logic to rebuild the cache. This rescans all installed
 AUs, as described in [Apple's troubleshooting guide](https://support.apple.com/en-ca/122179).
 
+## Headless editor snapshot
+
+Render a demo kick, detected Cut and MIDI-controlled Boost at the default
+560 × 760 size (1× PNG). The optional second path receives an identical copy:
+
+```sh
+xvfb-run -a Rootnote/build/RootnotePluginTests --snapshot Rootnote/artifacts/rootnote_editor.png /workspace/rootnote-logs/editor.png
+```
+
+The checked-in image is [artifacts/rootnote_editor.png](artifacts/rootnote_editor.png).
+
 ## Validation scope
 
 Linux core/plugin tests and VST3 pluginval are automated. The tests include

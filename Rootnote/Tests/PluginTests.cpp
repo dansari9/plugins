@@ -595,7 +595,7 @@ TEST_CASE("Plugin: Match cut and Tune to key act on the detected hit")
     processor.setDisplayActive(false);
 }
 
-TEST_CASE("Plugin: the editor opens, shows the tuner, resizes and closes without a display")
+TEST_CASE("Plugin: the editor opens, shows the tuner, resizes and closes headlessly")
 {
     RootnoteProcessor processor;
     prepare(processor);
@@ -611,9 +611,14 @@ TEST_CASE("Plugin: the editor opens, shows the tuner, resizes and closes without
         playKicks(processor, 55.0, 48000.0);
         CHECK(waitForReading(processor, 1));
 
-        editor->setSize(700, 500);
-        const juce::Image snapshot = editor->createComponentSnapshot(editor->getLocalBounds());
-        CHECK(snapshot.getWidth() == 700);
+        for (const auto size : { juce::Point<int>(480, 420),
+                                 juce::Point<int>(RootnoteEditor::kDefaultWidth, RootnoteEditor::kDefaultHeight),
+                                 juce::Point<int>(1400, 1600), juce::Point<int>(700, 500) })
+        {
+            editor->setSize(size.x, size.y);
+            const juce::Image snapshot = editor->createComponentSnapshot(editor->getLocalBounds());
+            CHECK(snapshot.getWidth() == size.x && snapshot.getHeight() == size.y);
+        }
     }
     CHECK(processor.storedEditorSize() == juce::Point<int>(700, 500));
 
@@ -865,10 +870,11 @@ int writeSnapshot(const juce::File& file)
     auto* rootnoteEditor = dynamic_cast<RootnoteEditor*>(editor.get());
     if (rootnoteEditor == nullptr)
         return 1;
+    editor->setSize(RootnoteEditor::kDefaultWidth, RootnoteEditor::kDefaultHeight);
 
     playKicks(processor, noteToHz(26.0 - 0.12), 48000.0);
-    waitForReading(processor, 3);
-    processor.matchCutToHit();
+    if (!waitForReading(processor, 3) || !processor.matchCutToHit())
+        return 1;
 
     // One more hit with a MIDI note, drawn frame by frame as a host would.
     Random random(7);
@@ -889,21 +895,36 @@ int writeSnapshot(const juce::File& file)
             rootnoteEditor->refresh();
     }
 
-    const juce::Image image = editor->createComponentSnapshot(editor->getLocalBounds(), true, 2.0f);
+    rootnoteEditor->refresh();
+    const juce::Image image = editor->createComponentSnapshot(editor->getLocalBounds());
     file.getParentDirectory().createDirectory();
     file.deleteFile();
     juce::FileOutputStream stream(file);
     if (!stream.openedOk() || !juce::PNGImageFormat().writeImageToStream(image, stream))
         return 1;
+    stream.flush();
+    if (stream.getStatus().failed())
+        return 1;
     std::printf("wrote %s (%d x %d)\n", file.getFullPathName().toRawUTF8(), image.getWidth(), image.getHeight());
     return 0;
 }
 
-/** "--snapshot <file.png>" renders the editor instead of running the tests. */
+/** "--snapshot <file.png> [copy.png]" renders once and optionally copies the PNG. */
 int main(int argc, char** argv)
 {
     const juce::ScopedJuceInitialiser_GUI gui;
-    if (argc == 3 && juce::String(argv[1]) == "--snapshot")
-        return writeSnapshot(juce::File::getCurrentWorkingDirectory().getChildFile(juce::String(argv[2])));
+    if ((argc == 3 || argc == 4) && juce::String(argv[1]) == "--snapshot")
+    {
+        const auto file = juce::File::getCurrentWorkingDirectory().getChildFile(juce::String(argv[2]));
+        const int result = writeSnapshot(file);
+        if (result == 0 && argc == 4)
+        {
+            const auto copy = juce::File::getCurrentWorkingDirectory().getChildFile(juce::String(argv[3]));
+            if (copy.getParentDirectory().createDirectory().failed() || !file.copyFileTo(copy))
+                return 1;
+            std::printf("copied to %s\n", copy.getFullPathName().toRawUTF8());
+        }
+        return result;
+    }
     return testing::runAll(argc, argv);
 }
