@@ -218,13 +218,15 @@ static void testState()
     // Valid flat XML supports paired children, both quote styles and decoded user identities.
     load(v1, blob("<CRUMB preset='-1' presetName='Upper &amp; &#xC9;tude'><PARAM id='bits' value='7'></PARAM></CRUMB>"));
     CHECK(get(v1, "bits") == 7 && get(v1, "preamp") == 0 && v1.presetName() == juce::String::fromUTF8("Upper & \xc3\x89tude"));
+    load(v1, blob("<CRUMB><EXTRA id='bits'/><PARAM id='bits' value='7'/></CRUMB>")); // an unknown entry hides nothing
+    CHECK(get(v1, "bits") == 7);
     // Hostile or incomplete blobs (deep nesting, DTD entities, truncated references, foreign roots) leave the state alone.
     load(v1, fixture);
     load(v1, blob("<CRUMB>" + juce::String::repeatedString("<a>", 1000000)));
     load(v1, blob(R"(<!DOCTYPE CRUMB [<!ENTITY a "&a;&a;">]><CRUMB><PARAM id="preamp" value="&a;"/></CRUMB>)"));
     const auto text = [](const juce::MemoryBlock& m) { return std::string_view(static_cast<const char*>(m.getData()) + 8, m.getSize() - 8); };
     CHECK(crumb::isFlatCrumbXml(text(fixture)) && !crumb::isFlatCrumbXml(text(blob("<CRUMB>" + juce::String::repeatedString("<a>", 3)))));
-    for (auto* bad : { "<CRUMB>&#x", "<CRUMB>&#", "<CRUMB a='&#x110000;'/>", "<CRUMB a='&#0;'/>", "<CRUMB a='&#12345678;'/>", "<CRUMB><PARAM id=\"bits\" value=\"&#x", "</CRUMB>", "<CRUMB><a></CRUMB>",
+    for (auto* bad : { "<CRUMB>&#x", "<CRUMB>&#", "<CRUMB a='&#x110000;'/>", "<CRUMB a='&#0;'/>", "<CRUMB a='&#12345678;'/>", "<CRUMB a='&;'/>", "<CRUMB><PARAM id='bits' value='&;'/></CRUMB>", "<CRUMB><PARAM id=\"bits\" value=\"&#x", "</CRUMB>", "<CRUMB><a></CRUMB>",
                        R"(<SNAP><PARAM id="bits" value="3"/></SNAP>)",
                        R"(<CRUMB><PARAM id="bits" value="3"/></BROKEN>)", R"(<CRUMB><PARAM id="bits" value="3'/></CRUMB>)",
                        R"(<CRUMB><PARAM id="bits" value="&#x"/></CRUMB>)", R"(<CRUMB><PARAM id="bits" value="&bad;"/></CRUMB>)",
@@ -280,7 +282,7 @@ static void testNull()
 
 // Power spectrum (dB re the 0.4 amplitude input sine) of channel 0 with a Blackman-Harris window, after the filters settle.
 // Reference instead of the plug-in: 1 = a plain sample & hold at rate s[0], 2 = the plain clip at preamp s[0].
-static std::vector<double> spectrum(const Settings& s, double freq, double fs = 44100, int reference = 0)
+static std::vector<double> spectrum(const Settings& s, double freq, double fs = 44100, int reference = 0, double amp = 0.4, int block = 512)
 {
     constexpr int size = 1 << 15, skip = 8192;
     const double f0 = std::round(freq * size / fs) * fs / size, w = 2 * juce::MathConstants<double>::pi * f0 / fs;
@@ -288,18 +290,18 @@ static std::vector<double> spectrum(const Settings& s, double freq, double fs = 
     if (reference == 2)
         for (int i = 0; i < size + skip; ++i)
         {
-            const double x = 0.4 * std::sin(w * i) * std::pow(10.0, s[0].second / 20), a = std::abs(x);
+            const double x = amp * std::sin(w * i) * std::pow(10.0, s[0].second / 20), a = std::abs(x);
             y.push_back((float) (a <= 0.5 ? x : std::copysign(0.5 + 0.5 * std::tanh((a - 0.5) / 0.5), x)));
         }
     else if (reference == 1)
         for (int i = 0; i < size + skip; ++i)
-            y.push_back((float) (0.4 * std::sin(w * std::floor(i * s[0].second / fs) * fs / s[0].second)));
+            y.push_back((float) (amp * std::sin(w * std::floor(i * s[0].second / fs) * fs / s[0].second)));
     else
     {
         Proc p;
         set(p, s);
-        prepare(p, fs, 512, 2);
-        y = run(p, 512, 2, size + skip, [w](int i) { return (float) (0.4 * std::sin(w * i)); });
+        prepare(p, fs, block, 2);
+        y = run(p, block, 2, size + skip, [w, amp](int i) { return (float) (amp * std::sin(w * i)); });
     }
     std::vector<std::complex<double>> x(size);
     for (int i = 0; i < size; ++i)
@@ -309,7 +311,7 @@ static std::vector<double> spectrum(const Settings& s, double freq, double fs = 
     }
     crumb::fft(x, false);
     std::vector<double> db(size / 2);
-    const double top = std::pow(0.4 * 0.35875 * size / 2, 2);
+    const double top = std::pow(amp * 0.35875 * size / 2, 2);
     for (int k = 0; k < size / 2; ++k)
         db[(size_t) k] = 10 * std::log10(std::norm(x[(size_t) k]) / top + 1e-30);
     return db;
@@ -390,6 +392,19 @@ static void testConverterPath()
         const double adaa = spur(spectrum(drive, hz), harmonics), naive = spur(spectrum(drive, hz, fs, 2), harmonics);
         std::cout << "preamp " << preamp << " dB, " << hz << " Hz: worst alias ADAA " << adaa << " dB, plain clip " << naive << " dB\n";
         CHECK(adaa < naive - 6);
+    }
+    // Preamp 0, a sine just over the knee: the clip stays engaged across knee crossings at every block size (no
+    // block-peak decision modulating between the clip paths). Plain clip reference about -83 dB.
+    std::vector<double> odd;
+    for (double h = std::round(13000 * n / fs) * fs / n, k = 1; h * k < fs / 2; k += 2)
+        odd.push_back(h * k);
+    const Settings knee { { "preamp", 0 }, { "rate", 44100 }, { "bits", 0 }, { "approxOn", 0 } };
+    const double plain = spur(spectrum(knee, 13000, fs, 2, 0.55), odd);
+    for (int block : { 1, 2, 4, 16, 512 })
+    {
+        const double adaa = spur(spectrum(knee, 13000, fs, 0, 0.55, block), odd);
+        std::cout << "preamp 0, peak 0.55, 13 kHz, block " << block << ": worst alias " << adaa << " dB, plain clip " << plain << " dB\n";
+        CHECK(adaa < plain - 6);
     }
     // The DAC ladder errors: 4-bit codes +2 and -2 sit 0.3 and 0.5 LSB (of 1/8) off the ideal levels 0.25 and -0.25.
     for (float v : { 0.3f, -0.3f })

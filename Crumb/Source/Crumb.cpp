@@ -284,6 +284,7 @@ struct CrumbProcessor::Dsp
     std::array<SmoothedValue<double>, numSmoothed> smooth;
     std::array<Channel, 2> ch;
     double fs = 48000, clipOn = 0;
+    int hot = 0; // samples left in the clip's engage hold: the ADAA path stays on across recurring knee crossings
 
     void reset()
     {
@@ -353,11 +354,9 @@ void CrumbProcessor::processBlock(AudioBuffer<float>& buffer, MidiBuffer&)
     for (int c = channels; c < buffer.getNumChannels(); ++c)
         buffer.clear(c, 0, n);
     auto& d = *dsp;
-    float level = 0;
-    for (int c = 0; c < channels; ++c) level = jmax(level, buffer.getMagnitude(c, 0, n));
-    d.clipOn = d.raw[Preamp]->load() > 0 || !(level <= knee) ? 1 : 0; // NaN input counts as loud
+    const bool driven = d.raw[Preamp]->load() > 0;
     if (resetPending.exchange(false, std::memory_order_acquire))
-        d.reset();
+        d.hot = 0, d.clipOn = driven ? 1 : 0, d.reset();
     d.targets(false);
     Frame f;
     f.bits = (int) d.raw[Bits]->load(), f.tread = d.raw[DcShift]->load() > 0.5f;
@@ -367,6 +366,13 @@ void CrumbProcessor::processBlock(AudioBuffer<float>& buffer, MidiBuffer&)
     float peak[2] {};
     for (int i = 0; i < n && channels > 0; ++i)
     {
+        // Clip engagement, per sample (independent of the host's block size): preamp up, or the input passed the knee
+        // within the last 250 ms (NaN counts as loud). SClip crossfades over 20 ms when that changes.
+        bool loud = false;
+        for (int c = 0; c < channels; ++c) loud = loud || !(std::abs(x[c][i]) <= knee);
+        d.hot = loud ? (int) (0.25 * d.fs) : jmax(0, d.hot - 1);
+        d.clipOn = driven || d.hot > 0 ? 1 : 0;
+        d.smooth[SClip].setTargetValue(d.clipOn);
         d.next(f);
         const double on = 1 - f.v[SBypass], mix = f.v[SMix] * on, gain = 1 + on * (f.v[SOut] - 1);
         float in = 0, out = 0;
@@ -484,9 +490,10 @@ bool crumb::isFlatCrumbXml(std::string_view xml)
                     const auto ref = xml.substr(pos, end - pos);
                     if (ref != "amp" && ref != "lt" && ref != "gt" && ref != "quot" && ref != "apos")
                     {
+                        if (ref.empty() || ref[0] != '#') return false; // before substr: "&;" has nothing to skip
                         const bool hex = ref.size() > 1 && ref[1] == 'x';
                         const auto digits = ref.substr(hex ? 2 : 1);
-                        if (ref.empty() || ref[0] != '#' || digits.empty() || digits.size() > 7
+                        if (digits.empty() || digits.size() > 7
                             || digits.find_first_not_of(hex ? "0123456789abcdefABCDEF" : "0123456789") != std::string_view::npos)
                             return false;
                         const auto code = std::stoul(std::string(digits), nullptr, hex ? 16 : 10);
@@ -518,8 +525,11 @@ void CrumbProcessor::applyParams(const XmlElement& state, int count)
     for (int i = 0; i < count; ++i)
     {
         auto* p = apvts.getParameter(ids[i]);
-        const auto* c = state.getChildByAttribute("id", ids[i]);
-        const auto v = number(c != nullptr && c->hasTagName("PARAM") ? c->getStringAttribute("value") : String());
+        const XmlElement* c = nullptr; // the first PARAM with this id; other tags are unknown entries, ignored
+        for (auto* e : state.getChildWithTagNameIterator("PARAM"))
+            if (c == nullptr && e->getStringAttribute("id") == ids[i])
+                c = e;
+        const auto v = number(c != nullptr ? c->getStringAttribute("value") : String());
         p->setValueNotifyingHost(v ? p->convertTo0to1(p->getNormalisableRange().snapToLegalValue((float) *v)) : p->getDefaultValue());
     }
 }
