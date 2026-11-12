@@ -139,7 +139,7 @@ void SnapProcessor::setStateInformation(const void* data, int size)
 namespace
 {
 const Colour face { 0xffd9d8d2 }, ink { 0xff1a1a18 }, sub { 0xff6e6d68 }, screen { 0xff0f100f }, key { 0xffecebe6 },
-    orange { 0xffff5a1f }, blue { 0xff2f6bff }, grey { 0xff9a9993 }, white { 0xfff6f5f0 }, dim { 0xff7a7a74 }, rule { 0xff262624 };
+    orange { 0xffff5a1f }, blue { 0xff2f6bff }, grey { 0xff9a9993 }, white { 0xfff6f5f0 }, dim { 0xff7a7a74 };
 
 struct Look : LookAndFeel_V4
 {
@@ -197,13 +197,13 @@ struct Editor : AudioProcessorEditor, Timer
     {
         g.fillAll(face);
         text(g, "SNAP", 24, ink, { 20, 14, 80, 28 });
-        text(g, String(CharPointer_UTF8("transient shaper \xc2\xb7 dripworks")), 11, sub, { 96, 21, 300, 16 });
+        text(g, String(CharPointer_UTF8("transient shaper \xc2\xb7 daveydidit")), 11, sub, { 96, 21, 300, 16 });
         text(g, "v" JucePlugin_VersionString, 11, sub, { 400, 21, 104, 16 }, Justification::right);
         for (int i = 0; i < 4; ++i)
             text(g, names[i], 10, sub, knobs[i].getBounds().toFloat().withY(368).withHeight(14), Justification::centred);
 
         g.setColour(screen), g.fillRoundedRectangle(display, 10);
-        const auto graph = display.reduced(16, 14).withTrimmedTop(16).withTrimmedBottom(62);
+        const auto graph = display.reduced(16, 14).withTrimmedTop(16);
         const float mid = graph.getCentreY(), half = graph.getHeight() * 0.5f;
         text(g, "IN", 10, dim, display.reduced(16, 10).withHeight(14));
         text(g, "OUT", 10, orange, display.reduced(16, 10).withHeight(14).withTrimmedLeft(30));
@@ -232,14 +232,6 @@ struct Editor : AudioProcessorEditor, Timer
         g.setColour(white.withAlpha(0.35f)), g.drawHorizontalLine((int) mid, graph.getX(), graph.getRight());
         g.setColour(blue.brighter(0.5f)), g.strokePath(gain, PathStrokeType(1.5f));
 
-        g.setColour(rule), g.drawHorizontalLine((int) display.getBottom() - 62, display.getX() + 16, display.getRight() - 16);
-        for (int i = 0; i < 4; ++i)
-        {
-            const float x = display.getX() + 18 + (float) i * 118, y = display.getBottom() - 52;
-            g.setColour(knobs[i].findColour(Slider::thumbColourId)), g.fillEllipse(x, y + 4, 6, 6);
-            text(g, names[i], 10, dim, { x + 12, y, 100, 14 });
-            text(g, knobs[i].getTextFromValue(knobs[i].getValue()), 22, white, { x, y + 16, 116, 28 });
-        }
     }
 };
 } // namespace
