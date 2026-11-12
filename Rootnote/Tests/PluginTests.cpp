@@ -1890,12 +1890,32 @@ TEST_CASE("Plugin: typed values in natural formats, for the display and the host
         for (const char* text : { "abc", "", "5 parsecs", "1.2.3", "h1" })
             CHECK(!parseValue(id, text, 440.0).has_value());
 
+    // Blend: one share, or two that make 100; anything else is no value.
+    CHECK(reads(ids::blend, "30 / 70%", 0.7f) && reads(ids::blend, "0/100", 1.0f));
+    for (const char* text : { "garbage/70", "1.2.3/70", "30/20/70", "30/60", "/70", "70/", "-20/120" })
+        CHECK_MSG(!parseValue(ids::blend, text, 440.0).has_value(), text);
+    // Beyond a float is no value, not infinity.
+    CHECK(!parseValue(ids::mix, juce::String::repeatedString("9", 400), 440.0).has_value());
+
     // The host's text entry reads the same; text that is no value gives the default.
     CHECK_NEAR(parsed(processor, ids::cutDepth, "-3.1db"), -3.1, 1.0e-3);
     CHECK_NEAR(parsed(processor, ids::scale, "min"), 2.0, 1.0e-6);
     CHECK_NEAR(parsed(processor, ids::cutOn, "on"), 1.0, 1.0e-6);
     CHECK_NEAR(parsed(processor, ids::cutBands, "6 bands"), 6.0, 1.0e-6);
     CHECK_NEAR(parsed(processor, ids::cutDepth, "garbage"), -12.0, 1.0e-3);
+    CHECK_NEAR(parsed(processor, ids::blend, "garbage/70"), 0.5, 1.0e-6);
+
+    // Integers beyond their range clamp, the same for the host as for the display, at any size.
+    for (const char* text : { "33", "2147483648", "99999999999999999999", "1e30" })
+    {
+        const auto typed = parseValue(ids::bands, text, 440.0);
+        const float display = typed ? processor.getApvts().getParameter(ids::bands)->convertFrom0to1(
+                                          processor.getApvts().getParameter(ids::bands)->convertTo0to1(*typed))
+                                    : 8.0f;
+        CHECK_MSG(parsed(processor, ids::bands, text) == display, text);
+    }
+    CHECK(parsed(processor, ids::bands, "2147483648") == 32.0f && parsed(processor, ids::bands, "-2147483649") == 1.0f);
+    CHECK(parsed(processor, ids::bands, juce::String::repeatedString("9", 400)) == 8.0f); // no value: the default
 }
 
 TEST_CASE("Plugin: after a remap an encoder formats and parses its own parameter")

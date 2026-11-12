@@ -106,9 +106,28 @@ std::optional<float> choice(const juce::String& text, std::initializer_list<std:
     return {};
 }
 
+/** Nothing when there is no value or it is beyond a float (a 400-digit number). */
 std::optional<float> toFloat(std::optional<double> value, double scale = 1.0)
 {
-    return value ? std::optional<float>(static_cast<float>(*value * scale)) : std::nullopt;
+    if (!value)
+        return {};
+    const auto result = static_cast<float>(*value * scale);
+    return std::isfinite(result) ? std::optional<float>(result) : std::nullopt;
+}
+
+/** Blend: the even share ("70", "70%"), or both shares "odd / even" adding up to 100. */
+std::optional<float> blendShare(const juce::String& text)
+{
+    juce::StringArray shares;
+    shares.addTokens(text, "/", "");
+    if (shares.size() == 1)
+        return toFloat(number(text, { "%" }), 0.01);
+    if (shares.size() != 2)
+        return {};
+    const auto odd = number(shares[0].trim(), { "%" }), even = number(shares[1].trim(), { "%" });
+    if (!odd || !even || *odd < 0.0 || *even < 0.0 || std::abs(*odd + *even - 100.0) > 1.0e-6)
+        return {};
+    return toFloat(even, 0.01);
 }
 } // namespace
 
@@ -168,7 +187,7 @@ std::optional<float> parseValue(const juce::String& id, const juce::String& rawT
     if (id == ids::bands || id == ids::cutBands)
         return toFloat(number(text, { "b", "band", "bands" }));
     if (id == ids::blend) // the even share, or "odd / even"
-        return toFloat(number(text.fromLastOccurrenceOf("/", false, false).trim(), { "%" }), 0.01);
+        return blendShare(text);
     if (id == ids::focus || id == ids::a4)
     {
         const auto hz = number(text, { "hz", "khz", "k" });
@@ -206,11 +225,14 @@ juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout()
         layout.add(std::make_unique<Float>(pid(id), name, std::move(range), value,
                                            attributes.withValueFromStringFunction(reader(id, value))));
     };
+    // Clamped before rounding, as the editor's path clamps: a huge number is the top of the range, not an overflow.
     const auto addInt = [&](const char* id, const char* name, int low, int high, int value) {
         const auto read = reader(id, static_cast<float>(value));
         layout.add(std::make_unique<juce::AudioParameterInt>(
             pid(id), name, low, high, value,
-            juce::AudioParameterIntAttributes().withValueFromStringFunction([read](const juce::String& t) { return juce::roundToInt(read(t)); })));
+            juce::AudioParameterIntAttributes().withValueFromStringFunction([read, low, high](const juce::String& t) {
+                return juce::roundToInt(juce::jlimit(static_cast<float>(low), static_cast<float>(high), read(t)));
+            })));
     };
     const auto addBool = [&](const char* id, const char* name, bool value) {
         const auto read = reader(id, value ? 1.0f : 0.0f);
@@ -222,7 +244,9 @@ juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout()
         const auto read = reader(id, static_cast<float>(value));
         layout.add(std::make_unique<juce::AudioParameterChoice>(
             pid(id), name, choices, value,
-            juce::AudioParameterChoiceAttributes().withValueFromStringFunction([read](const juce::String& t) { return juce::roundToInt(read(t)); })));
+            juce::AudioParameterChoiceAttributes().withValueFromStringFunction([read, last = choices.size() - 1](const juce::String& t) {
+                return juce::roundToInt(juce::jlimit(0.0f, static_cast<float>(last), read(t)));
+            })));
     };
 
     addFloat(ids::boostNote, "Boost Note", noteRange, 36.0f, noteText());
