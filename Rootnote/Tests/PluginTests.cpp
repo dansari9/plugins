@@ -30,7 +30,8 @@ Layout layout(int inputs, int outputs)
 void prepare(RootnoteProcessor& processor, double fs = 48000.0, int blockSize = 512, int inputs = 2, int outputs = 2)
 {
     REQUIRE(processor.setBusesLayout(layout(inputs, outputs)));
-    processor.setRateAndBufferSizeDetails(fs, blockSize);
+    processor.setPlayConfigDetails(inputs, outputs, fs, blockSize);
+    REQUIRE(processor.getBusesLayout() == layout(inputs, outputs));
     processor.prepareToPlay(fs, blockSize);
 }
 
@@ -123,6 +124,159 @@ bool waitForReading(RootnoteProcessor& processor, uint32_t hits)
     }
     return false;
 }
+
+std::vector<float> drumSequence(double fs, juce::MidiBuffer& midi, int channel)
+{
+    std::vector<float> signal(static_cast<size_t>(fs), 0.0f);
+    Random random(4102);
+    for (int hit = 0; hit < 6; ++hit)
+    {
+        const int start = static_cast<int>(fs * (0.025 + 0.1 * hit));
+        const int kind = hit % 3;
+        const int note = kind == 0 ? 36 : (kind == 1 ? 38 : 42);
+        if (kind == 0)
+        {
+            KickSpec kick;
+            kick.decayTau = 0.04;
+            addKick(signal, static_cast<size_t>(start), kick, fs, random);
+        }
+        else if (kind == 1)
+        {
+            MembraneSpec snare;
+            snare.hz = 180.0;
+            snare.decayTau = 0.025;
+            snare.noise = 0.8;
+            addMembrane(signal, static_cast<size_t>(start), snare, fs, random);
+        }
+        else
+        {
+            double previous = 0.0;
+            for (int i = 0; i < static_cast<int>(fs * 0.08); ++i)
+            {
+                const double noise = random.bipolar();
+                signal[static_cast<size_t>(start + i)] += static_cast<float>(
+                    0.4 * (noise - previous) * std::exp(-static_cast<double>(i) / (fs * 0.01)));
+                previous = noise;
+            }
+        }
+        if (channel != 0)
+        {
+            midi.addEvent(juce::MidiMessage::noteOn(channel, note, 0.9f), start);
+            midi.addEvent(juce::MidiMessage::noteOn(channel, note + 12, 0.7f), start); // simultaneous hits
+            midi.addEvent(juce::MidiMessage::noteOn(channel, note, static_cast<juce::uint8>(0)), start + 7);
+            midi.addEvent(juce::MidiMessage::noteOff(channel, note + 12), start + 31);
+            midi.addEvent(juce::MidiMessage::controllerEvent(channel, 4, hit * 20), start + 9);
+            midi.addEvent(juce::MidiMessage::pitchWheel(channel, 9000), start + 13);
+        }
+    }
+    for (float& sample : signal)
+        sample *= static_cast<float>(dbToGain(12.0));
+    signal[static_cast<size_t>(fs * 0.8)] = 1.0f;
+    signal[static_cast<size_t>(fs * 0.8) + 1] = -1.0f;
+    std::fill(signal.begin() + static_cast<int>(fs * 0.9), signal.end(), static_cast<float>(dbToGain(12.0)));
+    if (channel != 0)
+    {
+        midi.addEvent(juce::MidiMessage::allNotesOff(channel), static_cast<int>(fs * 0.7));
+        midi.addEvent(juce::MidiMessage::allSoundOff(channel), static_cast<int>(fs * 0.71));
+        midi.addEvent(juce::MidiMessage::createSysExMessage("ignored", 7), 3);
+    }
+    return signal;
+}
+
+void stressSettings(RootnoteProcessor& processor, int setting)
+{
+    const int presets = RootnoteProcessor::numPresets();
+    processor.setCurrentProgram(setting < presets ? setting : 0);
+    if (setting < presets)
+        return;
+
+    const int extreme = setting - presets;
+    set(processor, ids::series, static_cast<float>(extreme % 3));
+    set(processor, ids::qMode, static_cast<float>(extreme / 3));
+    set(processor, ids::boostNote, extreme % 2 == 0 ? 12.0f : 96.0f);
+    set(processor, ids::boostFine, extreme % 2 == 0 ? -50.0f : 50.0f);
+    set(processor, ids::boostGain, 24.0f);
+    set(processor, ids::boostQ, 200.0f);
+    set(processor, ids::bands, 32.0f);
+    set(processor, ids::range, 6.0f);
+    set(processor, ids::tilt, extreme % 2 == 0 ? 6.0f : -12.0f);
+    set(processor, ids::cutOn, 1.0f);
+    set(processor, ids::cutNote, extreme % 2 == 0 ? 96.0f : 12.0f);
+    set(processor, ids::cutDepth, -30.0f);
+    set(processor, ids::cutQ, extreme % 2 == 0 ? 60.0f : 0.5f);
+    set(processor, ids::cutBands, 16.0f);
+    set(processor, ids::cutOvertones, 100.0f);
+    set(processor, ids::ring, 100.0f);
+    set(processor, ids::ringDecay, 4000.0f);
+    set(processor, ids::ringDrop, 12.0f);
+    set(processor, ids::output, 12.0f);
+    set(processor, ids::midiMode, extreme % 2 == 0 ? 1.0f : 2.0f);
+    set(processor, ids::noteOff, static_cast<float>(extreme % 2));
+}
+
+void checkDrumRender(RootnoteProcessor& processor, double fs, int inputs, int outputs,
+                     const std::vector<float>& signal, const juce::MidiBuffer& events,
+                     bool checkTail, const std::string& name)
+{
+    // The reported tail is a T60 bound. Two tails allow -120 dB of decay,
+    // leaving headroom for +12 dBFS excitation before the -90 dBFS RMS check.
+    const int measureFrom = static_cast<int>(signal.size())
+        + (checkTail ? static_cast<int>(std::ceil(2.0 * processor.getTailLengthSeconds() * fs)) : 0);
+    const int total = measureFrom + (checkTail ? static_cast<int>(fs * 0.5) : 0);
+    const int sizes[] = { 1, 17, 64, 512, 1024, 4096, 8193 };
+    juce::AudioBuffer<float> block(outputs, 8193);
+    juce::MidiBuffer midi;
+    bool finite = true, initialSilence = true;
+    float peak = 0.0f;
+    double energy = 0.0;
+    int measured = 0;
+    int cycle = 0;
+    for (int position = 0; position < total;)
+    {
+        const int n = std::min(sizes[cycle++ % static_cast<int>(std::size(sizes))], total - position);
+        block.setSize(outputs, n, false, false, true);
+        block.clear();
+        for (int ch = 0; ch < outputs; ++ch)
+            for (int i = 0; i < n; ++i)
+            {
+                const auto source = static_cast<size_t>(position + i);
+                const float sample = source < signal.size() ? signal[source] : 0.0f;
+                block.setSample(ch, i, ch >= inputs ? 123.0f : (ch == 0 ? sample : -0.7f * sample));
+            }
+        midi.clear();
+        midi.addEvents(events, position, n, -position);
+        processor.processBlock(block, midi);
+        finite = finite && allFinite(block);
+        peak = std::max(peak, block.getMagnitude(0, n));
+        for (int ch = 0; ch < outputs; ++ch)
+            for (int i = 0; i < n; ++i)
+            {
+                const double sample = static_cast<double>(block.getSample(ch, i));
+                if (position + i < static_cast<int>(fs * 0.025))
+                    initialSilence = initialSilence && sample == 0.0;
+                if (checkTail && position + i >= measureFrom)
+                {
+                    energy += sample * sample;
+                    ++measured;
+                }
+            }
+        position += n;
+    }
+    CHECK_MSG(finite, name);
+    CHECK_MSG(peak <= static_cast<float>(Limiter::kCeiling) + 1.0e-6f, name);
+    CHECK_MSG(initialSilence, name);
+    if (checkTail)
+        CHECK_MSG(measured > 0 && energy / static_cast<double>(measured) < 1.0e-9,
+                  name + " tail RMS " + std::to_string(gainToDb(std::sqrt(energy / static_cast<double>(measured)))) + " dBFS");
+
+    processor.reset();
+    block.clear();
+    midi.clear();
+    midi.addEvent(juce::MidiMessage::noteOn(1, 36, 1.0f), 0);
+    midi.addEvent(juce::MidiMessage::noteOn(10, 42, 1.0f), 0);
+    processor.processBlock(block, midi);
+    CHECK_MSG(allFinite(block) && block.getMagnitude(0, block.getNumSamples()) == 0.0f, name + " reset silence");
+}
 } // namespace
 
 TEST_CASE("Plugin: identity")
@@ -167,6 +321,32 @@ TEST_CASE("Plugin: every parameter of the plan exists with its range and default
         const double tolerance = parameterTolerance(*parameter, static_cast<double>(expected.value));
         CHECK_NEAR_MSG(get(processor, expected.id), expected.value, tolerance, expected.id);
         CHECK_NEAR_MSG(parameter->convertFrom0to1(parameter->getDefaultValue()), expected.value, tolerance, expected.id);
+
+        // JUCE AU uses 0..1 for floats/ints, 0..(steps - 1) for choices/bools.
+        // AudioParameterInt does not override isDiscrete() in JUCE 8.0.15.
+        const bool discrete = parameter->isDiscrete();
+        CHECK_MSG(discrete == (dynamic_cast<juce::AudioParameterChoice*>(parameter) != nullptr
+                                  || dynamic_cast<juce::AudioParameterBool*>(parameter) != nullptr), expected.id);
+        const bool stepped = discrete || dynamic_cast<juce::AudioParameterInt*>(parameter) != nullptr;
+        const float auMax = discrete ? static_cast<float>(parameter->getNumSteps() - 1) : 1.0f;
+        const float auDefault = parameter->getDefaultValue() * auMax;
+        CHECK(std::isfinite(auDefault) && auDefault >= 0.0f && auDefault <= auMax);
+        const int steps = stepped ? parameter->getNumSteps() - 1 : 100;
+        float previous = range.start;
+        for (int step = 0; step <= steps; ++step)
+        {
+            const float auValue = auMax * static_cast<float>(step) / static_cast<float>(steps);
+            parameter->setValueNotifyingHost(auValue / auMax);
+            const float physical = get(processor, expected.id);
+            CHECK_MSG(std::isfinite(physical) && physical >= range.start && physical <= range.end
+                          && physical >= previous, expected.id);
+            const double auTolerance = stepped ? 1.0e-5
+                : 0.51 * static_cast<double>(range.interval / (range.end - range.start)) + 1.0e-6;
+            CHECK_NEAR_MSG(parameter->getValue() * auMax, auValue, auTolerance, expected.id);
+            previous = physical;
+        }
+        parameter->setValueNotifyingHost(auDefault / auMax);
+        CHECK_NEAR_MSG(get(processor, expected.id), expected.value, tolerance, expected.id);
     }
 
     // The defaults reach the engine in its own units.
@@ -380,6 +560,56 @@ TEST_CASE("Plugin: processing never produces NaN, at any layout, rate or block s
         block.clear();
         processor.processBlock(block, midi);
         CHECK_MSG(block.getMagnitude(0, config.blockSize) == 0.0f, name);
+    }
+}
+
+TEST_CASE("Plugin: drum inserts stay bounded and decay across presets and host configurations")
+{
+    const std::pair<int, int> layouts[] = { { 1, 1 }, { 1, 2 }, { 2, 2 } };
+    for (double fs : { 44100.0, 48000.0, 96000.0 })
+        for (int channel : { 0, 1, 10 })
+        {
+            juce::MidiBuffer events;
+            const auto signal = drumSequence(fs, events, channel);
+            for (int setting = 0; setting < RootnoteProcessor::numPresets() + 6; ++setting)
+                for (int l = 0; l < 3; ++l)
+                {
+                    const auto [inputs, outputs] = layouts[l];
+                    RootnoteProcessor processor;
+                    prepare(processor, fs, setting % 2 == 0 ? 17 : 512, inputs, outputs);
+                    stressSettings(processor, setting);
+                    // Exercise restored settings through the audio callback too.
+                    juce::MemoryBlock state;
+                    processor.getStateInformation(state);
+                    processor.setStateInformation(state.getData(), static_cast<int>(state.getSize()));
+                    const std::string name = "setting " + std::to_string(setting) + ", MIDI " + std::to_string(channel)
+                        + ", " + std::to_string(inputs) + ">" + std::to_string(outputs) + ", " + std::to_string(fs);
+                    // Balance the long tail renders over layouts; every setting,
+                    // MIDI source and sample rate gets a complete decay measurement.
+                    checkDrumRender(processor, fs, inputs, outputs, signal, events, (setting + channel) % 3 == l, name);
+                }
+        }
+}
+
+TEST_CASE("Plugin: sample rate changes stay finite and re-preparing clears the tail")
+{
+    RootnoteProcessor processor;
+    for (double fs : { 44100.0, 48000.0, 96000.0, 44100.0 })
+    {
+        processor.setPlayConfigDetails(2, 2, fs, 64);
+        juce::AudioBuffer<float> block(2, 1024);
+        block.clear();
+        block.setSample(0, 0, 1.0f);
+        juce::MidiBuffer midi;
+        // A missed prepare uses the previous coefficients, or dry before the
+        // first prepare. It must not read beyond the old work buffers.
+        processor.processBlock(block, midi);
+        CHECK(allFinite(block));
+        CHECK(block.getMagnitude(0, 1024) <= 1.0f);
+        processor.prepareToPlay(fs, 64);
+        block.clear();
+        processor.processBlock(block, midi);
+        CHECK(allFinite(block) && block.getMagnitude(0, 1024) == 0.0f);
     }
 }
 
@@ -715,6 +945,28 @@ TEST_CASE("Plugin: the editor opens, shows the tuner, resizes and closes headles
     other.setStateInformation(state.getData(), static_cast<int>(state.getSize()));
     std::unique_ptr<juce::AudioProcessorEditor> editor(other.createEditor());
     CHECK(editor->getWidth() == 1200 && editor->getHeight() == 675);
+}
+
+TEST_CASE("Plugin: the host can create and paint an editor before preparing audio")
+{
+    RootnoteProcessor processor;
+    CHECK(processor.hasEditor());
+    for (int opened = 0; opened < 2; ++opened)
+    {
+        std::unique_ptr<juce::AudioProcessorEditor> editor(processor.createEditorAndMakeActive());
+        REQUIRE(editor != nullptr);
+        CHECK(processor.getActiveEditor() == editor.get());
+        CHECK(editor->getWidth() == 960 && editor->getHeight() == 540);
+        const auto snapshot = editor->createComponentSnapshot(editor->getLocalBounds());
+        CHECK(snapshot.isValid() && snapshot.getWidth() == 960 && snapshot.getHeight() == 540);
+        const auto plate = snapshot.getPixelAt(10, 100);
+        const auto screen = snapshot.getPixelAt(40, 70);
+        CHECK(plate.isOpaque() && screen.isOpaque());
+        CHECK(plate.getBrightness() > screen.getBrightness() + 0.2f);
+        processor.editorBeingDeleted(editor.get());
+        editor.reset();
+        CHECK(processor.getActiveEditor() == nullptr);
+    }
 }
 
 /** A control of the editor by its accessible title ("d", "Gain"), visible or not. */
