@@ -96,7 +96,13 @@ private:
     juce::uint32 peekStartMs = 0;
     bool peeked = false;     // the last press was a hold: its click selects nothing
     int octave = 1;          // octave of the pitch keys: the boost note's
-    struct Played { double note = 36.0; bool midi = false; };
+    struct Played
+    {
+        double note = 36.0;
+        bool midi = false;
+        bool takeoverPending = false;   // an octave key took the bank from MIDI; frames may not show it yet
+        uint32_t takeoverAtNoteOns = 0; // the MIDI note-on count then
+    };
     Played played[2];        // per bank, from the last frame
     uint32_t seenRestores = 0; // the processor's restoreCount() last applied
     int matchBlink = 0, tuneBlink = 0; // frames a key still blinks: it found no hit

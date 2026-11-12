@@ -82,6 +82,7 @@ private:
 
     juce::TextEditor entry;
     int entrySlot = -1;
+    juce::String entryShown; // the field's text as opened: closing it unedited changes nothing
     int hoverSlot = -1;
     juce::Component::SafePointer<juce::Component> focusBeforeEntry;
 

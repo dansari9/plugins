@@ -86,6 +86,7 @@ void Screen::showEntry(int slot)
     entry.setText(s.cents ? signedNumber((v - std::round(v)) * 100.0, 1) + " ct"
                           : apvts.getParameter(s.id)->getCurrentValueAsText(),
                   false);
+    entryShown = entry.getText();
     entry.setVisible(true);
     entry.selectAll();
     entry.grabKeyboardFocus();
@@ -99,7 +100,8 @@ void Screen::closeEntry(bool apply)
     const int slot = entrySlot;
     entry.setVisible(false); // first: hiding it loses the focus, which closes again
     entrySlot = -1;
-    if (apply)
+    // Untouched, the shown text would round a continuous value or take Focus from its link.
+    if (apply && text != entryShown)
         enterValue(pageSlots(page)[static_cast<size_t>(slot)], text);
     repaint();
 }

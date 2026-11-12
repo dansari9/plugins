@@ -2060,6 +2060,20 @@ TEST_CASE("Plugin: the octave keys move the sounding note an octave, and the key
     const auto state = run();
     CHECK(!state.boostFromMidi);
     CHECK_NEAR(state.boostNote, 64.0, 1.0e-6);
+
+    // A display refresh between the presses, before any audio block: the stale frame still says MIDI 40.
+    midi.addEvent(juce::MidiMessage::noteOn(1, 40, 1.0f), 0);
+    REQUIRE(run().boostFromMidi);
+    desk.click(*up);
+    CHECK(holds(processor, ids::boostNote, 52.0f));
+    faceplate.refresh();
+    desk.click(*up);
+    CHECK(holds(processor, ids::boostNote, 64.0f));
+    // Newer MIDI after the press wins again.
+    midi.addEvent(juce::MidiMessage::noteOn(1, 41, 1.0f), 0);
+    REQUIRE(run().boostFromMidi);
+    desk.click(*up);
+    CHECK(holds(processor, ids::boostNote, 53.0f));
     CHECK(gestures.balanced());
 }
 
@@ -2579,6 +2593,53 @@ TEST_CASE("Plugin: saving, restoring and switching A/B are whole transactions, w
         processor.getApvts().getParameter(ids::boostGain)->removeListener(&mid);
         CHECK(saved.getSize() > 0);
     }
+}
+
+TEST_CASE("Plugin: opening and closing a value's field without editing it changes nothing")
+{
+    using rootnote::ui::Screen;
+    RootnoteProcessor processor;
+    set(processor, ids::boostQ, 8.123f);   // shown as 8.1
+    set(processor, ids::focus, 123.456f); // shown while linked
+    set(processor, ids::range, 1.234f);
+    REQUIRE(holds(processor, ids::focusLink, 1.0f));
+    std::unique_ptr<juce::AudioProcessorEditor> editor(processor.createEditor());
+    auto& faceplate = dynamic_cast<RootnoteEditor&>(*editor);
+    Desk desk(*editor);
+    auto* screen = findFirst<Screen>(*editor);
+    faceplate.selectPage(0);
+    GestureCounter gestures(processor);
+
+    std::vector<float> before;
+    for (auto* p : processor.getParameters())
+        before.push_back(p->getValue());
+    const auto& slots = rootnote::ui::pageSlots(0);
+    for (int slot = 0; slot < rootnote::ui::kNumEncoders; ++slot)
+    {
+        if (slots[static_cast<size_t>(slot)].id == nullptr)
+            continue;
+        desk.click(*screen, legendPoint(slot)); // Return
+        REQUIRE(screen->isShowingEntry());
+        desk.key(juce::KeyPress(juce::KeyPress::returnKey));
+        desk.click(*screen, legendPoint(slot)); // focus loss
+        REQUIRE(screen->isShowingEntry());
+        editor->unfocusAllComponents();
+        dispatchMessages();
+        CHECK(!screen->isShowingEntry());
+    }
+    for (int i = 0; i < processor.getParameters().size(); ++i)
+        CHECK(processor.getParameters()[i]->getValue() == before[static_cast<size_t>(i)]);
+    CHECK(gestures.begins(ids::focusLink) == 0 && gestures.begins(ids::boostQ) == 0);
+
+    // A real edit of Focus still takes over from the link.
+    int focusSlot = 0;
+    while (slots[static_cast<size_t>(focusSlot)].id == nullptr || std::strcmp(slots[static_cast<size_t>(focusSlot)].id, ids::focus) != 0)
+        ++focusSlot;
+    desk.click(*screen, legendPoint(focusSlot));
+    findFirst<juce::TextEditor>(*screen)->setText("200 hz");
+    desk.key(juce::KeyPress(juce::KeyPress::returnKey));
+    CHECK(holds(processor, ids::focusLink, 0.0f) && std::abs(get(processor, ids::focus) - 200.0f) < 0.5f);
+    CHECK(gestures.balanced());
 }
 
 TEST_CASE("Plugin: states saved by 0.4.0, 0.4.1 and 0.4.2 load with their values")

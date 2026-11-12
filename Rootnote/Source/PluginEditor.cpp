@@ -267,6 +267,9 @@ void RootnoteEditor::shiftOctave(NoteControl::Target bank, int semitones)
     Played& p = played[bank];
     const double from = p.midi ? p.note : parameter(bank == NoteControl::boost ? ids::boostNote : ids::cutNote);
     p.midi = false;
+    // Until a frame shows the knob back (or new MIDI), older frames still show the MIDI note: refresh() keeps this.
+    p.takeoverAtNoteOns = lastNoteOns;
+    p.takeoverPending = true;
     plugin.setKnobNote(bank, juce::jlimit(kMinNote, kMaxNote, from + semitones));
 }
 
@@ -345,14 +348,20 @@ void RootnoteEditor::refresh()
 
     if (state.midiNoteOns != lastNoteOns)
         midiLit = 6;
-    lastNoteOns = state.midiNoteOns;
     midiLit = juce::jmax(0, midiLit - 1);
     const float peak = juce::jmax(plugin.takeOutputPeak(0), plugin.takeOutputPeak(1));
     meterDb = juce::jmax(juce::Decibels::gainToDecibels(peak, -100.0f), meterDb - 1.5f);
 
     // Keys follow the parameters, whoever changed them (host, preset, MIDI).
-    played[NoteControl::boost] = { state.boostNote, state.boostFromMidi };
-    played[NoteControl::cut] = { state.cutNote, state.cutFromMidi };
+    // An octave press stays until the audio thread has taken the bank back, or newer MIDI arrives.
+    const auto follow = [&state](Played& p, double note, bool midi) {
+        if (p.takeoverPending && midi && state.midiNoteOns == p.takeoverAtNoteOns)
+            return;
+        p = { note, midi };
+    };
+    follow(played[NoteControl::boost], state.boostNote, state.boostFromMidi);
+    follow(played[NoteControl::cut], state.cutNote, state.cutFromMidi);
+    lastNoteOns = state.midiNoteOns;
     const int boostNote = juce::roundToInt(state.boostNote);
     const int newOctave = juce::jlimit(0, 7, boostNote / 12 - 1);
     if (newOctave != octave)

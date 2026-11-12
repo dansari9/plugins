@@ -133,3 +133,6 @@ tails must be below −90 dBFS RMS. Earlier high-Q/Ring tails are intentional.
 | Review 4: save, restore and A/B switch could interleave across threads | A listener mid-switch saves from a second thread (blocked until the switch ends, saves all B); a switch mid-restore runs after it; a same-thread save mid-switch does not deadlock |
 | Review 4: a restore with the editor open kept the old page, size and a typed field | Restore with a field open: the editor shows the restored page and size, the field is dropped and writes nothing |
 | Review 4: state numbers were read by prefix (`1.2.3`, `2-1`, `0.4.5`) | Exactly one number or missing: malformed values default, fractional page/preset/slot index are invalid, a malformed A/B slot is dropped |
+| Review 4: opening and closing a field unedited rounded Q or unlinked Focus | Return and focus loss on every boost value with Focus linked and continuous values: nothing changes, no gesture |
+| Review 4: a display refresh between two octave presses brought back the stale MIDI note | Press, refresh, press: 40 → 52 → 64; newer MIDI wins again |
+| Review 4: Blend took the text after the last slash; huge integers overflowed | `garbage/70`, `30/20/70`, `30/60` are no value; Bands at 2^31 and beyond clamps to 32 for host and display alike; beyond a float is no value |
