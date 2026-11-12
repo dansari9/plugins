@@ -6,6 +6,7 @@ using namespace rootnote;
 
 namespace
 {
+const juce::Identifier kStateType { "RootnoteState" };
 const juce::Identifier kEditorWidth { "editorWidth" };
 const juce::Identifier kEditorHeight { "editorHeight" };
 const juce::Identifier kPreset { "preset" };
@@ -41,9 +42,23 @@ RootnoteProcessor::RootnoteProcessor()
     : AudioProcessor(BusesProperties()
                          .withInput("Input", juce::AudioChannelSet::stereo(), true)
                          .withOutput("Output", juce::AudioChannelSet::stereo(), true)),
-      apvts(*this, nullptr, "RootnoteState", createParameterLayout()),
+      apvts(*this, nullptr, kStateType, createParameterLayout()),
       bypassParameter(dynamic_cast<juce::AudioParameterBool*>(apvts.getParameter(ids::bypass)))
 {
+    for (const Preset& preset : factoryPresets())
+    {
+        auto& values = presetValues.emplace_back();
+        for (auto* parameter : getParameters())
+        {
+            auto* ranged = static_cast<juce::RangedAudioParameter*>(parameter); // an APVTS only holds ranged parameters
+            const juce::String id = ranged->getParameterID();
+            float value = presetKeeps(id.toRawUTF8()) ? -1.0f : ranged->getDefaultValue();
+            for (const PresetValue& entry : preset.values)
+                if (id == entry.id)
+                    value = ranged->convertTo0to1(entry.value);
+            values.push_back(value);
+        }
+    }
 }
 
 void RootnoteProcessor::prepareToPlay(double sampleRate, int samplesPerBlock)
@@ -84,7 +99,9 @@ void RootnoteProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::Mid
     // A restored state plays its own notes, not a MIDI note left over from before.
     if (stateRestored.exchange(false, std::memory_order_acquire))
         engine.releaseMidi();
+    const unsigned takeovers = knobTakeovers.exchange(0, std::memory_order_acquire);
     engine.setParams(parameters.read());
+    engine.takeBackFromMidi(takeovers);
 
     // Each MIDI event takes effect on its own sample: process up to it, apply it, carry on.
     int position = 0;
@@ -162,16 +179,30 @@ juce::AudioProcessorEditor* RootnoteProcessor::createEditor()
 
 void RootnoteProcessor::getStateInformation(juce::MemoryBlock& destData)
 {
-    if (const auto xml = apvts.copyState().createXml())
+    auto state = apvts.copyState();
+    state.setProperty(kPreset, currentPreset(), nullptr);
+    const auto size = storedEditorSize();
+    if (size.x > 0)
+    {
+        state.setProperty(kEditorWidth, size.x, nullptr);
+        state.setProperty(kEditorHeight, size.y, nullptr);
+    }
+    if (const auto xml = state.createXml())
         copyXmlToBinary(*xml, destData);
 }
 
 void RootnoteProcessor::setStateInformation(const void* data, int sizeInBytes)
 {
     const auto xml = getXmlFromBinary(data, sizeInBytes);
-    if (xml != nullptr && xml->hasTagName(apvts.state.getType()))
+    if (xml != nullptr && xml->hasTagName(kStateType))
     {
-        apvts.replaceState(juce::ValueTree::fromXml(*xml));
+        auto state = juce::ValueTree::fromXml(*xml);
+        presetIndex.store(juce::jlimit(0, numPresets() - 1, static_cast<int>(state.getProperty(kPreset, 0))),
+                          std::memory_order_relaxed);
+        storeEditorSize(state.getProperty(kEditorWidth, 0), state.getProperty(kEditorHeight, 0));
+        for (const auto& property : { kPreset, kEditorWidth, kEditorHeight })
+            state.removeProperty(property, nullptr);
+        apvts.replaceState(state);
         stateRestored.store(true, std::memory_order_release);
         resetAbPending.store(true, std::memory_order_release);
     }
@@ -232,31 +263,33 @@ juce::String RootnoteProcessor::presetName(int index)
     return juce::isPositiveAndBelow(index, numPresets()) ? factoryPresets()[static_cast<size_t>(index)].name : "";
 }
 
-int RootnoteProcessor::currentPreset() const
+void RootnoteProcessor::loadPreset(int index)
 {
-    return juce::jlimit(0, numPresets() - 1, static_cast<int>(apvts.state.getProperty(kPreset, 0)));
+    if (juce::isPositiveAndBelow(index, numPresets()))
+    {
+        applyPreset(index, true);
+        updateHostDisplay(ChangeDetails().withProgramChanged(true));
+    }
 }
 
-void RootnoteProcessor::loadPreset(int index)
+void RootnoteProcessor::applyPreset(int index, bool asGesture)
 {
     if (!juce::isPositiveAndBelow(index, numPresets()))
         return;
 
-    const Preset& preset = factoryPresets()[static_cast<size_t>(index)];
-    for (auto* parameter : getParameters())
+    const auto& values = presetValues[static_cast<size_t>(index)];
+    const auto& all = getParameters();
+    for (int i = 0; i < all.size(); ++i)
     {
-        auto* ranged = static_cast<juce::RangedAudioParameter*>(parameter); // an APVTS only holds ranged parameters
-        const juce::String id = ranged->getParameterID();
-        if (presetKeeps(id.toRawUTF8()))
+        const float value = values[static_cast<size_t>(i)];
+        if (value < 0.0f)
             continue;
-
-        float value = ranged->getDefaultValue();
-        for (const PresetValue& entry : preset.values)
-            if (id == entry.id)
-                value = ranged->convertTo0to1(entry.value);
-        setNormalised(*ranged, value);
+        if (asGesture)
+            setNormalised(*all[i], value);
+        else if (all[i]->getValue() != value)
+            all[i]->setValueNotifyingHost(value);
     }
-    apvts.state.setProperty(kPreset, index, nullptr);
+    presetIndex.store(index, std::memory_order_relaxed);
 }
 
 void RootnoteProcessor::resetAbIfRestored()
@@ -294,7 +327,7 @@ void RootnoteProcessor::selectAbSlot(int slot)
     for (int i = 0; i < all.size(); ++i)
         if (all[i] != bypassParameter)
             setNormalised(*all[i], entering.values[static_cast<size_t>(i)]);
-    apvts.state.setProperty(kPreset, entering.preset, nullptr);
+    presetIndex.store(entering.preset, std::memory_order_relaxed);
 }
 
 bool RootnoteProcessor::matchCutToHit()
@@ -304,7 +337,7 @@ bool RootnoteProcessor::matchCutToHit()
         return false;
 
     const EngineParams p = parameters.read();
-    setParameterValue(ids::cutNote, juce::jlimit(kMinNote, kMaxNote, hzToNote(reading.hz, p.a4)));
+    setKnobNote(NoteControl::cut, juce::jlimit(kMinNote, kMaxNote, hzToNote(reading.hz, p.a4)));
     setParameterValue(ids::cutOn, 1.0);
     return true;
 }
@@ -317,20 +350,28 @@ bool RootnoteProcessor::tuneBoostToKey()
 
     const EngineParams p = parameters.read();
     const double hitNote = juce::jlimit(kMinNote, kMaxNote, hzToNote(reading.hz, p.a4));
-    setParameterValue(ids::boostNote, foldNoteIntoRange(snapToScale(hitNote, p.key, p.scale)));
+    setKnobNote(NoteControl::boost, foldNoteIntoRange(snapToScale(hitNote, p.key, p.scale)));
     setParameterValue(ids::boostFine, 0.0);
     return true;
 }
 
-juce::Point<int> RootnoteProcessor::storedEditorSize() const
+void RootnoteProcessor::setKnobNote(NoteControl::Target bank, double note)
 {
-    return { apvts.state.getProperty(kEditorWidth, 0), apvts.state.getProperty(kEditorHeight, 0) };
+    setParameterValue(bank == NoteControl::boost ? ids::boostNote : ids::cutNote, note);
+    // After the value: the audio thread that sees the request also reads the new note.
+    knobTakeovers.fetch_or(bank == NoteControl::boost ? NoteControl::boostChanged : NoteControl::cutChanged,
+                           std::memory_order_release);
 }
 
-void RootnoteProcessor::storeEditorSize(int width, int height)
+juce::Point<int> RootnoteProcessor::storedEditorSize() const noexcept
 {
-    apvts.state.setProperty(kEditorWidth, width, nullptr);
-    apvts.state.setProperty(kEditorHeight, height, nullptr);
+    return { editorWidth.load(std::memory_order_relaxed), editorHeight.load(std::memory_order_relaxed) };
+}
+
+void RootnoteProcessor::storeEditorSize(int width, int height) noexcept
+{
+    editorWidth.store(width, std::memory_order_relaxed);
+    editorHeight.store(height, std::memory_order_relaxed);
 }
 
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter()

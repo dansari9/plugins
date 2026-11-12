@@ -61,12 +61,12 @@ RootnoteEditor::RootnoteEditor(RootnoteProcessor& p)
             const double note = juce::jlimit(kMinNote, kMaxNote, static_cast<double>((octave + 1) * 12 + pc));
             if (mods.isAltDown())
             {
-                setParameter(ids::cutNote, note);
+                processor.setKnobNote(NoteControl::cut, note);
                 setParameter(ids::cutOn, 1.0);
             }
             else
             {
-                setParameter(ids::boostNote, note);
+                processor.setKnobNote(NoteControl::boost, note);
             }
         };
         place(*key, 24.0f + static_cast<float>(pc) * 46.545f, 318, 42, 56);

@@ -8,6 +8,9 @@
 #include "PluginProcessor.h"
 
 #include <limits>
+#include <map>
+#include <optional>
+#include <thread>
 
 using namespace rootnote;
 using namespace testsignals;
@@ -943,6 +946,351 @@ TEST_CASE("Plugin: UI snapshots stay whole while audio publishes and the consume
     processor.setDisplayActive(false);
 }
 
+// ---- Real input: events through a window's peer, as the operating system delivers them ----
+
+#if JUCE_LINUX
+#include <dlfcn.h>
+
+/**
+    A bare X server (xvfb-run, no window manager) has never seen WM_PROTOCOLS
+    and the like, and JUCE's window code fails on the missing atoms; nor does
+    anything hand the keyboard focus to a new window. This defines the atoms
+    before JUCE opens its display, on a connection that stays open so the
+    server does not reset, and focuses windows for the input tests.
+*/
+namespace x11
+{
+struct Library
+{
+    using OpenDisplay = void* (*)(const char*);
+    using InternAtom = unsigned long (*)(void*, const char*, int);
+    using SetInputFocus = int (*)(void*, unsigned long, int, unsigned long);
+    using Sync = int (*)(void*, int);
+    using GetInputFocus = int (*)(void*, unsigned long*, int*);
+    using ErrorHandler = int (*)(void*, void*);
+    using SetErrorHandler = ErrorHandler (*)(ErrorHandler);
+
+    Library()
+    {
+        if (void* lib = dlopen("libX11.so.6", RTLD_LAZY))
+        {
+            const auto open = reinterpret_cast<OpenDisplay>(dlsym(lib, "XOpenDisplay"));
+            internAtom = reinterpret_cast<InternAtom>(dlsym(lib, "XInternAtom"));
+            setInputFocus = reinterpret_cast<SetInputFocus>(dlsym(lib, "XSetInputFocus"));
+            sync = reinterpret_cast<Sync>(dlsym(lib, "XSync"));
+            getInputFocus = reinterpret_cast<GetInputFocus>(dlsym(lib, "XGetInputFocus"));
+            setErrorHandler = reinterpret_cast<SetErrorHandler>(dlsym(lib, "XSetErrorHandler"));
+            if (open != nullptr && internAtom != nullptr && setInputFocus != nullptr && sync != nullptr
+                && getInputFocus != nullptr && setErrorHandler != nullptr)
+                display = open(nullptr);
+        }
+    }
+
+    void* display = nullptr;
+    InternAtom internAtom = nullptr;
+    SetInputFocus setInputFocus = nullptr;
+    Sync sync = nullptr;
+    GetInputFocus getInputFocus = nullptr;
+    SetErrorHandler setErrorHandler = nullptr;
+};
+
+Library& library()
+{
+    static Library instance;
+    return instance;
+}
+
+void defineWindowManagerAtoms()
+{
+    auto& x = library();
+    if (x.display == nullptr)
+        return;
+    for (const char* name : { "WM_PROTOCOLS", "WM_TAKE_FOCUS", "WM_DELETE_WINDOW", "WM_STATE", "WM_CHANGE_STATE",
+                              "_NET_WM_PING", "_NET_WM_STATE", "_NET_WM_STATE_HIDDEN", "_NET_WM_STATE_FULLSCREEN",
+                              "_NET_WM_STATE_MAXIMIZED_HORZ", "_NET_WM_STATE_MAXIMIZED_VERT", "_NET_WM_WINDOW_TYPE",
+                              "_NET_WM_WINDOW_TYPE_NORMAL", "_NET_WM_WINDOW_TYPE_COMBO", "_NET_WM_ALLOWED_ACTIONS",
+                              "_NET_WM_MOVERESIZE", "_NET_FRAME_EXTENTS", "_NET_WORKAREA", "_MOTIF_WM_HINTS" })
+        x.internAtom(x.display, name, 0);
+    x.sync(x.display, 0);
+}
+
+/** True once the window has the focus; fails harmlessly while the window is not mapped yet. */
+bool focus(void* window)
+{
+    auto& x = library();
+    if (x.display == nullptr)
+        return true;
+    const auto handle = reinterpret_cast<unsigned long>(window);
+    const auto previous = x.setErrorHandler([](void*, void*) { return 0; });
+    x.setInputFocus(x.display, handle, 2 /* RevertToParent */, 0 /* CurrentTime */);
+    x.sync(x.display, 0);
+    x.setErrorHandler(previous);
+    unsigned long focused = 0;
+    int revert = 0;
+    x.getInputFocus(x.display, &focused, &revert);
+    return focused == handle;
+}
+} // namespace x11
+#endif
+
+
+#if JUCE_LINUX || JUCE_WINDOWS
+namespace juce::detail
+{
+bool dispatchNextMessageOnSystemQueue(bool returnIfNoPendingMessages);
+}
+#endif
+
+namespace
+{
+/** Runs the message loop until nothing is pending: async callbacks, menu results. */
+void dispatchMessages()
+{
+#if JUCE_LINUX || JUCE_WINDOWS
+    for (int i = 0; i < 1000 && juce::detail::dispatchNextMessageOnSystemQueue(true); ++i) {}
+#endif
+}
+
+/** Puts a component on the desktop and sends it mouse and key events through its peer. */
+class Desk
+{
+public:
+    explicit Desk(juce::Component& component) : root(component)
+    {
+        root.addToDesktop(0);
+        root.setVisible(true);
+        dispatchMessages();
+#if JUCE_LINUX
+        for (int attempt = 0; attempt < 200 && !x11::focus(root.getPeer()->getNativeHandle()); ++attempt)
+        {
+            juce::Thread::sleep(5);
+            dispatchMessages();
+        }
+#endif
+        mouse(root, {}, {}); // no button down, whatever an earlier test left behind
+    }
+
+    /** Left button, or the right one for popupMenuClickModifier. */
+    void down(juce::Component& target, juce::Point<float> at, juce::ModifierKeys mods = {})
+    {
+        const int button = mods.isPopupMenu() ? juce::ModifierKeys::rightButtonModifier : juce::ModifierKeys::leftButtonModifier;
+        mouse(target, at, mods.withoutMouseButtons().withFlags(button));
+    }
+    void drag(juce::Component& target, juce::Point<float> at, juce::ModifierKeys mods = {})
+    {
+        mouse(target, at, mods.withFlags(juce::ModifierKeys::leftButtonModifier));
+    }
+    void up(juce::Component& target, juce::Point<float> at, juce::ModifierKeys mods = {})
+    {
+        mouse(target, at, mods.withoutMouseButtons());
+    }
+
+    /** A click in the middle of the target, or at a point; far enough from the last one not to be a double-click. */
+    void click(juce::Component& target, juce::ModifierKeys mods = {}) { click(target, target.getLocalBounds().getCentre().toFloat(), mods); }
+    void click(juce::Component& target, juce::Point<float> at, juce::ModifierKeys mods = {})
+    {
+        time += 1000;
+        down(target, at, mods);
+        up(target, at, mods);
+        juce::ModifierKeys::currentModifiers = {};
+    }
+
+    void key(const juce::KeyPress& key)
+    {
+        juce::ModifierKeys::currentModifiers = key.getModifiers();
+        root.getPeer()->handleKeyPress(key);
+        juce::ModifierKeys::currentModifiers = {};
+        dispatchMessages(); // a text field answers Return and Escape asynchronously
+    }
+
+private:
+    void mouse(juce::Component& target, juce::Point<float> at, juce::ModifierKeys mods)
+    {
+        time += 20;
+        juce::ModifierKeys::currentModifiers = mods; // the mouse source reads Shift, Alt and Cmd from here
+        root.getPeer()->handleMouseEvent(juce::MouseInputSource::InputSourceType::mouse, root.getLocalPoint(&target, at),
+                                         mods, juce::MouseInputSource::defaultPressure,
+                                         juce::MouseInputSource::defaultOrientation, time);
+    }
+
+    juce::Component& root;
+    juce::int64 time = juce::Time::currentTimeMillis();
+};
+
+/** Counts the begin and end of each parameter's gestures. */
+class GestureCounter : private juce::AudioProcessorParameter::Listener
+{
+public:
+    explicit GestureCounter(RootnoteProcessor& p) : processor(p)
+    {
+        for (auto* parameter : processor.getParameters())
+            parameter->addListener(this);
+    }
+    ~GestureCounter() override
+    {
+        for (auto* parameter : processor.getParameters())
+            parameter->removeListener(this);
+    }
+
+    int begins(const char* id) const { return count(id, true); }
+    int ends(const char* id) const { return count(id, false); }
+    bool balanced() const { return begun == ended; }
+
+private:
+    int count(const char* id, bool start) const
+    {
+        const int index = processor.getApvts().getParameter(id)->getParameterIndex();
+        const auto& counts = start ? begun : ended;
+        const auto found = counts.find(index);
+        return found == counts.end() ? 0 : found->second;
+    }
+    void parameterValueChanged(int, float) override {}
+    void parameterGestureChanged(int index, bool starting) override { ++(starting ? begun : ended)[index]; }
+
+    RootnoteProcessor& processor;
+    std::map<int, int> begun, ended;
+};
+
+template <typename Type>
+Type* findFirst(juce::Component& parent)
+{
+    for (auto* child : parent.getChildren())
+    {
+        if (auto* match = dynamic_cast<Type*>(child))
+            return match;
+        if (auto* found = findFirst<Type>(*child))
+            return found;
+    }
+    return nullptr;
+}
+
+} // namespace
+
+TEST_CASE("Plugin: preset and editor size never touch the state tree the host restores")
+{
+    RootnoteProcessor processor;
+    processor.loadPreset(3);
+    processor.storeEditorSize(1200, 675);
+    juce::MemoryBlock state;
+    processor.getStateInformation(state);
+
+    // The tree keeps parameters only; preset and size are added to the saved copy.
+    CHECK(!processor.getApvts().state.hasProperty("preset"));
+    CHECK(!processor.getApvts().state.hasProperty("editorWidth"));
+
+    // A host restoring on another thread while the editor reads every frame.
+    RootnoteProcessor other;
+    std::atomic<bool> done { false };
+    std::thread host([&] {
+        for (int i = 0; i < 300; ++i)
+            other.setStateInformation(state.getData(), static_cast<int>(state.getSize()));
+        done = true;
+    });
+    int reads = 0;
+    while (!done)
+    {
+        const int preset = other.currentPreset();
+        const auto size = other.storedEditorSize();
+        CHECK(preset == 0 || preset == 3);
+        CHECK(size.x == 0 || size.x == 1200);
+        other.storeEditorSize(1200, 675);
+        ++reads;
+    }
+    host.join();
+    CHECK(reads > 0);
+    CHECK(other.currentPreset() == 3 && other.storedEditorSize() == juce::Point<int>(1200, 675));
+    CHECK(!other.getApvts().state.hasProperty("preset"));
+
+    // States saved by 0.4.0 keep the metadata in the tree; they read the same.
+    juce::ValueTree old = processor.getApvts().copyState();
+    old.setProperty("preset", 6, nullptr);
+    old.setProperty("editorWidth", 800, nullptr);
+    old.setProperty("editorHeight", 450, nullptr);
+    juce::MemoryBlock oldState;
+    juce::AudioProcessor::copyXmlToBinary(*old.createXml(), oldState);
+    other.setStateInformation(oldState.getData(), static_cast<int>(oldState.getSize()));
+    CHECK(other.currentPreset() == 6 && other.storedEditorSize() == juce::Point<int>(800, 450));
+}
+
+TEST_CASE("Plugin: the factory presets are the host's programs")
+{
+    RootnoteProcessor processor;
+    REQUIRE(processor.getNumPrograms() == RootnoteProcessor::numPresets());
+    for (int i = 0; i < processor.getNumPrograms(); ++i)
+        CHECK(processor.getProgramName(i) == RootnoteProcessor::presetName(i));
+    CHECK(processor.getCurrentProgram() == 0);
+
+    set(processor, ids::boostNote, 30.0f);
+    GestureCounter gestures(processor);
+    processor.setCurrentProgram(3); // Snare Core
+    CHECK(processor.getCurrentProgram() == 3 && processor.currentPreset() == 3);
+    CHECK(holds(processor, ids::series, 2.0f) && holds(processor, ids::boostQ, 18.0f) && holds(processor, ids::cutDepth, -10.0f));
+    CHECK(holds(processor, ids::boostNote, 30.0f)); // the song stays
+    CHECK(gestures.begins(ids::boostQ) == 0);       // a host change, not a gesture
+
+    // The same values as loadPreset(), which the editor uses.
+    RootnoteProcessor other;
+    other.loadPreset(3);
+    for (int i = 0; i < processor.getParameters().size(); ++i)
+        if (processor.getParameters()[i]->getName(64) != "Boost Note")
+            CHECK_NEAR(processor.getParameters()[i]->getValue(), other.getParameters()[i]->getValue(), 1.0e-6);
+
+    // From the audio thread, as some hosts do: no editor-only work, just the values.
+    std::thread audio([&] { processor.setCurrentProgram(8); });
+    audio.join();
+    CHECK(processor.getCurrentProgram() == 8 && holds(processor, ids::bands, 24.0f));
+
+    processor.setCurrentProgram(42);
+    processor.setCurrentProgram(-1);
+    CHECK(processor.getCurrentProgram() == 8);
+}
+
+TEST_CASE("Plugin: clicking the knob note takes the bank back from MIDI, even unchanged")
+{
+    using rootnote::ui::Key;
+    RootnoteProcessor processor;
+    prepare(processor);
+    set(processor, ids::boostNote, 36.0f); // C2
+    set(processor, ids::cutNote, 38.0f);
+    set(processor, ids::cutOn, 1.0f);
+    std::unique_ptr<juce::AudioProcessorEditor> editor(processor.createEditor());
+    Desk desk(*editor);
+
+    juce::AudioBuffer<float> block(2, 512);
+    block.clear();
+    juce::MidiBuffer midi;
+    midi.addEvent(juce::MidiMessage::noteOn(1, 60, 1.0f), 0);
+    midi.addEvent(juce::MidiMessage::noteOn(2, 62, 1.0f), 0);
+    processor.processBlock(block, midi);
+    midi.clear();
+    const auto run = [&] {
+        for (int i = 0; i < 10; ++i)
+            processor.processBlock(block, midi);
+        return processor.displayState();
+    };
+    auto state = run();
+    REQUIRE(state.boostFromMidi && state.cutFromMidi);
+
+    // C on octave 2 is already the boost note: the click still takes it back.
+    desk.click(*findControl<Key>(*editor, "c"));
+    state = run();
+    CHECK(holds(processor, ids::boostNote, 36.0f));
+    CHECK(!state.boostFromMidi && state.cutFromMidi);
+    CHECK_NEAR(hzToNote(state.boostHz), 36.0, 0.01);
+
+    // Alt-click D: the cut note, also unchanged.
+    desk.click(*findControl<Key>(*editor, "d"), juce::ModifierKeys(juce::ModifierKeys::altModifier));
+    state = run();
+    CHECK(!state.cutFromMidi);
+    CHECK_NEAR(hzToNote(state.cutHz), 38.0, 0.01);
+
+    // A new note takes over again.
+    midi.addEvent(juce::MidiMessage::noteOn(1, 48, 1.0f), 0);
+    processor.processBlock(block, midi);
+    midi.clear();
+    CHECK(run().boostFromMidi);
+}
+
 /**
     Renders the editor with a demo state to a PNG: a kick ringing at D1, the
     boost on F#1 played from MIDI, the cut matched to the hit.
@@ -1007,9 +1355,13 @@ int writeSnapshot(const juce::File& file)
     return 0;
 }
 
+
 /** "--snapshot <file.png> [copy.png]" renders once and optionally copies the PNG. */
 int main(int argc, char** argv)
 {
+#if JUCE_LINUX
+    x11::defineWindowManagerAtoms();
+#endif
     const juce::ScopedJuceInitialiser_GUI gui;
     if ((argc == 3 || argc == 4) && juce::String(argv[1]) == "--snapshot")
     {

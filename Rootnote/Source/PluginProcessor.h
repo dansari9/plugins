@@ -50,10 +50,13 @@ public:
     bool isMidiEffect() const override { return false; }
     double getTailLengthSeconds() const override;
 
-    int getNumPrograms() override { return 1; }
-    int getCurrentProgram() override { return 0; }
-    void setCurrentProgram(int) override {}
-    const juce::String getProgramName(int) override { return {}; }
+    // The factory presets are the host's programs. setCurrentProgram() can come
+    // from any thread, the audio thread included: it only sets the parameters
+    // (no gestures, no allocation, no state tree).
+    int getNumPrograms() override { return numPresets(); }
+    int getCurrentProgram() override { return currentPreset(); }
+    void setCurrentProgram(int index) override { applyPreset(index, false); }
+    const juce::String getProgramName(int index) override { return presetName(index); }
     void changeProgramName(int, const juce::String&) override {}
 
     void getStateInformation(juce::MemoryBlock& destData) override;
@@ -89,6 +92,13 @@ public:
     /** Output peak of a channel (0 or 1) since the last call, linear. */
     float takeOutputPeak(int channel) noexcept { return outputPeak[channel].exchange(0.0f, std::memory_order_relaxed); }
 
+    /**
+        Sets a bank's knob note (boost or cut) as a click on the plug-in's own
+        interface does, and gives the bank back to the knob even when the value
+        is already there: an explicit choice beats a held MIDI note.
+    */
+    void setKnobNote(rootnote::NoteControl::Target bank, double note);
+
     /** Puts the cut on the pitch of the detected hit and switches it on. False without a reading. */
     bool matchCutToHit();
 
@@ -100,7 +110,7 @@ public:
     static juce::String presetName(int index);
 
     /** The preset loaded last, kept in the state. Changing parameters afterwards does not clear it. */
-    int currentPreset() const;
+    int currentPreset() const noexcept { return presetIndex.load(std::memory_order_relaxed); }
 
     /**
         Sets every parameter to the preset's value or its default, except the
@@ -118,13 +128,14 @@ public:
     void selectAbSlot(int slot);
 
     /** Editor size kept in the plug-in state; {0, 0} until an editor has stored one. */
-    juce::Point<int> storedEditorSize() const;
-    void storeEditorSize(int width, int height);
+    juce::Point<int> storedEditorSize() const noexcept;
+    void storeEditorSize(int width, int height) noexcept;
 
 private:
     void processSpan(float* const* channels, int numChannels, int from, int to) noexcept;
     void publishDisplay(const juce::AudioBuffer<float>& buffer, int numChannels) noexcept;
     void setParameterValue(const char* id, double value);
+    void applyPreset(int index, bool asGesture);
 
     void resetAbIfRestored(); // message thread only
 
@@ -139,12 +150,20 @@ private:
     juce::AudioProcessorValueTreeState apvts;
     rootnote::ParameterReader parameters { apvts };
     juce::AudioParameterBool* bypassParameter = nullptr;
+    // Per preset, the normalised value of every parameter in parameter order; < 0 = the preset keeps it.
+    std::vector<std::vector<float>> presetValues;
+
+    // Kept out of apvts.state, which replaceState() swaps on whatever thread
+    // the host restores from: the editor reads these every frame.
+    std::atomic<int> presetIndex { 0 };
+    std::atomic<int> editorWidth { 0 }, editorHeight { 0 };
 
     rootnote::Engine engine;
     rootnote::AnalysisWorker analysis;
     rootnote::SpscFifo spectrumFifo { static_cast<size_t>(1) << 15 };
 
     std::atomic<bool> stateRestored { false }; // set by setStateInformation, consumed by the audio thread
+    std::atomic<unsigned> knobTakeovers { 0 };  // NoteControl::boostChanged / cutChanged, consumed by the audio thread
     std::atomic<int> displayUsers { 0 };
     // Triple buffer: the audio thread fills its slot and swaps it in as the
     // newest; the editor swaps the newest out. Each side owns one slot.
