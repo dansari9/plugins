@@ -15,8 +15,7 @@ namespace
 const char* const ids[] = { "preamp", "bits",     "dcShift", "dither", "rate",   "jitter", "approxOn", "approxDev", "imagesOn",
                             "imagesShift", "fType", "fOrder", "cutoff", "reso", "mix",    "output", "bypass" };
 // =================================================================================================
-constexpr int numParams = 17;
-enum { Preamp, Bits, DcShift, Dither, Rate, Jitter, ApproxOn, ApproxDev, ImagesOn, ImagesShift, FType, FOrder, Cutoff, Reso, Mix, Output, Bypass };
+enum { Preamp, Bits, DcShift, Dither, Rate, Jitter, ApproxOn, ApproxDev, ImagesOn, ImagesShift, FType, FOrder, Cutoff, Reso, Mix, Output, Bypass, numParams };
 // Smoothed per-sample controls. Rate and cutoff are smoothed as log2(Hz); the last four mix the filter outputs.
 enum { SPre, SRate, SDither, SJitter, SApprox, SDev, SImages, SShift, SCut, SReso, SOrder, SMix, SOut, SBypass, SDry, SLP, SBP, SHP, SClip, numSmoothed };
 constexpr double pi = MathConstants<double>::pi;
@@ -159,11 +158,13 @@ double lerp(const double* table, double p)
 
 struct Frame
 {
-    double v[numSmoothed] {}, inc = 1, dcCoef = 0, jitCoef = 0, jitNorm = 0;
+    double v[numSmoothed] {}, inc = 1, dcCoef = 0, jitCoef = 0, jitNorm = 0, lsb = 0, half = 0;
     Coef approx[4], images[2], filter;
-    int bits = 0;
+    int bits = 0, ladderBits = 0;
     bool tread = false, identity = false;
 };
+
+struct BlepWeights { double h[taps], b[taps]; int h0 = 0; bool tick = false; };
 
 struct Channel
 {
@@ -188,17 +189,25 @@ struct Channel
         if (f.bits > 0)
         {
             static constexpr double ladder[] = { 0.6, -0.4, 0.3, -0.2 }; // MSB weight errors in LSB
-            const double lsb = std::ldexp(1.0, 1 - f.bits), half = std::ldexp(1.0, f.bits - 1);
+            const double lsb = f.lsb, half = f.half;
             const double u = (v + f.v[SDither] * lsb * (random() - 0.5)) / lsb;
             const double k = jlimit(-half, half - 1, f.tread ? std::round(u) : std::floor(u));
             q = (k + (f.tread ? 0 : 0.5)) * lsb;
-            for (int j = 0; j < jmin(4, f.bits); ++j)
+            for (int j = 0; j < f.ladderBits; ++j)
                 q += (((uint32) (int) k >> (f.bits - 1 - j)) & 1) * ladder[j] * lsb;
         }
         dc += f.dcCoef * (q - v - dc);
         return q;
     }
-    double process(double x, const Frame& f)
+    void buildBlep(BlepWeights& w, double d) const
+    {
+        w.tick = true, w.h0 = d > 0 ? 1 : 0;
+        for (int j = w.h0; j < taps; ++j)
+            w.h[j] = lerp(impulse, (j - d) * over);
+        for (int j = 0; j < taps; ++j)
+            w.b[j] = lerp(blep, (j + d) * over) - 1;
+    }
+    double process(double x, const Frame& f, const BlepWeights* reuse, BlepWeights* store)
     {
         // Preamp/ADC clip, filter[pre], dither, quantizer, approx lowpass. While the clip is engaged (preamp up or the
         // block above the knee) it is pure first-order ADAA; idle it is the plain clip, here the identity, so a clean
@@ -225,12 +234,18 @@ struct Channel
         {
             phase -= 1;
             const double d = phase / inc, old = held; // the tick was d samples ago, d in [0, 1)
+            BlepWeights local;
+            if (store != nullptr)
+                buildBlep(*store, d);
+            else if (reuse == nullptr || !reuse->tick)
+                buildBlep(local, d);
+            const auto& w = store != nullptr ? *store : reuse != nullptr && reuse->tick ? *reuse : local;
             double v = 0;
-            for (int j = d > 0 ? 1 : 0; j < taps; ++j) // input at time n - d from samples n - j, j - d >= 0
-                v += hist[(pos - j) & ringMask] * lerp(impulse, (j - d) * over);
+            for (int j = w.h0; j < taps; ++j) // input at time n - d from samples n - j, j - d >= 0
+                v += hist[(pos - j + taps) & ringMask] * w.h[j];
             held = v;
             for (int j = 0; j < taps; ++j)
-                ring[(pos + j) & ringMask] += (held - old) * (lerp(blep, (j + d) * over) - 1);
+                ring[(pos + j) & ringMask] += (held - old) * w.b[j];
         }
         y = held + ring[pos];
         ring[pos] = 0, pos = (pos + 1) & ringMask;
@@ -284,10 +299,23 @@ struct CrumbProcessor::Dsp
     std::array<SmoothedValue<double>, numSmoothed> smooth;
     std::array<Channel, 2> ch;
     double fs = 48000, clipOn = 0;
+    double dcCoef = 0, jitCoef = 0, jitNorm = 0;
+    std::array<double, 5> coefKeys {};
+    Frame cached;
+    bool coefValid = false;
+    int clipHold = 0;
     int hot = 0; // samples left in the clip's engage hold: the ADAA path stays on across recurring knee crossings
 
+    void bindSampleRate(double sr)
+    {
+        fs = sr > 0 && sr < 1.0e7 ? sr : 48000.0;
+        dcCoef = jmin(1.0, 2 * pi * 5 / fs);
+        jitCoef = 1 - std::exp(-2 * pi * 30 / fs), jitNorm = 0.5 / std::sqrt(jitCoef / (3 * (2 - jitCoef)));
+        clipHold = (int) (0.25 * fs), coefValid = false;
+    }
     void reset()
     {
+        coefValid = false;
         for (uint32 c = 0; c < 2; ++c)
             ch[c] = Channel(), ch[c].seed = 0x9e3779b9u * (c + 1);
         targets(true);
@@ -307,15 +335,24 @@ struct CrumbProcessor::Dsp
     {
         for (int k = 0; k < numSmoothed; ++k)
             f.v[k] = smooth[(size_t) k].getNextValue();
-        const double fr = jmin(fs, std::exp2(f.v[SRate])), nyquist = 0.49 * fs;
-        auto g = [&](double hz) { return std::tan(pi * jmin(nyquist, hz) / fs); };
-        f.inc = fr / fs, f.identity = f.inc >= 1 - 1e-9 && f.v[SJitter] <= 0, f.dcCoef = jmin(1.0, 2 * pi * 5 / fs);
-        const double ga = g(0.5 * fr * std::exp2(f.v[SDev])), gi = g(0.5 * fr * std::exp2(2 * f.v[SShift])); // Nyquist(fr) * 2^oct
-        for (int k = 0; k < 4; ++k)
-            f.approx[k] = svf(ga, approxK[k]);
-        for (int k = 0; k < 2; ++k)
-            f.images[k] = svf(gi, imagesK[k]);
-        f.filter = svf(g(std::exp2(f.v[SCut])), 2 * std::pow(40.0, -f.v[SReso])); // Q 0.5 .. 20
+        const std::array<double, 5> keys { f.v[SRate], f.v[SDev], f.v[SShift], f.v[SCut], f.v[SReso] };
+        if (!(coefValid && keys == coefKeys)) // exact == for every key; never reuse a neighbouring ramp value
+        {
+            const double fr = jmin(fs, std::exp2(f.v[SRate])), nyquist = 0.49 * fs;
+            auto g = [&](double hz) { return std::tan(pi * jmin(nyquist, hz) / fs); };
+            cached.inc = fr / fs;
+            const double ga = g(0.5 * fr * std::exp2(f.v[SDev])), gi = g(0.5 * fr * std::exp2(2 * f.v[SShift])); // Nyquist(fr) * 2^oct
+            for (int k = 0; k < 4; ++k)
+                cached.approx[k] = svf(ga, approxK[k]);
+            for (int k = 0; k < 2; ++k)
+                cached.images[k] = svf(gi, imagesK[k]);
+            cached.filter = svf(g(std::exp2(f.v[SCut])), 2 * std::pow(40.0, -f.v[SReso])); // Q 0.5 .. 20
+            coefKeys = keys, coefValid = true;
+        }
+        f.inc = cached.inc, f.identity = f.inc >= 1 - 1e-9 && f.v[SJitter] <= 0, f.dcCoef = dcCoef;
+        std::copy(std::begin(cached.approx), std::end(cached.approx), f.approx);
+        std::copy(std::begin(cached.images), std::end(cached.images), f.images);
+        f.filter = cached.filter;
     }
 };
 
@@ -340,7 +377,7 @@ bool CrumbProcessor::isBusesLayoutSupported(const BusesLayout& l) const
 void CrumbProcessor::prepareToPlay(double fs, int)
 {
     auto& d = *dsp;
-    d.fs = fs > 0 && fs < 1.0e7 ? fs : 48000.0; // a nonsense rate (NaN, inf, <= 0) must not reach the DSP
+    d.bindSampleRate(fs); // a nonsense rate (NaN, inf, <= 0) must not reach the DSP
     sampleRate = d.fs;
     for (auto& s : d.smooth)
         s.reset(d.fs, 0.02);
@@ -360,8 +397,10 @@ void CrumbProcessor::processBlock(AudioBuffer<float>& buffer, MidiBuffer&)
     d.targets(false);
     Frame f;
     f.bits = (int) d.raw[Bits]->load(), f.tread = d.raw[DcShift]->load() > 0.5f;
-    f.jitCoef = 1 - std::exp(-2 * pi * 30 / d.fs), f.jitNorm = 0.5 / std::sqrt(f.jitCoef / (3 * (2 - f.jitCoef))); // ~5 ms walk, +-2 sigma
-    float* x[2] = { buffer.getWritePointer(0), buffer.getWritePointer(channels - 1) };
+    if (f.bits > 0)
+        f.lsb = std::ldexp(1.0, 1 - f.bits), f.half = std::ldexp(1.0, f.bits - 1), f.ladderBits = jmin(4, f.bits);
+    f.jitCoef = d.jitCoef, f.jitNorm = d.jitNorm; // ~5 ms walk, +-2 sigma
+    float* x[2] = { channels > 0 ? buffer.getWritePointer(0) : nullptr, channels > 1 ? buffer.getWritePointer(1) : nullptr };
     const auto w = scope.write.load(std::memory_order_relaxed);
     float peak[2] {};
     double energy[2] {};
@@ -371,16 +410,18 @@ void CrumbProcessor::processBlock(AudioBuffer<float>& buffer, MidiBuffer&)
         // within the last 250 ms (NaN counts as loud). SClip crossfades over 20 ms when that changes.
         bool loud = false;
         for (int c = 0; c < channels; ++c) loud = loud || !(std::abs(x[c][i]) <= knee);
-        d.hot = loud ? (int) (0.25 * d.fs) : jmax(0, d.hot - 1);
+        d.hot = loud ? d.clipHold : jmax(0, d.hot - 1);
         d.clipOn = driven || d.hot > 0 ? 1 : 0;
         d.smooth[SClip].setTargetValue(d.clipOn);
         d.next(f);
         const double on = 1 - f.v[SBypass], mix = f.v[SMix] * on, gain = 1 + on * (f.v[SOut] - 1);
         float in = 0, out = 0;
+        BlepWeights shared;
+        const bool locked = channels == 2 && exactlyEqual(f.v[SJitter], 0.0) && exactlyEqual(d.ch[0].phase, d.ch[1].phase);
         for (int c = 0; c < channels; ++c) // non-finite input becomes silence; absurd levels are clipped
         {
             const double dry = std::isfinite(x[c][i]) ? jlimit(-1000.0f, 1000.0f, x[c][i]) : 0.0f;
-            x[c][i] = (float) ((dry + mix * (d.ch[(size_t) c].process(dry, f) - dry)) * gain);
+            x[c][i] = (float) ((dry + mix * (d.ch[(size_t) c].process(dry, f, locked && c == 1 ? &shared : nullptr, locked && c == 0 ? &shared : nullptr) - dry)) * gain);
             in += (float) dry / (float) channels, out += x[c][i] / (float) channels, peak[c] = jmax(peak[c], std::abs(x[c][i])), energy[c] += x[c][i] * x[c][i];
         }
         scope.push(w + (uint32_t) i, in, out);

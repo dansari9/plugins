@@ -1,6 +1,7 @@
 // CrumbTests: drives the real processor and editor without a host. Exit code 1 on failure.
 //   CrumbTests --screenshot a.png [pre]   render the editor (100 %, 2x pixels) after a drum + bass loop (pre: filter pre)
 #include "Crumb.h"
+#include <juce_cryptography/juce_cryptography.h>
 #define SCREENSHOT_PRESET 14 // "drums · break dust": 12 bit, 26 kHz, images on, lp post
 #include <cstdlib>
 #include <cstring>
@@ -498,6 +499,15 @@ static const std::vector<Settings> extremes {
 
 static void testBounded()
 {
+    for (int samples : { 0, 512 }) // hosts may supply an empty buffer even with an enabled input bus
+    {
+        Proc p;
+        prepare(p, 48000, 512, 2);
+        juce::AudioBuffer<float> empty(0, samples);
+        juce::MidiBuffer midi;
+        p.processBlock(empty, midi); // sanitizers check that no channel pointer is formed or dereferenced
+        CHECK(p.scope.write.load() == (uint32_t) samples);
+    }
     for (double fs : { 44100.0, 48000.0, 96000.0, 192000.0 })
         for (int ch : { 1, 2 })
             for (int block : { 1, 7, 64, 511, 4096, 0 })
@@ -1002,26 +1012,217 @@ static float groove(int i)
     return (float) (0.4 * kick + 0.45 * snare + 0.25 * std::sin(2 * pi * 55 * t) + 0.08 * std::sin(2 * pi * 110 * t + 0.5));
 }
 
-static int screenshot(const juce::File& file, bool preFilter)
+// The screenshot fixture: preset 14 after a drum + bass loop, then one second of 30 fps editor frames (the VU settles).
+static std::unique_ptr<juce::AudioProcessorEditor> fixture(Proc& p, bool preFilter)
 {
-    Proc p;
     p.setCurrentProgram(SCREENSHOT_PRESET);
     if (preFilter)
         set(p, "fOrder", 0);
     prepare(p, 48000, 512, 2);
-    p.scope.clock = testClock;
+    p.scope.clock = testClock, testMs = 0;
     run(p, 512, 2, 8400, groove);
     std::unique_ptr<juce::AudioProcessorEditor> e(p.createEditor());
-    for (int frame = 0; frame < 30; ++frame) // one second of 30 fps editor frames: the VU needles settle
+    for (int frame = 0; frame < 30; ++frame)
     {
         testMs += 1000.0 / 30;
         run(p, 512, 2, 1600, [frame](int i) { return groove(8400 + frame * 1600 + i); }); // ends 50 ms after a snare hit
         dynamic_cast<juce::Timer&>(*e).timerCallback();
     }
+    return e;
+}
+
+static int screenshot(const juce::File& file, bool preFilter)
+{
+    Proc p;
+    const auto e = fixture(p, preFilter);
     const auto image = e->createComponentSnapshot(e->getLocalBounds(), true, 2.0f);
     file.deleteFile();
     juce::FileOutputStream out(file);
     return out.openedOk() && juce::PNGImageFormat().writeImageToStream(image, out) ? 0 : 1;
+}
+
+// Sound and pixel contract with 81593d3, the build before the coefficient cache, the shared minBLEP and the editor
+// caches: SHA-256 of rendered audio and of editor snapshots. The values are from Linux x86-64 (GCC, glibc, JUCE's
+// software renderer); other platforms' libm and renderers legitimately differ, so they skip this test.
+static juce::String sha(const juce::MemoryOutputStream& m) { return juce::SHA256(m.getData(), m.getDataSize()).toHexString(); }
+// The automation sweep: at the start of every 8th 512-sample block (85 ms: ramps and settled stretches) rate, cutoff,
+// reso, approxDev, imagesShift and bits move; jitter is 30 % for blocks 96..191, then 0 (the channels' phases differ).
+static void sweep(Proc& p, int b)
+{
+    if (b % 8 != 0)
+        return;
+    const double s = b / 8;
+    set(p, "rate", (float) (2000 * std::pow(20.0, 0.5 + 0.5 * std::sin(0.7 * s))));
+    set(p, "cutoff", (float) (200 * std::pow(100.0, 0.5 + 0.5 * std::cos(0.5 * s))));
+    set(p, "reso", (float) (50 + 50 * std::sin(0.9 * s)));
+    set(p, "approxDev", (float) (100 * std::sin(1.3 * s)));
+    set(p, "imagesShift", (float) (50 + 50 * std::sin(0.4 * s)));
+    set(p, "bits", (float) ((b / 8 * 7) % 25));
+    set(p, "jitter", b >= 96 && b < 192 ? 30.0f : 0.0f);
+}
+// The groove (right = -0.7 x left) at 48 kHz in 512-sample blocks, every output sample hashed. program >= 0: that
+// factory preset, 2 s from a settled start. -1: the sweep over 4 s from init with preamp 6 dB, dither 20 %, images on,
+// lowpass post. -2: the same, re-prepared at 96 kHz at block 200.
+static juce::String render(int program, int channels)
+{
+    Proc p;
+    if (program >= 0)
+        p.setCurrentProgram(program);
+    else
+        set(p, { { "preamp", 6.0f }, { "dither", 20.0f }, { "imagesOn", 1.0f }, { "fType", 1.0f } });
+    prepare(p, 48000, 512, channels);
+    juce::AudioBuffer<float> buffer(channels, 512);
+    juce::MidiBuffer midi;
+    juce::MemoryOutputStream bytes;
+    for (int b = 0; b < (program >= 0 ? 188 : 375); ++b)
+    {
+        if (program < 0)
+            sweep(p, b);
+        if (program == -2 && b == 200)
+            prepare(p, 96000, 512, channels);
+        for (int c = 0; c < channels; ++c)
+            for (int i = 0; i < 512; ++i)
+                buffer.setSample(c, i, groove(b * 512 + i) * (c == 0 ? 1.0f : -0.7f));
+        p.processBlock(buffer, midi);
+        for (int c = 0; c < channels; ++c)
+            bytes.write(buffer.getReadPointer(c), 512 * sizeof(float));
+    }
+    return sha(bytes);
+}
+static juce::Image snapshot(bool preFilter, int percent) // the fixture at an editor size, 2x pixels
+{
+    Proc p;
+    auto e = fixture(p, preFilter);
+    e->setSize(1024 * percent / 100, 576 * percent / 100);
+    return e->createComponentSnapshot(e->getLocalBounds(), true, 2.0f);
+}
+static juce::String pixels(const juce::Image& image)
+{
+    const juce::Image argb = image.convertedToFormat(juce::Image::ARGB);
+    const juce::Image::BitmapData d(argb, juce::Image::BitmapData::readOnly);
+    juce::MemoryOutputStream m;
+    for (int y = 0; y < d.height; ++y)
+        m.write(d.getLinePointer(y), (size_t) (d.width * d.pixelStride));
+    return sha(m);
+}
+struct Golden { int program, channels; const char* hash; };
+static const Golden sounds[] = {
+    { -2, 2, "6b4a7e3db119bd7953b329a5a71f07bf5c5e02f5050930ea45c399f2cc6a9e7f" },
+    { -1, 2, "445d8085bf79a75d05fe72045b84b65e4c8aa564bd33a06d2f08e4b152a95311" },
+    { -1, 1, "4119ae083e0464e315bb483ba720446203b872edbd4426f44fbb5bc78abb0597" },
+    { 0, 2, "9befbda2d1f1802ffc80fb83aa9b18bfaff9ff65a1f1b7d6eaee8e8045ff6f2e" },
+    { 1, 2, "8201286ab87f8f6155c92a3f77afc490eb13130527b18c2f262927eaba6567cf" },
+    { 2, 2, "cddbbccf343284426076b733aeb4e5fb425c7704b269ec2776e7c4cae6022d15" },
+    { 3, 2, "0a5f81fb7826e543082c8481504d80d3aa7146abab6cbee700910980db691a6a" },
+    { 4, 2, "b57fb3b7de48bc54b1041245a2d301854a4f4107e392bf2b5de3c4b3cded60e0" },
+    { 5, 2, "20ec10c48bd208012aa4691732446e9537e2a7eab4d9af6d010b27b71aa6a4b1" },
+    { 6, 2, "1c96c709f8f1f425e205fd0ff7a859b0110c9af41d7bf275a21fd5b811d433f7" },
+    { 7, 2, "207c8748b4b37579268869a2ea55574577be87d247afa3a512db012432a77781" },
+    { 8, 2, "12c942fa81196abd0c7311e5d5001912dc0c75b68b1c0d58e9db40f2df5b4e47" },
+    { 9, 2, "f873954b81e969a87a89003ebcf3a51aa9f04f6b3e0eac8f91583d09a9266d5c" },
+    { 10, 2, "1233cab4676deb4dcb18b7964bb1837627c65b34202b31e9326ec1f8e52c9f3e" },
+    { 11, 2, "98deb8760d72eda696a018628daf102bacc34f273f29b974f0752ab8c920362c" },
+    { 12, 2, "2425962ab4f3ed16c090d0cafddadf73193189401174132244129bb6a27e787c" },
+    { 13, 2, "deb5a2d09f73e81cff6b3ce7be9e91942e1e241db177f0133be325c6a0bdb1a9" },
+    { 14, 2, "316b5922275ce8868eaf307f474be3782ddc186ec3ebda014512817bbfd7f1ea" },
+    { 15, 2, "95cfd9a6988c2ff01400487fe02c125518f5792cec852e5353e338ad7f8d4dc1" },
+    { 16, 2, "81c483ba3abdfe99dd13a1a02d80fb866179ddb606f3f10a05f106e35ff0bed0" },
+    { 17, 2, "aecf6ed0b128a3464ce0cec794f5d12c05cf583cf80894d7408243acb0d2e0d4" },
+    { 18, 2, "d44c3e872917eac6034c05945aa92f0a12f32a07d034c897c7ce08eccfdabbc0" },
+    { 19, 2, "694c5e0dcc767629da7070f9b1ab69297537b1b92b728607603bcdaa85111f34" },
+    { 20, 2, "49549e25dd51d371407028e711478b009a3b05f5f526aa262a3df6dd08698d54" },
+    { 21, 2, "79dcd24a86e1302fa90ae8a04ec22c94c69cc1707cc9cd4480536c428b51a258" },
+    { 22, 2, "30bf28bc9557b511725e7e2dfc191c041ad8c6ce05bc300663c9ba8786de4b0d" },
+    { 23, 2, "3dd38314799190f0b3a37c7cdacbc1465a9fc03864e2b7a1ba2d85def5c6e6e6" },
+    { 24, 2, "4a59ca93339bccf65af8b3c5d2fead29d818041909037212529c3291d908666e" },
+};
+struct Shot { bool preFilter; int percent; const char* hash; };
+static const Shot shots[] = {
+    { false, 100, "9e6312a8b8f03752026f0a487e7ac545ffe3a303c5cb7e938d6bdde3f6e1b0cf" },
+    { false, 50, "bfaba0c0d89ba92b722d2a3d060a328450335f9da4425a4c1efaf9e58532806c" },
+    { false, 200, "53f8e9e85d762fc2df2a31505e5185febaf843f968960837987600256b307e5f" },
+    { true, 100, "9acc73af7f75e832461afbb0a2113ec4ac944b8cb6c13a7a5174b9a9b84b74ea" },
+};
+static void testGoldens()
+{
+#if JUCE_LINUX && JUCE_INTEL && JUCE_64BIT
+    for (const auto& s : sounds)
+        if (render(s.program, s.channels) != s.hash)
+            CHECK(!"bit-exact render"), std::cerr << "  program " << s.program << ", " << s.channels << " ch\n";
+    for (const auto& s : shots)
+        if (pixels(snapshot(s.preFilter, s.percent)) != s.hash)
+            CHECK(!"pixel-exact snapshot"), std::cerr << "  " << s.percent << " %" << (s.preFilter ? " pre" : "") << "\n";
+    std::cout << "Checked " << std::size(sounds) << " audio hashes and " << std::size(shots) << " pixel hashes from 81593d3\n";
+#endif
+}
+// CrumbTests --bench: processBlock ns per stereo sample frame (48 kHz, block 512, warmed; init = the defaults, the
+// settled 26.04 kHz 64-tap case; the sweep) and the editor's 30 Hz work: timerCallback, then painting the two screens'
+// region (24, 56, 976, 216) at 100 %; a full plate paint for comparison. Means over repeated runs.
+static int bench()
+{
+    using Clock = std::chrono::steady_clock;
+    const auto ms = [](Clock::time_point a, Clock::time_point b) { return std::chrono::duration<double, std::milli>(b - a).count(); };
+    for (int program : { 0, -1 })
+    {
+        Proc p;
+        if (program < 0)
+            set(p, { { "preamp", 6.0f }, { "dither", 20.0f }, { "imagesOn", 1.0f }, { "fType", 1.0f } });
+        prepare(p, 48000, 512, 2);
+        juce::AudioBuffer<float> buffer(2, 512);
+        juce::MidiBuffer midi;
+        double total = 0;
+        for (int r = -1, b = 0; r < 5; ++r) // run -1 warms up; 5 timed runs of 10 s
+        {
+            double elapsed = 0;
+            for (int k = 0; k < 938; ++k, ++b)
+            {
+                if (program < 0)
+                    sweep(p, b % 375);
+                for (int c = 0; c < 2; ++c)
+                    for (int i = 0; i < 512; ++i)
+                        buffer.setSample(c, i, groove(b * 512 + i) * (c == 0 ? 1.0f : -0.7f));
+                const auto t0 = Clock::now();
+                p.processBlock(buffer, midi);
+                elapsed += ms(t0, Clock::now());
+            }
+            total += r >= 0 ? elapsed : 0;
+        }
+        std::cout << (program == 0 ? "processBlock init/default (26.04 kHz, 64 taps, settled)" : "processBlock automation sweep")
+                  << ": " << total * 1e6 / (5.0 * 938 * 512) << " ns/sample\n";
+    }
+    Proc p;
+    auto e = fixture(p, false);
+    auto& plate = *e->getChildComponent(0);
+    juce::Image image(juce::Image::ARGB, 1024, 576, true);
+    double timer = 0, screens = 0, full = 0;
+    const int frames = 300;
+    for (int frame = -30; frame < frames; ++frame) // 30 warm-up frames
+    {
+        testMs += 1000.0 / 30;
+        run(p, 512, 2, 1600, [frame](int i) { return groove(60000 + frame * 1600 + i); });
+        const auto t0 = Clock::now();
+        dynamic_cast<juce::Timer&>(*e).timerCallback();
+        const auto t1 = Clock::now();
+        {
+            juce::Graphics g(image);
+            g.reduceClipRegion(24, 56, 976, 216);
+            plate.paintEntireComponent(g, false);
+        }
+        const auto t2 = Clock::now();
+        if (frame % 10 == 0)
+        {
+            juce::Graphics g(image);
+            plate.paintEntireComponent(g, false);
+        }
+        const auto t3 = Clock::now();
+        if (frame >= 0)
+            timer += ms(t0, t1), screens += ms(t1, t2), full += frame % 10 == 0 ? ms(t2, t3) : 0;
+    }
+    std::cout << "editor timerCallback: " << timer / frames << " ms\n"
+              << "editor 30 Hz screens paint (24, 56, 976, 216): " << screens / frames << " ms\n"
+              << "editor timer + screens paint: " << (timer + screens) / frames << " ms\n"
+              << "editor full plate paint: " << full / (frames / 10) << " ms\n";
+    return 0;
 }
 
 int main(int argc, char** argv)
@@ -1029,6 +1230,9 @@ int main(int argc, char** argv)
     const juce::ScopedJuceInitialiser_GUI gui;
     if ((argc == 3 || argc == 4) && juce::String(argv[1]) == "--screenshot") // optional 3rd argument "pre": filter order pre
         return screenshot(juce::File::getCurrentWorkingDirectory().getChildFile(argv[2]), argc == 4 && juce::String(argv[3]) == "pre");
+    if (argc == 2 && juce::String(argv[1]) == "--bench") return bench();
+    if (argc == 2 && juce::String(argv[1]) == "--golden-tests") { testGoldens(); return failures == 0 ? 0 : 1; }
+    testGoldens();
     testIdentity();
     testState();
     testTransactions();
