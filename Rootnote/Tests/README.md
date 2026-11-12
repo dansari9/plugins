@@ -50,3 +50,7 @@ its window the keyboard focus.
 | 7 | Alt/Cmd/right-click and legend-click text entry with the parameter's parser, Escape, arrow keys, focus order |
 | 8 | Blend's encoder rebound as Fine formats and parses cents; choices use their own text |
 | 9 | Hold past `kPagePeekMs` peeks and restores; a short click selects |
+
+Also found by pluginval with some random seeds (0.4.0 as well): a restored
+state now settles switches and steps the host left between legal values;
+the state round-trip test covers it.
