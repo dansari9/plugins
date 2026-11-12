@@ -2,6 +2,7 @@
 
 #include <chrono>
 #include <cmath>
+#include <system_error>
 #include <vector>
 
 namespace rootnote
@@ -26,7 +27,16 @@ void AnalysisWorker::setSampleRate(double sampleRate)
 
     const std::lock_guard<std::mutex> lock(mutex);
     if (!thread.joinable() && !stopping)
-        thread = std::thread([this] { run(); });
+    {
+        try
+        {
+            thread = std::thread([this] { run(); });
+        }
+        catch (const std::system_error&)
+        {
+            // No thread to spare: the tuner stays silent, the plug-in still loads and plays.
+        }
+    }
 }
 
 void AnalysisWorker::enable(bool shouldRun) noexcept
