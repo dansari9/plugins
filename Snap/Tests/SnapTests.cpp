@@ -29,8 +29,18 @@ void* operator new(std::size_t n)
         return p;
     throw std::bad_alloc();
 }
+void* operator new(std::size_t n, std::align_val_t a) // glibc's aligned path bypasses the malloc hooks
+{
+    countAllocation();
+    void* p = nullptr;
+    if (posix_memalign(&p, std::max(sizeof(void*), (std::size_t) a), n == 0 ? 1 : n) == 0)
+        return p;
+    throw std::bad_alloc();
+}
 void operator delete(void* p) noexcept { std::free(p); }
 void operator delete(void* p, std::size_t) noexcept { std::free(p); }
+void operator delete(void* p, std::align_val_t) noexcept { std::free(p); }
+void operator delete(void* p, std::size_t, std::align_val_t) noexcept { std::free(p); }
 
 static int failures = 0;
 #define CHECK(c) ((c) ? (void) 0 : (void) (++failures, std::cerr << "FAIL " << __LINE__ << ": " #c "\n"))
@@ -142,18 +152,40 @@ static void testState()
     load(v1, blob(R"(<SNAP stateVersion="7" future="x"><PARAM id="attack" value="1e9"/><PARAM id="mix" value="abc"/>)"
                   R"(<PARAM id="output" value="nan"/><PARAM id="wobble" value="3"/><EXTRA/></SNAP>)"));
     CHECK(get(v1, "attack") == 100.0f && get(v1, "sustain") == 0.0f && get(v1, "mix") == 100.0f && get(v1, "output") == 0.0f);
-    for (auto* bad : { "12abc", "1-2", "5.5.5", "--3", "1e", "." }) // anything not wholly a number is unparsable
+    for (auto* bad : { "12abc", "1-2", "5.5.5", "--3", "1e", ".", "&#x", "1e2147483648", "-1e4294967296" }) // not wholly a (finite) number
     {
         load(v1, fixture);
         load(v1, blob(juce::String(R"(<SNAP><PARAM id="attack" value="X"/><PARAM id="sustain" value="X"/><PARAM id="mix" value="X"/>)"
                                    R"(<PARAM id="output" value="X"/></SNAP>)").replace("X", bad)));
         CHECK(defaults(v1));
     }
-    // Hostile blobs (deep nesting, DTD entities) are rejected before parsing and leave the state alone.
+    load(v1, blob(R"(<SNAP><PARAM id="attack" value=" 1e0000000000000000002 "/><PARAM id="sustain" value="-1e-4294967296"/></SNAP>)"));
+    CHECK(get(v1, "attack") == 100.0f && get(v1, "sustain") == 0.0f);
+    // Hostile or incomplete blobs (deep nesting, DTD entities, truncated character references) leave the state alone.
     load(v1, fixture);
     load(v1, blob("<SNAP>" + juce::String::repeatedString("<a>", 1000000)));
     load(v1, blob(R"(<!DOCTYPE SNAP [<!ENTITY a "&a;&a;">]><SNAP><PARAM id="attack" value="&a;"/></SNAP>)"));
+    for (auto* bad : { "<SNAP>&#x", "<SNAP>&#", "<SNAP>&#12", "<SNAP>&#x4", "<SNAP><PARAM id=\"attack\" value=\"&#x", "</SNAP>", "<SNAP><a></SNAP>" })
+        load(v1, blob(bad));
     CHECK(get(v1, "attack") == 60.0f && get(v1, "output") == -3.5f);
+    // Future-writer states restore: long escaped text (any payload length, e.g. 8508 = "<!" in the length field),
+    // and a nested tree holding PARAM-like entries, which only top-level PARAMs may set.
+    bool hit8508 = false;
+    for (int extra = 8000; extra < 8400; ++extra)
+    {
+        auto tree = v1.apvts.copyState();
+        juce::ValueTree slot("SLOT");
+        slot.appendChild(juce::ValueTree("PARAM").setProperty("id", "attack", nullptr).setProperty("value", -7, nullptr), nullptr);
+        tree.addChild(slot, 0, nullptr);
+        tree.setProperty("stateVersion", 1, nullptr).setProperty("notes", juce::String::repeatedString("x", extra) + juce::String::fromUTF8("<&>\"\n\xc3\xa9"), nullptr);
+        juce::MemoryBlock m;
+        juce::AudioProcessor::copyXmlToBinary(*tree.createXml(), m);
+        hit8508 = hit8508 || juce::ByteOrder::littleEndianInt(m.begin() + 4) == 8508;
+        Proc f;
+        load(f, m);
+        CHECK(get(f, "attack") == 60.0f && get(f, "sustain") == -40.0f && get(f, "mix") == 75.0f && get(f, "output") == -3.5f);
+    }
+    CHECK(hit8508);
 
     // (3) Garbage, empty, truncated and foreign data never crash and leave defaults.
     Proc g;
@@ -173,6 +205,13 @@ static void testState()
     }
     load(g, blob(R"(<ROOTNOTE><PARAM id="attack" value="50"/></ROOTNOTE>)"));
     CHECK(defaults(g));
+    for (int n = 0; n < 5000; ++n) // a real state with random bytes overwritten
+    {
+        juce::MemoryBlock m(good);
+        for (int k = 0; k <= n % 4; ++k)
+            static_cast<char*>(m.getData())[r.nextInt((int) m.getSize())] = (char) r.nextInt(256);
+        g.setStateInformation(m.getData(), (int) m.getSize());
+    }
 }
 
 static void testIdentity() // (4)
@@ -182,6 +221,8 @@ static void testIdentity() // (4)
     CHECK(juce::String(JUCE_STRINGIFY(JucePlugin_AUMainType)) == "'aufx'");
     CHECK(juce::String(JUCE_STRINGIFY(JucePlugin_CFBundleIdentifier)) == "com.dripworks.snap");
     CHECK(juce::String(JucePlugin_Name) == "Snap" && juce::String(JucePlugin_Manufacturer) == "daveydidit");
+    // The wrappers derive the VST3 class IDs and the AU/VST3 numeric parameter IDs from the codes and IDs only under these settings.
+    static_assert(JUCE_VST3_CAN_REPLACE_VST2 == 0 && JUCE_FORCE_USE_LEGACY_PARAM_IDS == 0, "frozen host-facing IDs");
     CHECK(!JucePlugin_IsSynth && !JucePlugin_WantsMidiInput);
     Proc p;
     juce::StringArray found;
@@ -278,21 +319,19 @@ static void testSound() // (6), (7), (8)
     };
     CHECK(traced(100) > 3 && traced(0) == 0);
 
-    // (8) No allocation inside processBlock, including while parameters move.
-    onAudioThread = true;
-    int* volatile probe = new int(1); // volatile: an unobserved new/delete pair may legally be elided
-    delete probe;
-    onAudioThread = false;
-    CHECK(audioAllocations.exchange(0) > 0); // the counter itself works...
+    // (8) No allocation inside processBlock: in every rate / layout / block size run so far, and below while
+    // parameters move. The counter itself is checked (volatile: an unobserved new/delete pair may be elided).
+    CHECK(audioAllocations.exchange(0) == 0);
+    auto counted = [](auto allocate) {
+        onAudioThread = true;
+        allocate();
+        onAudioThread = false;
+        return audioAllocations.exchange(0) > 0;
+    };
+    CHECK(counted([] { int* volatile q = new int(1); delete q; }));
+    CHECK(counted([] { void* volatile q = ::operator new(64, std::align_val_t(64)); ::operator delete(q, std::align_val_t(64)); }));
 #ifdef SNAP_COUNTS_MALLOC
-    onAudioThread = true;
-    {
-        juce::AudioBuffer<float> b(2, 512);
-        float* volatile v = b.getWritePointer(0);
-        (void) v;
-    }
-    onAudioThread = false;
-    CHECK(audioAllocations.exchange(0) > 0); // ...including JUCE's malloc-based buffers
+    CHECK(counted([] { juce::AudioBuffer<float> b(2, 512); float* volatile v = b.getWritePointer(0); (void) v; })); // JUCE's malloc buffers
 #endif
     Proc p;
     prepare(p, fs, 512, 2);

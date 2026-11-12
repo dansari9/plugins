@@ -1,5 +1,7 @@
 #include "Snap.h"
 #include "BinaryData.h"
+#include <optional>
+#include <sstream>
 
 using namespace juce;
 
@@ -112,26 +114,66 @@ void SnapProcessor::getStateInformation(MemoryBlock& dest)
         copyXmlToBinary(*xml, dest);
 }
 
-// Accepts only a <SNAP> tree. Unknown entries are ignored, values are clamped, missing or unparsable ones reset
-// to default. JUCE's XML parser recurses per nesting level and expands DTD entities, so a blob with more tags than
-// any real state (the tag count bounds the depth) or with a DTD / comment ("<!") is rejected before parsing.
+// Reads the flat <SNAP><PARAM id=".." value=".."/>..</SNAP> text inside JUCE's binary envelope with a single
+// non-recursive scan instead of JUCE's XML parser (which recurses per level, expands DTD entities and over-reads
+// truncated character references). JUCE's writer escapes '<', '>' and '"' inside values, so every state it writes
+// splits cleanly into tags and attributes. Unknown entries are ignored, values are clamped, missing or unparsable
+// ones reset to default; a blob that is not one complete <SNAP> element (or holds "<!") leaves the state alone.
 void SnapProcessor::setStateInformation(const void* data, int size)
 {
-    const std::string_view raw(static_cast<const char*>(data), (size_t) jmax(0, size));
-    if (std::count(raw.begin(), raw.end(), '<') > 256 || raw.find("<!") != std::string_view::npos)
+    const auto* bytes = static_cast<const char*>(data);
+    if (bytes == nullptr || size < 8 || ByteOrder::littleEndianInt(bytes) != 0x21324356 || ByteOrder::littleEndianInt(bytes + 4) > (uint32) size - 8)
         return;
-    const auto xml = getXmlFromBinary(data, size);
-    if (xml == nullptr || !xml->hasTagName(apvts.state.getType()))
-        return;
-    const auto tree = ValueTree::fromXml(*xml);
-    for (auto* id : ids)
+    const std::string_view xml(bytes + 8, ByteOrder::littleEndianInt(bytes + 4)), space(" \t\r\n");
+    std::optional<std::string_view> found[4];
+    int depth = 0;
+    bool complete = false;
+    for (size_t open = xml.find('<'), close = 0; !complete && open != std::string_view::npos; open = xml.find('<', close))
     {
-        auto* p = apvts.getParameter(id);
-        const auto s = tree.getChildWithProperty("id", id)["value"].toString().trim();
-        auto rest = s.getCharPointer();
-        const auto d = CharacterFunctions::readDoubleValue(rest); // locale-independent; must consume the whole string
-        const float f = s.isNotEmpty() && rest.isEmpty() ? (float) d : NAN;
-        p->setValueNotifyingHost(std::isfinite(f) ? p->convertTo0to1(p->getNormalisableRange().snapToLegalValue(f)) : p->getDefaultValue());
+        if ((close = xml.find('>', open)) == std::string_view::npos)
+            return;
+        auto tag = xml.substr(open + 1, close - open - 1);
+        if (tag.empty() || tag[0] == '!' || (tag[0] == '/' && depth == 0))
+            return;
+        if (tag[0] == '?' || tag[0] == '/') // the <?xml ?> declaration, or a closing tag
+        {
+            complete = tag[0] == '/' && --depth == 0;
+            continue;
+        }
+        const bool empty = tag.back() == '/';
+        tag.remove_suffix(empty ? 1 : 0);
+        const auto name = tag.substr(0, tag.find_first_of(space));
+        if (depth == 0 && name != "SNAP")
+            return;
+        std::string_view id, value;
+        if (depth == 1 && name == "PARAM")
+            for (auto rest = tag.substr(name.size());;) // attributes: name="text"
+            {
+                const auto eq = rest.find("=\""), end = eq == std::string_view::npos ? eq : rest.find('"', eq + 2);
+                if (end == std::string_view::npos)
+                    break;
+                auto key = rest.substr(0, eq);
+                key.remove_prefix(std::min(key.size(), key.find_first_not_of(space)));
+                const auto text = rest.substr(eq + 2, end - eq - 2);
+                id = key == "id" ? text : id, value = key == "value" ? text : value;
+                rest.remove_prefix(end + 1);
+            }
+        for (int i = 0; i < 4; ++i)
+            if (id == ids[i] && !found[i]) // the first entry wins
+                found[i] = value;
+        depth += empty ? 0 : 1;
+        complete = depth == 0;
+    }
+    if (!complete)
+        return;
+    for (int i = 0; i < 4; ++i)
+    {
+        auto* p = apvts.getParameter(ids[i]);
+        std::istringstream in(std::string(found[i].value_or(""))); // locale-independent, reports overflow
+        in.imbue(std::locale::classic());
+        double d = 0;
+        const bool ok = found[i] && in >> d && (in >> std::ws).eof();
+        p->setValueNotifyingHost(ok ? p->convertTo0to1(p->getNormalisableRange().snapToLegalValue((float) jlimit(-1.0e6, 1.0e6, d))) : p->getDefaultValue());
     }
 }
 
@@ -226,8 +268,7 @@ struct Editor : AudioProcessorEditor, Timer
         for (auto [p, colour] : { std::pair { &in, Colour(0xff4a4a46) }, std::pair { &out, orange.withAlpha(0.9f) } })
         {
             p->lineTo(graph.getRight(), mid), p->lineTo(graph.getX(), mid), p->closeSubPath();
-            p->addPath(Path(*p), AffineTransform::verticalFlip(2 * mid)); // a copy: addPath reads its source while appending
-            g.setColour(colour), g.fillPath(*p);
+            g.setColour(colour), g.fillPath(*p), g.fillPath(*p, AffineTransform::verticalFlip(2 * mid));
         }
         g.setColour(white.withAlpha(0.35f)), g.drawHorizontalLine((int) mid, graph.getX(), graph.getRight());
         g.setColour(blue.brighter(0.5f)), g.strokePath(gain, PathStrokeType(1.5f));
