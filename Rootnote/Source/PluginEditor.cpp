@@ -452,7 +452,7 @@ void RootnoteEditor::paintPlate(juce::Graphics& g)
 
     paintFooter(g);
 
-    drawTextAt(g, "DRIPWORKS", labelFont(), colours::sub, 24.0f, 521.5f);
+    drawTextAt(g, "daveydidit", labelFont(), colours::sub, 24.0f, 521.5f);
     const juce::String hint = "CLICK A KEY = BOOST" + kDot + "ALT-CLICK = CUT";
     drawTextAt(g, hint, labelFont(), colours::sub, 936.0f - textWidth(labelFont(), hint), 521.5f);
 }

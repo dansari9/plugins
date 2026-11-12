@@ -2319,6 +2319,7 @@ TEST_CASE("Plugin: identifiers are frozen: codes, parameter IDs, order, ranges a
     CHECK(juce::String(JucePlugin_AUMainType) == "aufx" || JucePlugin_AUMainType == 'aufx');
     CHECK(juce::String(JUCE_STRINGIFY(JucePlugin_CFBundleIdentifier)) == "com.dripworks.rootnote");
     CHECK(juce::String(JucePlugin_Name) == "Rootnote");
+    CHECK(juce::String(JucePlugin_Manufacturer) == "daveydidit"); // visible brand only; codes above stay
     CHECK(JucePlugin_VSTUniqueID == JucePlugin_PluginCode);
     CHECK(JUCE_VST3_CAN_REPLACE_VST2 == 0); // part of the VST3 class ID
     CHECK(RootnoteProcessor::kStateSchema == 2);

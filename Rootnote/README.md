@@ -1,6 +1,6 @@
-# Rootnote 0.4.3
+# Rootnote 0.4.4
 
-Dripworks note-based resonant drum-tuning EQ. Cut unwanted resonances, boost a
+daveydidit note-based resonant drum-tuning EQ. Cut unwanted resonances, boost a
 note and its harmonic, octave or membrane series, and add a transient-excited
 Ring tail. This is an EQ/resonator, not a pitch shifter. Zero reported latency;
 mono, stereo and mono-to-stereo processing. JUCE 8.0.15, C++17.
@@ -101,7 +101,7 @@ devices selected in its settings.
 
 ## Logic Pro: Audio FX (`aufx`)
 
-On the drum track, choose **Audio FX > Audio Units > Dripworks > Rootnote**,
+On the drum track, choose **Audio FX > Audio Units > daveydidit > Rootnote**,
 then Mono, Mono → Stereo or Stereo as appropriate. This also works after
 Drummer / Drum Kit Designer on a software-instrument channel strip. Open the
 insert to show the editor; if Logic shows its generic controls, select
@@ -117,6 +117,11 @@ The 0.4.0 and 0.4.1 test builds were a MIDI-controlled AU (`aumf RtNt Dwks`).
 Logic sessions made with those builds do not find 0.4.2 or later: insert
 Rootnote again as an Audio FX and reapply the settings. From 0.4.2 on the AU
 identity `aufx RtNt Dwks` is frozen, so sessions find every later release.
+
+From 0.4.4 the maker name is **daveydidit** (was Dripworks). After updating,
+Logic lists Rootnote under **Audio Units > daveydidit** once you rescan
+(**Plug-in Manager > Reset & Rescan Selection**). Existing sessions still load
+because the codes and bundle ID are unchanged.
 
 ## Ableton Live
 

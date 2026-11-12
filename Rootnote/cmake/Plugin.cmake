@@ -19,10 +19,10 @@ if(ROOTNOTE_COPY_AFTER_BUILD)
 endif()
 
 # A regular AU audio insert in Logic; VST3/Standalone retain MIDI control.
-# Keep the RtNt/Dwks codes. The AU type changes to aufx in 0.4.2.
+# Keep the RtNt/Dwks codes and bundle ID; only the visible brand changed (0.4.4). The AU type changes to aufx in 0.4.2.
 juce_add_plugin(Rootnote
-    COMPANY_NAME "Dripworks"
-    COMPANY_COPYRIGHT "Dripworks"
+    COMPANY_NAME "daveydidit"
+    COMPANY_COPYRIGHT "daveydidit"
     BUNDLE_ID com.dripworks.rootnote
     PLUGIN_MANUFACTURER_CODE Dwks
     PLUGIN_CODE RtNt
