@@ -18,6 +18,6 @@ Run the commands in that README from inside `SpringReverb/`.
 
 ## Continuous integration
 
-The Actions workflow is checked in at [ci/github-actions-ci.yml](ci/github-actions-ci.yml), not under `.github/workflows`, because the token used to push this repository cannot create workflow files.
+The Actions workflow lives in [.github/workflows/ci.yml](.github/workflows/ci.yml).
 
-To turn it on, copy that file to `.github/workflows/ci.yml`. In the GitHub web editor, add a file at that path and paste the contents. It builds Spring Tank on Linux (VST3 and Standalone) and macOS (AU and VST3).
+It builds Spring Tank and Rootnote on Linux and macOS, runs Rootnote's tests and VST3 pluginval, and signs and validates Rootnote's universal macOS bundles.

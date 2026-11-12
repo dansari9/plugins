@@ -80,3 +80,98 @@ jobs:
             SpringReverb/build/SpringTank_artefacts/Release/AU/**
             SpringReverb/build/SpringTank_artefacts/Release/VST3/**
             SpringReverb/artifacts/spring_tank_impulse.wav
+
+  rootnote-linux:
+    name: Rootnote Linux VST3 + tests + pluginval
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake ninja-build pkg-config xvfb unzip \
+            libasound2-dev libfreetype6-dev libfontconfig1-dev \
+            libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxext-dev \
+            libgtk-3-dev
+
+      - name: Configure
+        run: cmake -S Rootnote -B Rootnote/build -G Ninja -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build Rootnote/build --parallel --target Rootnote_VST3 Rootnote_Standalone RootnoteCoreTests RootnotePluginTests
+
+      - name: Unit tests
+        run: |
+          Rootnote/build/RootnoteCoreTests
+          xvfb-run -a Rootnote/build/RootnotePluginTests
+
+      - name: pluginval (strictness 10)
+        run: |
+          curl -sL -o pluginval.zip https://github.com/Tracktion/pluginval/releases/latest/download/pluginval_Linux.zip
+          unzip -q pluginval.zip
+          xvfb-run -a ./pluginval --strictness-level 10 --validate-in-process \
+            --validate Rootnote/build/Rootnote_artefacts/Release/VST3/Rootnote.vst3
+
+      - name: Package (tar keeps the executable bit)
+        run: tar -C Rootnote/build/Rootnote_artefacts/Release -czf rootnote-linux.tar.gz VST3 Standalone
+
+      - name: Upload VST3 + Standalone
+        uses: actions/upload-artifact@v4
+        with:
+          name: rootnote-linux
+          if-no-files-found: error
+          path: rootnote-linux.tar.gz
+
+  rootnote-macos:
+    name: Rootnote macOS universal AU + VST3 + auval
+    runs-on: macos-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake -S Rootnote -B Rootnote/build -G Xcode -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"
+
+      - name: Build AU, VST3, tests
+        run: cmake --build Rootnote/build --config Release --parallel --target Rootnote_AU Rootnote_VST3 RootnoteCoreTests
+
+      - name: Ad-hoc sign and verify AU and VST3
+        run: |
+          codesign --force --sign - --timestamp=none Rootnote/build/Rootnote_artefacts/Release/AU/Rootnote.component
+          codesign --verify --deep --strict --verbose=2 Rootnote/build/Rootnote_artefacts/Release/AU/Rootnote.component
+          codesign --force --sign - --timestamp=none Rootnote/build/Rootnote_artefacts/Release/VST3/Rootnote.vst3
+          codesign --verify --deep --strict --verbose=2 Rootnote/build/Rootnote_artefacts/Release/VST3/Rootnote.vst3
+
+      - name: Unit tests
+        run: |
+          BIN="$(find Rootnote/build -type f -name RootnoteCoreTests -perm +111 | head -n 1)"
+          "$BIN"
+
+      - name: Universal binary check
+        run: |
+          lipo -archs Rootnote/build/Rootnote_artefacts/Release/AU/Rootnote.component/Contents/MacOS/Rootnote | tee /dev/stderr | grep -q "x86_64 arm64"
+          lipo -archs Rootnote/build/Rootnote_artefacts/Release/VST3/Rootnote.vst3/Contents/MacOS/Rootnote | grep -q "x86_64 arm64"
+
+      - name: auval
+        run: |
+          mkdir -p ~/Library/Audio/Plug-Ins/Components
+          cp -R Rootnote/build/Rootnote_artefacts/Release/AU/Rootnote.component ~/Library/Audio/Plug-Ins/Components/
+          killall -9 AudioComponentRegistrar 2>/dev/null || true
+          sleep 3
+          auval -a | grep -i Dwks || true
+          auval -v aufx RtNt Dwks
+
+      - name: Package (zip keeps bundle permissions)
+        run: cd Rootnote/build/Rootnote_artefacts/Release && ditto -c -k --keepParent AU/Rootnote.component "$GITHUB_WORKSPACE/Rootnote-AU-macos.zip" && ditto -c -k --keepParent VST3/Rootnote.vst3 "$GITHUB_WORKSPACE/Rootnote-VST3-macos.zip"
+
+      - name: Upload AU + VST3
+        uses: actions/upload-artifact@v4
+        with:
+          name: rootnote-macos-universal
+          if-no-files-found: error
+          path: |
+            Rootnote-AU-macos.zip
+            Rootnote-VST3-macos.zip
