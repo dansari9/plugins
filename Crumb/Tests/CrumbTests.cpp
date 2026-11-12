@@ -804,6 +804,12 @@ static void testScopeFifo()
 }
 
 static void pump() { juce::MessageManager::getInstance()->runDispatchLoopUntil(5); }
+// Asynchronous updates (attachments, timers) can lag on loaded CI machines: dispatch until done() or a 2 s deadline.
+template <typename Done> static void pumpUntil(Done done)
+{
+    for (auto end = juce::Time::getMillisecondCounter() + 2000; !done() && juce::Time::getMillisecondCounter() < end;)
+        pump(), juce::Timer::callPendingTimersSynchronously();
+}
 
 // VU meter on a test clock: the reading of a constant -12 dBFS (0 VU) signal is independent of the host block size,
 // follows elapsed time rather than timer calls, and is never torn by a concurrent block. Clips expire by age.
@@ -928,7 +934,7 @@ static void testEditorState()
             else // an automation thread: the key updates asynchronously on the message thread
                 std::thread([&] { set(p, id, v); }).join();
         }
-        pump();
+        pumpUntil(keysMatch);
         CHECK(keysMatch());
     }
     for (int i = 0; i < 25; ++i)
@@ -968,8 +974,7 @@ static void testEditorState()
         juce::Thread::sleep(1);
     }
     restore.join();
-    pump();
-    juce::Timer::callPendingTimersSynchronously();
+    pumpUntil(keysMatch);
     CHECK(keysMatch() && p.abSlot() == 1);
     e.reset();
 }
