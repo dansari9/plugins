@@ -1151,6 +1151,18 @@ private:
     std::map<int, int> begun, ended;
 };
 
+juce::Component* findNamed(juce::Component& parent, const juce::String& name)
+{
+    for (auto* child : parent.getChildren())
+    {
+        if (child->getName() == name)
+            return child;
+        if (auto* found = findNamed(*child, name))
+            return found;
+    }
+    return nullptr;
+}
+
 template <typename Type>
 Type* findFirst(juce::Component& parent)
 {
@@ -1164,7 +1176,50 @@ Type* findFirst(juce::Component& parent)
     return nullptr;
 }
 
+/** The middle of the n-th legend value on the screen. */
+juce::Point<float> legendPoint(int slot)
+{
+    return { 16.0f + static_cast<float>(slot) * (528.0f - 62.0f) / 7.0f + 14.0f, 232.0f };
+}
 } // namespace
+
+TEST_CASE("Plugin: a menu choice is applied, but not once the editor has closed")
+{
+#if JUCE_LINUX || JUCE_WINDOWS
+    using rootnote::ui::PresetDisplay;
+    RootnoteProcessor processor;
+    auto editor = std::unique_ptr<juce::AudioProcessorEditor>(processor.createEditor());
+    std::optional<Desk> desk(std::in_place, *editor);
+    auto* display = findFirst<PresetDisplay>(*editor);
+    auto* settings = findNamed(*editor, "Settings");
+    REQUIRE(display != nullptr && settings != nullptr);
+
+    const auto choose = [&](juce::Component& opener, juce::Point<float> at, int item, bool closeEditorFirst) {
+        desk->click(opener, at);
+        auto* menu = juce::ModalComponentManager::getInstance()->getModalComponent(0);
+        REQUIRE(menu != nullptr);
+        menu->exitModalState(item); // as a click on the item: the result is delivered asynchronously
+        if (closeEditorFirst)
+            editor.reset();
+        dispatchMessages();
+    };
+
+    choose(*display, { 60.0f, 13.0f }, 5, false); // item 5: preset 4
+    CHECK(processor.currentPreset() == 4);
+    choose(*settings, { 13.0f, 13.0f }, 3, false); // UI size 125 %
+    CHECK(editor->getWidth() == 1200 && editor->getHeight() == 675);
+    choose(*settings, { 13.0f, 13.0f }, 101, false); // Constant width
+    CHECK(holds(processor, ids::qMode, 1.0f));
+
+    choose(*display, { 60.0f, 13.0f }, 2, true);
+    CHECK(processor.currentPreset() == 4);
+    editor.reset(processor.createEditor());
+    desk.emplace(*editor);
+    settings = findNamed(*editor, "Settings");
+    choose(*settings, { 13.0f, 13.0f }, 100, true); // Constant Q, after the editor closed
+    CHECK(holds(processor, ids::qMode, 1.0f));
+#endif
+}
 
 TEST_CASE("Plugin: preset and editor size never touch the state tree the host restores")
 {
@@ -1245,6 +1300,19 @@ TEST_CASE("Plugin: the factory presets are the host's programs")
     CHECK(processor.getCurrentProgram() == 8);
 }
 
+TEST_CASE("Plugin: a stored size below the editor's limits opens at the smallest size")
+{
+    RootnoteProcessor processor;
+    processor.storeEditorSize(400, 320); // valid for an earlier editor
+    std::unique_ptr<juce::AudioProcessorEditor> editor(processor.createEditor());
+    CHECK(editor->getWidth() == 720 && editor->getHeight() == 405);
+    editor.reset();
+
+    processor.storeEditorSize(5000, 2000);
+    editor.reset(processor.createEditor());
+    CHECK(editor->getWidth() == 1920 && editor->getHeight() == 1080);
+}
+
 TEST_CASE("Plugin: clicking the knob note takes the bank back from MIDI, even unchanged")
 {
     using rootnote::ui::Key;
@@ -1289,6 +1357,170 @@ TEST_CASE("Plugin: clicking the knob note takes the bank back from MIDI, even un
     processor.processBlock(block, midi);
     midi.clear();
     CHECK(run().boostFromMidi);
+}
+
+TEST_CASE("Plugin: remapping or closing the editor mid-drag leaves every gesture balanced")
+{
+    using rootnote::ui::Encoder;
+    RootnoteProcessor processor;
+    auto editor = std::unique_ptr<juce::AudioProcessorEditor>(processor.createEditor());
+    auto& faceplate = dynamic_cast<RootnoteEditor&>(*editor);
+    Desk desk(*editor);
+    GestureCounter gestures(processor);
+
+    auto* gain = findControl<Encoder>(*editor, "Gain");
+    REQUIRE(gain != nullptr);
+    const float depthBefore = get(processor, ids::cutDepth);
+    desk.down(*gain, { 40.0f, 30.0f });
+    desk.drag(*gain, { 40.0f, 20.0f });
+    CHECK(gestures.begins(ids::boostGain) == 1);
+    CHECK(get(processor, ids::boostGain) > 9.0f);
+
+    // Gain becomes Depth under the pointer; the rest of the drag moves nothing.
+    faceplate.selectPage(1);
+    CHECK(gestures.ends(ids::boostGain) == 1);
+    desk.drag(*gain, { 40.0f, 0.0f });
+    desk.up(*gain, { 40.0f, 0.0f });
+    CHECK(gestures.begins(ids::cutDepth) == 0 && gestures.ends(ids::cutDepth) == 0);
+    CHECK(get(processor, ids::cutDepth) == depthBefore);
+
+    // The next drag works as usual.
+    desk.down(*gain, { 40.0f, 30.0f });
+    desk.drag(*gain, { 40.0f, 40.0f });
+    desk.up(*gain, { 40.0f, 40.0f });
+    CHECK(gestures.begins(ids::cutDepth) == 1 && gestures.ends(ids::cutDepth) == 1);
+    CHECK(get(processor, ids::cutDepth) < depthBefore);
+
+    // Closing the editor mid-drag ends the gesture.
+    desk.down(*gain, { 40.0f, 30.0f });
+    desk.drag(*gain, { 40.0f, 10.0f });
+    CHECK(gestures.begins(ids::cutDepth) == 2);
+    editor.reset();
+    CHECK(gestures.ends(ids::cutDepth) == 2);
+    CHECK(gestures.balanced());
+}
+
+TEST_CASE("Plugin: encoders take typed values and arrow keys, each change one gesture")
+{
+    using rootnote::ui::Encoder;
+    using rootnote::ui::Screen;
+    RootnoteProcessor processor;
+    auto editor = std::unique_ptr<juce::AudioProcessorEditor>(processor.createEditor());
+    auto& faceplate = dynamic_cast<RootnoteEditor&>(*editor);
+    Desk desk(*editor);
+    GestureCounter gestures(processor);
+    const auto entryOf = [](Encoder& encoder) { return findFirst<juce::TextEditor>(encoder); };
+
+    // The encoders are in the focus order.
+    auto* focus = findControl<Encoder>(*editor, "Focus");
+    REQUIRE(focus != nullptr);
+    const auto order = editor->createKeyboardFocusTraverser()->getAllComponents(editor.get());
+    CHECK(std::find(order.begin(), order.end(), focus) != order.end());
+
+    // Alt-click opens a text field with the value; Return applies the parameter's own parser.
+    desk.click(*focus, juce::ModifierKeys(juce::ModifierKeys::altModifier));
+    CHECK(focus->isShowingValueEntry());
+    CHECK(entryOf(*focus)->getText() == "65.0 Hz");
+    CHECK(entryOf(*focus)->hasKeyboardFocus(false));
+    entryOf(*focus)->setText("1.2 kHz");
+    desk.key(juce::KeyPress(juce::KeyPress::returnKey));
+    CHECK(!focus->isShowingValueEntry());
+    CHECK_NEAR(get(processor, ids::focus), 1200.0, 0.5);
+    CHECK(gestures.begins(ids::focus) == 1 && gestures.ends(ids::focus) == 1);
+
+    // Escape keeps the value.
+    desk.click(*focus, juce::ModifierKeys(juce::ModifierKeys::popupMenuClickModifier));
+    REQUIRE(focus->isShowingValueEntry());
+    entryOf(*focus)->setText("80 Hz");
+    desk.key(juce::KeyPress(juce::KeyPress::escapeKey));
+    CHECK(!focus->isShowingValueEntry());
+    CHECK_NEAR(get(processor, ids::focus), 1200.0, 0.5);
+
+    // Arrow keys on the focused encoder: a step each, Shift finer.
+    CHECK(focus->hasKeyboardFocus(false));
+    const float before = get(processor, ids::focus);
+    desk.key(juce::KeyPress(juce::KeyPress::downKey));
+    const float down = get(processor, ids::focus);
+    CHECK(down < before);
+    desk.key(juce::KeyPress(juce::KeyPress::upKey, juce::ModifierKeys::shiftModifier, 0));
+    CHECK(get(processor, ids::focus) > down && get(processor, ids::focus) < before);
+    CHECK(gestures.begins(ids::focus) == 3 && gestures.ends(ids::focus) == 3);
+
+    // A stepped parameter moves a whole step per key.
+    auto* bands = findControl<Encoder>(*editor, "Bands");
+    desk.click(*bands);
+    desk.key(juce::KeyPress(juce::KeyPress::upKey));
+    CHECK(holds(processor, ids::bands, 9.0f));
+
+    // A click on a legend value opens the field of its encoder: an exact frequency for the cut note.
+    faceplate.selectPage(1);
+    auto* note = findControl<Encoder>(*editor, "Note");
+    desk.click(*findFirst<Screen>(*editor), legendPoint(4));
+    REQUIRE(note->isShowingValueEntry());
+    entryOf(*note)->setText("55 Hz");
+    desk.key(juce::KeyPress(juce::KeyPress::returnKey));
+    CHECK_NEAR(get(processor, ids::cutNote), 33.0, 0.006);
+
+    // Cents of the cut note.
+    auto* fine = findControl<Encoder>(*editor, "Fine");
+    desk.click(*fine, juce::ModifierKeys(juce::ModifierKeys::commandModifier));
+    REQUIRE(fine->isShowingValueEntry());
+    entryOf(*fine)->setText(juce::String::fromUTF8("\xe2\x88\x92" "20 ct"));
+    desk.key(juce::KeyPress(juce::KeyPress::returnKey));
+    CHECK_NEAR(get(processor, ids::cutNote), 32.8, 0.002);
+    CHECK(gestures.balanced());
+}
+
+TEST_CASE("Plugin: after a remap an encoder formats and parses its own parameter")
+{
+    using rootnote::ui::Encoder;
+    RootnoteProcessor processor;
+    std::unique_ptr<juce::AudioProcessorEditor> editor(processor.createEditor());
+    auto& faceplate = dynamic_cast<RootnoteEditor&>(*editor);
+    auto* blend = findControl<Encoder>(*editor, "Blend");
+    REQUIRE(blend != nullptr);
+    CHECK(blend->getTextFromValue(0.25) == "75 / 25");
+
+    faceplate.selectPage(1); // Blend's encoder is now the cut note's Fine
+    CHECK(blend->getTitle() == "Fine");
+    CHECK(blend->getTextFromValue(0.0) == "+0 ct");
+    CHECK(blend->getTextFromValue(-12.5) == juce::String::fromUTF8("\xe2\x88\x92" "12.5 ct"));
+    CHECK_NEAR(blend->getValueFromText("+25 ct"), 25.0, 1.0e-9);
+
+    faceplate.selectPage(3); // Q Mode is a choice
+    auto* qMode = findControl<Encoder>(*editor, "Q Mode");
+    CHECK(qMode->getTextFromValue(1.0) == processor.getApvts().getParameter(ids::qMode)->getText(1.0f, 0));
+}
+
+TEST_CASE("Plugin: holding a page key peeks at its page, a click selects it")
+{
+    using rootnote::ui::Encoder;
+    using rootnote::ui::Key;
+    using rootnote::ui::Screen;
+    RootnoteProcessor processor;
+    std::unique_ptr<juce::AudioProcessorEditor> editor(processor.createEditor());
+    Desk desk(*editor);
+    auto* ring = findControl<Key>(*editor, "ring");
+    auto* screen = findFirst<Screen>(*editor);
+    REQUIRE(ring != nullptr && screen != nullptr);
+    const auto legendShowsRing = [&] { return screen->hitTest(juce::roundToInt(legendPoint(2).x), 232)
+                                              && !screen->hitTest(juce::roundToInt(legendPoint(3).x), 232); };
+    const auto encodersOnBoost = [&] { return findControl<Encoder>(*editor, "Gain") != nullptr; };
+
+    // Hold: the display shows the ring page while the key is down, then the boost page again.
+    const juce::Point<float> middle = ring->getLocalBounds().getCentre().toFloat();
+    desk.down(*ring, middle);
+    CHECK(legendShowsRing());
+    CHECK(encodersOnBoost());
+    juce::Thread::sleep(static_cast<int>(RootnoteEditor::kPagePeekMs) + 50);
+    desk.up(*ring, middle);
+    CHECK(!legendShowsRing());
+    CHECK(encodersOnBoost());
+
+    // A short click selects it.
+    desk.click(*ring);
+    CHECK(legendShowsRing());
+    CHECK(!encodersOnBoost() && findControl<Encoder>(*editor, "Amount") != nullptr);
 }
 
 /**

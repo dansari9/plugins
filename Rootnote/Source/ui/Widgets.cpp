@@ -1,5 +1,7 @@
 #include "Widgets.h"
 
+#include "Pages.h"
+
 namespace rootnote::ui
 {
 Key::Key(const juce::String& t, float fontPx, float trackingEm)
@@ -106,6 +108,50 @@ Encoder::Encoder()
     : juce::Slider(juce::Slider::RotaryVerticalDrag, juce::Slider::NoTextBox)
 {
     setRotaryParameters(juce::MathConstants<float>::pi * 1.25f, juce::MathConstants<float>::pi * 2.75f, true);
+    setWantsKeyboardFocus(true);
+
+    // Over the name; only there while typing.
+    addChildComponent(entry);
+    entry.setBounds(2, 63, 76, 17);
+    entry.setFont(mono(11.0f));
+    entry.setJustification(juce::Justification::centred);
+    entry.setIndents(2, 1);
+    entry.setColour(juce::TextEditor::backgroundColourId, colours::key);
+    entry.setColour(juce::TextEditor::textColourId, colours::ink);
+    entry.setColour(juce::TextEditor::highlightColourId, colours::orange.withAlpha(0.3f));
+    entry.setColour(juce::TextEditor::outlineColourId, colours::orange);
+    entry.setColour(juce::TextEditor::focusedOutlineColourId, colours::orange);
+    entry.setColour(juce::CaretComponent::caretColourId, colours::ink);
+    entry.onReturnKey = [this] { commitEntry(); };
+    entry.onFocusLost = [this] { commitEntry(); };
+    entry.onEscapeKey = [this] {
+        entry.setVisible(false);
+        grabKeyboardFocus();
+    };
+}
+
+void Encoder::showValueEntry()
+{
+    entry.setText(getTextFromValue(getValue()), false);
+    entry.setVisible(true);
+    entry.selectAll();
+    entry.grabKeyboardFocus();
+}
+
+void Encoder::commitEntry()
+{
+    if (!entry.isVisible())
+        return;
+    const auto text = entry.getText().trim();
+    entry.setVisible(false); // first: hiding it loses the focus, which commits again
+    if (text.isNotEmpty())
+        setValue(getValueFromText(text), juce::sendNotificationSync);
+}
+
+void Encoder::cancelDrag()
+{
+    dragging = false;
+    entry.setVisible(false);
 }
 
 void Encoder::setCap(juce::Colour colour, const juce::String& newLabel)
@@ -151,14 +197,47 @@ void Encoder::paint(juce::Graphics& g)
 
 void Encoder::mouseDown(const juce::MouseEvent& e)
 {
+    dragging = false;
+    if (e.mods.isPopupMenu() || e.mods.isAltDown() || e.mods.isCommandDown())
+    {
+        showValueEntry();
+        return;
+    }
     juce::Slider::mouseDown(e); // starts the gesture
+    dragging = true;
     dragProportion = valueToProportionOfLength(getValue());
     lastY = e.position.y;
 }
 
+bool Encoder::keyPressed(const juce::KeyPress& key)
+{
+    const int code = key.getKeyCode();
+    if (code == juce::KeyPress::returnKey)
+    {
+        showValueEntry();
+        return true;
+    }
+    const int direction = code == juce::KeyPress::upKey || code == juce::KeyPress::rightKey     ? 1
+                          : code == juce::KeyPress::downKey || code == juce::KeyPress::leftKey ? -1
+                                                                                                : 0;
+    if (direction == 0 || !isEnabled())
+        return false;
+
+    // As a drag of 2 px (Shift: 0.2 px), but at least one step of a stepped parameter.
+    const double before = getValue();
+    const double step = key.getModifiers().isShiftDown() ? 0.001 : 0.01;
+    double value = proportionOfLengthToValue(juce::jlimit(0.0, 1.0, valueToProportionOfLength(before) + direction * step));
+    if (snapToInteger)
+        value = std::round(value);
+    if (getNormalisableRange().snapToLegalValue(value) == before)
+        value = before + direction * (snapToInteger ? 1.0 : getInterval());
+    setValue(value, juce::sendNotificationSync);
+    return true;
+}
+
 void Encoder::mouseDrag(const juce::MouseEvent& e)
 {
-    if (!isEnabled())
+    if (!dragging || !isEnabled())
         return;
     // Relative, so Shift can change the speed mid-drag without a jump: 200 px for the full range.
     const double pixels = static_cast<double>(lastY - e.position.y);
@@ -168,6 +247,88 @@ void Encoder::mouseDrag(const juce::MouseEvent& e)
     if (snapToInteger)
         value = std::round(value);
     setValue(value, juce::sendNotificationSync);
+}
+
+EncoderBinding::EncoderBinding(juce::RangedAudioParameter& p, Encoder& e, bool centsOfNote)
+    : parameter(p), encoder(e), cents(centsOfNote), attachment(p, [this](float value) { show(value); })
+{
+    if (cents)
+    {
+        encoder.setNormalisableRange({ -50.0, 50.0, 0.1 });
+        encoder.textFromValueFunction = [](double value) { return signedNumber(value, 1) + " ct"; };
+        encoder.valueFromTextFunction = [](const juce::String& text) {
+            return text.replace(juce::String::fromUTF8("\xe2\x88\x92"), "-").retainCharacters("+-.0123456789").getDoubleValue();
+        };
+        encoder.setDoubleClickReturnValue(true, 0.0, {});
+    }
+    else
+    {
+        const auto range = p.getNormalisableRange();
+        juce::NormalisableRange<double> own {
+            static_cast<double>(range.start), static_cast<double>(range.end),
+            [range](double, double, double v) { return static_cast<double>(range.convertFrom0to1(static_cast<float>(v))); },
+            [range](double, double, double v) { return static_cast<double>(range.convertTo0to1(static_cast<float>(v))); },
+            [range](double, double, double v) { return static_cast<double>(range.snapToLegalValue(static_cast<float>(v))); }
+        };
+        own.interval = static_cast<double>(range.interval);
+        own.skew = static_cast<double>(range.skew);
+        own.symmetricSkew = range.symmetricSkew;
+        encoder.setNormalisableRange(own);
+        encoder.textFromValueFunction = [&p](double value) { return p.getText(p.convertTo0to1(static_cast<float>(value)), 0); };
+        encoder.valueFromTextFunction = [&p](const juce::String& text) {
+            return static_cast<double>(p.convertFrom0to1(p.getValueForText(text)));
+        };
+        encoder.setDoubleClickReturnValue(true, static_cast<double>(p.convertFrom0to1(p.getDefaultValue())), {});
+    }
+
+    encoder.onDragStart = [this] {
+        if (inGesture)
+            return; // a double-click inside a drag
+        inGesture = true;
+        centsBase = std::round(static_cast<double>(parameter.convertFrom0to1(parameter.getValue())));
+        attachment.beginGesture();
+    };
+    encoder.onDragEnd = [this] {
+        if (inGesture) // not for the end of a drag that began under another binding
+        {
+            inGesture = false;
+            attachment.endGesture();
+        }
+    };
+    encoder.onValueChange = [this] {
+        const float value = toParameter(encoder.getValue());
+        if (inGesture)
+            attachment.setValueAsPartOfGesture(value);
+        else
+            attachment.setValueAsCompleteGesture(value); // a key, a typed value, accessibility
+    };
+    attachment.sendInitialUpdate();
+}
+
+EncoderBinding::~EncoderBinding()
+{
+    encoder.onValueChange = nullptr;
+    encoder.onDragStart = nullptr;
+    encoder.onDragEnd = nullptr;
+    encoder.textFromValueFunction = nullptr;
+    encoder.valueFromTextFunction = nullptr;
+    encoder.cancelDrag();
+    if (inGesture)
+        attachment.endGesture();
+}
+
+void EncoderBinding::show(float value)
+{
+    const auto v = static_cast<double>(value);
+    encoder.setValue(cents ? (v - (inGesture ? centsBase : std::round(v))) * 100.0 : v, juce::dontSendNotification);
+}
+
+float EncoderBinding::toParameter(double encoderValue) const
+{
+    if (!cents)
+        return static_cast<float>(encoderValue);
+    const double base = inGesture ? centsBase : std::round(static_cast<double>(parameter.convertFrom0to1(parameter.getValue())));
+    return static_cast<float>(base + encoderValue / 100.0);
 }
 
 RoundButton::RoundButton(Icon i)

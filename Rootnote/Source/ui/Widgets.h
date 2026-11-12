@@ -42,8 +42,11 @@ private:
 
 /**
     An encoder: a light ring, a coloured cap and a dot, with its name below.
-    Drag up/down; Shift drags ten times finer; double-click resets. It is a
-    Slider, so a SliderAttachment binds it to a parameter.
+    Drag up/down; Shift drags ten times finer; double-click resets. With the
+    keyboard focus the arrow keys step it (Shift finer). Alt-, Cmd- or
+    right-click, or Return, opens a small text field over its name for a
+    typed value, read by the slider's valueFromTextFunction. An
+    EncoderBinding connects it to a parameter.
 */
 class Encoder : public juce::Slider
 {
@@ -55,15 +58,57 @@ public:
     /** Whole semitones while dragging (the cut note; Fine sets the cents). */
     bool snapToInteger = false;
 
+    /** Opens the text field with the current value selected. */
+    void showValueEntry();
+    bool isShowingValueEntry() const { return entry.isVisible(); }
+
+    /** The rest of the current drag, and an open text field, are ignored. */
+    void cancelDrag();
+
     void paint(juce::Graphics&) override;
     void mouseDown(const juce::MouseEvent&) override;
     void mouseDrag(const juce::MouseEvent&) override;
+    bool keyPressed(const juce::KeyPress&) override;
 
 private:
+    void commitEntry();
+
     juce::Colour cap;
     juce::String label;
+    juce::TextEditor entry;
+    bool dragging = false;
     double dragProportion = 0.0;
     float lastY = 0.0f;
+};
+
+/**
+    Binds an Encoder to a parameter, as juce::SliderParameterAttachment does,
+    or to the cents (-50..+50) of a note parameter. It installs its own range,
+    text conversion and reset value, so nothing of an earlier binding stays.
+
+    Every change reaches the host inside a gesture: a drag is one, and so is
+    each arrow key, typed value or reset. Destroying the binding ends a drag
+    in progress and the encoder ignores the rest of it, so remapping a page or
+    closing the editor mid-drag leaves no gesture open and moves nothing else.
+*/
+class EncoderBinding
+{
+public:
+    EncoderBinding(juce::RangedAudioParameter&, Encoder&, bool cents = false);
+    ~EncoderBinding();
+
+private:
+    void show(float value);
+    float toParameter(double encoderValue) const;
+
+    juce::RangedAudioParameter& parameter;
+    Encoder& encoder;
+    const bool cents;
+    double centsBase = 0.0; // the semitone the cents are relative to during a gesture
+    bool inGesture = false;
+    juce::ParameterAttachment attachment;
+
+    JUCE_DECLARE_NON_COPYABLE(EncoderBinding)
 };
 
 /** A plain round button with a painted icon: the settings gear or the power switch. */

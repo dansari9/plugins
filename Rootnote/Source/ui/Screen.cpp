@@ -12,6 +12,7 @@ const double kLowHz = 16.3516 * std::exp2(-1.0 / 24.0);
 const double kHighHz = kLowHz * 512.0;
 
 constexpr float kGraphX = 16.0f, kGraphY = 70.0f, kGraphW = 528.0f, kGraphH = 120.0f;
+constexpr float kLegendY = 205.0f, kLegendDx = (kGraphW - 62.0f) / 7.0f;
 
 float xOf(double hz)
 {
@@ -29,13 +30,34 @@ Screen::Screen(RootnoteProcessor& p)
 {
     std::fill(std::begin(spectrumDb), std::end(spectrumDb), kBottomDb);
     setOpaque(false);
-    setInterceptsMouseClicks(false, false);
+    setInterceptsMouseClicks(true, false); // only the legend values: see hitTest()
 }
 
 void Screen::setPage(int newPage)
 {
-    page = newPage;
-    repaint();
+    if (page != newPage)
+    {
+        page = newPage;
+        repaint();
+    }
+}
+
+int Screen::legendSlotAt(int x) const
+{
+    const int slot = static_cast<int>(std::floor((static_cast<float>(x) - 16.0f + 4.0f) / kLegendDx));
+    return juce::isPositiveAndBelow(slot, kNumEncoders) && pageSlots(page)[static_cast<size_t>(slot)].id != nullptr ? slot : -1;
+}
+
+bool Screen::hitTest(int x, int y)
+{
+    return static_cast<float>(y) > kLegendY && legendSlotAt(x) >= 0;
+}
+
+void Screen::mouseUp(const juce::MouseEvent& e)
+{
+    const int slot = legendSlotAt(e.x);
+    if (slot >= 0 && onValueClick != nullptr && getLocalBounds().contains(e.getPosition()))
+        onValueClick(slot);
 }
 
 void Screen::update(const RootnoteProcessor::DisplayState& newState, const TunerReading& reading)
@@ -215,7 +237,7 @@ void Screen::paint(juce::Graphics& g)
 
     // Legend: the eight encoder values, coloured like the caps.
     g.setColour(colours::rule);
-    g.fillRect(16.0f, 205.0f, kGraphW, 1.0f);
+    g.fillRect(16.0f, kLegendY, kGraphW, 1.0f);
     const auto& slots = pageSlots(page);
     const auto labelType = mono(8.0f, Weight::regular, 0.02f);
     const auto valueType = mono(11.0f);
@@ -224,7 +246,7 @@ void Screen::paint(juce::Graphics& g)
         const Slot& slot = slots[static_cast<size_t>(i)];
         if (slot.id == nullptr)
             continue;
-        const float x = 16.0f + static_cast<float>(i) * (kGraphW - 62.0f) / 7.0f;
+        const float x = 16.0f + static_cast<float>(i) * kLegendDx;
         g.setColour(capColour(slot.cap));
         g.fillEllipse(x, 215.5f, 5.0f, 5.0f);
         g.setFont(labelType);

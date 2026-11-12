@@ -36,10 +36,7 @@ RootnoteEditor::RootnoteEditor(RootnoteProcessor& p)
         juce::PopupMenu menu;
         for (int i = 0; i < RootnoteProcessor::numPresets(); ++i)
             menu.addItem(i + 1, RootnoteProcessor::presetName(i), true, i == processor.currentPreset());
-        menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(&preset), [this](int chosen) {
-            if (chosen > 0)
-                processor.loadPreset(chosen - 1);
-        });
+        showMenu(menu, preset, [this](int chosen) { processor.loadPreset(chosen - 1); });
     };
     slotA.onPress = [this](const juce::ModifierKeys&) { processor.selectAbSlot(0); };
     slotB.onPress = [this](const juce::ModifierKeys&) { processor.selectAbSlot(1); };
@@ -52,6 +49,7 @@ RootnoteEditor::RootnoteEditor(RootnoteProcessor& p)
     place(settings, 856, 9, 26, 26);
     place(power, 910, 9, 26, 26);
     place(screen, 24, 52, 560, 252);
+    screen.onValueClick = [this](int encoder) { encoders[encoder].showValueEntry(); };
 
     // Pitch keys: click sets the boost note, Alt-click the cut note.
     for (int pc = 0; pc < 12; ++pc)
@@ -89,8 +87,13 @@ RootnoteEditor::RootnoteEditor(RootnoteProcessor& p)
     // Page keys and encoders.
     for (int i = 0; i < kNumPages; ++i)
     {
+        // A click selects the page; holding the key only peeks at it on the display.
         auto* key = pageKeys.add(new Key(pageName(i)));
-        key->onPress = [this, i](const juce::ModifierKeys&) { selectPage(i); };
+        key->onStateChange = [this, i] { pageKeyChanged(i); };
+        key->onPress = [this, i](const juce::ModifierKeys&) {
+            if (!std::exchange(peeked, false))
+                selectPage(i);
+        };
         place(*key, 604.0f + static_cast<float>(i) * 67.0f, 52, 62, 34);
     }
     for (int i = 0; i < kNumEncoders; ++i)
@@ -122,7 +125,9 @@ RootnoteEditor::RootnoteEditor(RootnoteProcessor& p)
     setResizable(true, false); // hosts resize; the settings menu has sizes too
     setResizeLimits(kPlateWidth * 3 / 4, kPlateHeight * 3 / 4, kPlateWidth * 2, kPlateHeight * 2);
     getConstrainer()->setFixedAspectRatio(static_cast<double>(kPlateWidth) / kPlateHeight);
-    const int width = stored.x > 0 ? stored.x : kDefaultWidth;
+    // An older editor may have stored a size below today's limits.
+    const int width = juce::jlimit(getConstrainer()->getMinimumWidth(), getConstrainer()->getMaximumWidth(),
+                                   stored.x > 0 ? stored.x : kDefaultWidth);
     setSize(width, width * kPlateHeight / kPlateWidth);
 
     processor.setDisplayActive(true);
@@ -177,76 +182,89 @@ void RootnoteEditor::selectPage(int newPage)
     refresh();
 }
 
+void RootnoteEditor::pageKeyChanged(int index)
+{
+    const bool down = pageKeys[index]->isDown();
+    if (down && peekKey != index)
+    {
+        peekKey = index;
+        peekStartMs = juce::Time::getMillisecondCounter();
+        screen.setPage(index);
+    }
+    else if (!down && peekKey == index)
+    {
+        // Comes before the click of the same release.
+        peekKey = -1;
+        peeked = juce::Time::getMillisecondCounter() - peekStartMs >= kPagePeekMs;
+        screen.setPage(page);
+    }
+}
+
 void RootnoteEditor::bindEncoders()
 {
-    // Detach everything first: a new attachment takes over its slider's range and value.
-    for (auto& attachment : attachments)
-        attachment.reset();
-    centsAttachment.reset();
+    // Unbind everything first: a binding ends its drag, and a new one takes over the range and texts.
+    for (auto& binding : bindings)
+        binding.reset();
 
     const auto& slots = pageSlots(page);
     for (int i = 0; i < kNumEncoders; ++i)
     {
         const Slot& slot = slots[static_cast<size_t>(i)];
         Encoder& encoder = encoders[i];
-        encoder.onValueChange = nullptr;
-        encoder.onDragStart = nullptr;
-        encoder.onDragEnd = nullptr;
         encoder.setVisible(slot.id != nullptr);
         if (slot.id == nullptr)
             continue;
 
         encoder.setCap(capColour(slot.cap), slot.label);
-        auto& param = *apvts.getParameter(slot.id);
-        if (slot.cents)
-        {
-            // The cents of the cut note: -50..+50 around the semitone it had when the drag began.
-            encoder.snapToInteger = false;
-            encoder.setNormalisableRange({ -50.0, 50.0, 0.1 });
-            centsAttachment = std::make_unique<juce::ParameterAttachment>(param, [&encoder](float note) {
-                encoder.setValue((static_cast<double>(note) - std::round(static_cast<double>(note))) * 100.0,
-                                 juce::dontSendNotification);
-            });
-            encoder.onDragStart = [this] {
-                centsBase = std::round(parameter(ids::cutNote));
-                centsAttachment->beginGesture();
-            };
-            encoder.onValueChange = [this, &encoder] {
-                centsAttachment->setValueAsPartOfGesture(static_cast<float>(centsBase + encoder.getValue() / 100.0));
-            };
-            encoder.onDragEnd = [this] { centsAttachment->endGesture(); };
-            encoder.setDoubleClickReturnValue(true, 0.0);
-            centsAttachment->sendInitialUpdate();
-        }
-        else
-        {
-            encoder.snapToInteger = std::strcmp(slot.id, ids::cutNote) == 0;
-            attachments[i] = std::make_unique<juce::SliderParameterAttachment>(param, encoder);
-            encoder.setDoubleClickReturnValue(true, static_cast<double>(param.convertFrom0to1(param.getDefaultValue())));
-        }
+        encoder.snapToInteger = !slot.cents && std::strcmp(slot.id, ids::cutNote) == 0;
+        bindings[i] = std::make_unique<EncoderBinding>(*apvts.getParameter(slot.id), encoder, slot.cents);
     }
+}
+
+void RootnoteEditor::showMenu(juce::PopupMenu menu, juce::Component& target, std::function<void(int)> onChosen)
+{
+    // The choice arrives asynchronously, possibly after the editor has gone.
+    menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(&target),
+                       [safe = juce::Component::SafePointer<RootnoteEditor>(this), onChosen = std::move(onChosen)](int chosen) {
+                           if (safe != nullptr && chosen != 0)
+                               onChosen(chosen);
+                       });
 }
 
 void RootnoteEditor::showSettings()
 {
+    static constexpr int kSizes[] = { 75, 100, 125, 150, 200 };
+    enum : int { constantQId = 100, constantWidthId, holdId, returnId };
+
     juce::PopupMenu sizes;
-    for (const int percent : { 75, 100, 125, 150, 200 })
-        sizes.addItem(percent == 100 ? "100%" : juce::String(percent) + "%", true,
-                      getWidth() == kPlateWidth * percent / 100, [this, percent] {
-                          setSize(kPlateWidth * percent / 100, kPlateHeight * percent / 100);
-                      });
+    for (int i = 0; i < static_cast<int>(std::size(kSizes)); ++i)
+        sizes.addItem(i + 1, juce::String(kSizes[i]) + "%", true, getWidth() == kPlateWidth * kSizes[i] / 100);
 
     juce::PopupMenu menu;
     menu.addSectionHeader("Rootnote " JucePlugin_VersionString);
     menu.addSubMenu("UI size", sizes);
     const bool constantQ = parameter(ids::qMode) < 0.5;
-    menu.addItem("Constant Q", true, constantQ, [this] { setParameter(ids::qMode, 0.0); });
-    menu.addItem("Constant width", true, !constantQ, [this] { setParameter(ids::qMode, 1.0); });
+    menu.addItem(constantQId, "Constant Q", true, constantQ);
+    menu.addItem(constantWidthId, "Constant width", true, !constantQ);
     menu.addSeparator();
     const bool hold = parameter(ids::noteOff) < 0.5;
-    menu.addItem("Note-off: hold", true, hold, [this] { setParameter(ids::noteOff, 0.0); });
-    menu.addItem("Note-off: return to knob", true, !hold, [this] { setParameter(ids::noteOff, 1.0); });
-    menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(&settings));
+    menu.addItem(holdId, "Note-off: hold", true, hold);
+    menu.addItem(returnId, "Note-off: return to knob", true, !hold);
+
+    showMenu(menu, settings, [this](int chosen) {
+        switch (chosen)
+        {
+            case constantQId:     setParameter(ids::qMode, 0.0); break;
+            case constantWidthId: setParameter(ids::qMode, 1.0); break;
+            case holdId:          setParameter(ids::noteOff, 0.0); break;
+            case returnId:        setParameter(ids::noteOff, 1.0); break;
+            default:
+            {
+                const int percent = kSizes[juce::jlimit(0, static_cast<int>(std::size(kSizes)) - 1, chosen - 1)];
+                setSize(kPlateWidth * percent / 100, kPlateHeight * percent / 100);
+            }
+        }
+    });
 }
 
 void RootnoteEditor::refresh()

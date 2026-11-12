@@ -32,6 +32,9 @@ public:
     /** Shows a page (0 boost, 1 cut, 2 ring, 3 out, 4 midi) on the encoders and the legend. */
     void selectPage(int page);
 
+    /** Holding a page key this long only shows its page on the display; a shorter press selects it. */
+    static constexpr juce::uint32 kPagePeekMs = 350;
+
 private:
     struct Plate : juce::Component
     {
@@ -48,6 +51,8 @@ private:
     void toggleParameter(const char* id);
     double parameter(const char* id) const;
     void showSettings();
+    void showMenu(juce::PopupMenu, juce::Component& target, std::function<void(int)> onChosen);
+    void pageKeyChanged(int index);
     void place(juce::Component&, float x, float y, float w, float h);
 
     RootnoteProcessor& processor;
@@ -67,11 +72,12 @@ private:
     rootnote::ui::Key link { "link" }, limit { "limit" };
 
     rootnote::ui::Encoder encoders[rootnote::ui::kNumEncoders];
-    std::unique_ptr<juce::SliderParameterAttachment> attachments[rootnote::ui::kNumEncoders];
-    std::unique_ptr<juce::ParameterAttachment> centsAttachment;
-    double centsBase = 0.0; // the cut note's semitone while its cents are dragged
+    std::unique_ptr<rootnote::ui::EncoderBinding> bindings[rootnote::ui::kNumEncoders]; // after the encoders
 
     int page = 0;
+    int peekKey = -1;        // the page key held down, if any
+    juce::uint32 peekStartMs = 0;
+    bool peeked = false;     // the last press was a hold: its click selects nothing
     int octave = 1;          // octave of the pitch keys
     float meterDb = -100.0f;
     uint32_t lastNoteOns = 0;
