@@ -176,7 +176,10 @@ void RootnoteEditor::toggleParameter(const char* id)
 
 void RootnoteEditor::selectPage(int newPage)
 {
-    page = juce::jlimit(0, kNumPages - 1, newPage);
+    newPage = juce::jlimit(0, kNumPages - 1, newPage);
+    if (newPage == page)
+        return;
+    page = newPage;
     bindEncoders();
     screen.setPage(page);
     refresh();
@@ -277,8 +280,6 @@ void RootnoteEditor::refresh()
         midiLit = 6;
     lastNoteOns = state.midiNoteOns;
     midiLit = juce::jmax(0, midiLit - 1);
-    boostFromMidi = state.boostFromMidi;
-    cutFromMidi = state.cutFromMidi;
     const float peak = juce::jmax(processor.takeOutputPeak(0), processor.takeOutputPeak(1));
     meterDb = juce::jmax(juce::Decibels::gainToDecibels(peak, -100.0f), meterDb - 1.5f);
 
@@ -322,7 +323,22 @@ void RootnoteEditor::refresh()
     slotB.setLook(processor.abSlot() == 1 ? Key::Look::lcdOn : Key::Look::lcd);
     power.setLit(parameter(ids::bypass) < 0.5);
 
-    plate.repaint(kFooterArea);
+    Footer now;
+    now.midiMode = juce::roundToInt(parameter(ids::midiMode));
+    now.boostLit = state.boostFromMidi || midiLit > 0;
+    now.cutLit = state.cutFromMidi;
+    now.hold = parameter(ids::noteOff) < 0.5;
+    now.constantQ = parameter(ids::qMode) < 0.5;
+    now.glide = parameter(ids::glide);
+    now.mix = parameter(ids::mix);
+    now.output = parameter(ids::output);
+    now.a4 = parameter(ids::a4);
+    now.meterLeds = juce::jlimit(0, 14, juce::roundToInt((meterDb + 42.0f) / 3.0f)); // 14 LEDs, 3 dB each
+    if (now != footer)
+    {
+        footer = now;
+        plate.repaint(kFooterArea);
+    }
 }
 
 void RootnoteEditor::paintPlate(juce::Graphics& g)
@@ -371,36 +387,31 @@ void RootnoteEditor::paintFooter(juce::Graphics& g)
     };
 
     // MIDI in.
+    const Footer& f = footer;
     float x = panel(24.0f, 411.0f, "MIDI IN");
-    const int mode = juce::roundToInt(parameter(ids::midiMode));
-    const bool active = midiLit > 0;
-    if (mode == 1)
+    if (f.midiMode == 1)
     {
-        x = drawTextAt(g, "ch1" + kArrow + "boost", value, colours::ink, dot(x, boostFromMidi || active), rowY) + 14.0f;
-        x = drawTextAt(g, "ch2" + kArrow + "cut", value, colours::ink, dot(x, cutFromMidi), rowY) + 14.0f;
+        x = drawTextAt(g, "ch1" + kArrow + "boost", value, colours::ink, dot(x, f.boostLit), rowY) + 14.0f;
+        x = drawTextAt(g, "ch2" + kArrow + "cut", value, colours::ink, dot(x, f.cutLit), rowY) + 14.0f;
     }
-    else if (mode == 2)
+    else if (f.midiMode == 2)
     {
-        x = drawTextAt(g, "omni" + kArrow + "boost", value, colours::ink, dot(x, boostFromMidi || active), rowY) + 14.0f;
+        x = drawTextAt(g, "omni" + kArrow + "boost", value, colours::ink, dot(x, f.boostLit), rowY) + 14.0f;
     }
     else
     {
         x = drawTextAt(g, "midi off", value, colours::ink, x, rowY) + 14.0f;
     }
-    drawTextAt(g, "glide " + number(parameter(ids::glide), 0) + " ms" + kDot
-                      + (parameter(ids::noteOff) < 0.5 ? "hold" : "return"),
-               value, colours::sub, x, rowY);
+    drawTextAt(g, "glide " + number(f.glide, 0) + " ms" + kDot + (f.hold ? "hold" : "return"), value, colours::sub, x, rowY);
 
-    // Mix and output, with the output meter: 14 LEDs, 3 dB each.
+    // Mix and output, with the output meter.
     x = panel(447.0f, 293.0f, "MIX" + kDot + "OUTPUT");
-    x = drawTextAt(g, number(parameter(ids::mix), 0) + "%", value, colours::ink, x, rowY) + 14.0f;
-    x = drawTextAt(g, number(parameter(ids::output), 1, 1) + " db", value, colours::ink, x, rowY) + 14.0f;
-    const int lit = juce::jlimit(0, 14, juce::roundToInt((meterDb + 42.0f) / 3.0f));
+    x = drawTextAt(g, number(f.mix, 0) + "%", value, colours::ink, x, rowY) + 14.0f;
+    x = drawTextAt(g, number(f.output, 1, 1) + " db", value, colours::ink, x, rowY) + 14.0f;
     for (int i = 0; i < 14; ++i)
-        drawLed(g, { x + 2.5f + static_cast<float>(i) * 8.0f, rowY }, i < lit ? colours::orange : colours::ledOff);
+        drawLed(g, { x + 2.5f + static_cast<float>(i) * 8.0f, rowY }, i < f.meterLeds ? colours::orange : colours::ledOff);
 
     // Tuning reference and Q mode.
     x = panel(752.0f, 184.0f, "A4" + kDot + "Q MODE");
-    drawTextAt(g, number(parameter(ids::a4), 1) + " hz" + kDot + (parameter(ids::qMode) < 0.5 ? "const q" : "const width"),
-               value, colours::ink, x, rowY);
+    drawTextAt(g, number(f.a4, 1) + " hz" + kDot + (f.constantQ ? "const q" : "const width"), value, colours::ink, x, rowY);
 }

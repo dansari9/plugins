@@ -19,7 +19,7 @@ public:
     /** The page whose values the legend shows. */
     void setPage(int page);
 
-    /** Pulls new spectrum samples, takes the frame and repaints. Call once per UI frame. */
+    /** Pulls new spectrum samples and takes the frame; repaints what changed. Call once per UI frame. */
     void update(const RootnoteProcessor::DisplayState&, const TunerReading&);
 
     /** A click on a legend value, with the encoder it belongs to. Elsewhere the screen ignores the mouse. */
@@ -36,18 +36,26 @@ private:
     static constexpr float kTopDb = 6.0f, kBottomDb = -70.0f;
 
     void analyse(double sampleRate);
+    void buildPaths();
+    void buildText(const TunerReading&);
     int legendSlotAt(int x) const;
+    bool sameFrame(const RootnoteProcessor::DisplayState&) const;
 
     RootnoteProcessor& processor;
     RootnoteProcessor::DisplayState state;
     int page = 0;
 
     Fft fft { kFftOrder };
+    std::vector<double> window = std::vector<double>(kFftSize); // Hann
     std::vector<float> recent = std::vector<float>(kFftSize, 0.0f); // circular
     std::vector<double> re = std::vector<double>(kFftSize), im = std::vector<double>(kFftSize);
     size_t writeAt = 0;
     float spectrumDb[kPoints];
     juce::Path line, area;
+
+    // What the text was made from: every parameter (normalised) and the reading.
+    std::vector<float> shownParameters;
+    TunerReading shownReading;
 
     juce::String note, noteDetail, hitLine, seriesLine, cutLine, ringLine;
     bool hitValid = false;

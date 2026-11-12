@@ -29,6 +29,9 @@ Screen::Screen(RootnoteProcessor& p)
     : processor(p)
 {
     std::fill(std::begin(spectrumDb), std::end(spectrumDb), kBottomDb);
+    for (size_t i = 0; i < kFftSize; ++i)
+        window[i] = 0.5 - 0.5 * std::cos(juce::MathConstants<double>::twoPi * static_cast<double>(i) / kFftSize);
+    buildPaths();
     setOpaque(false);
     setInterceptsMouseClicks(true, false); // only the legend values: see hitTest()
 }
@@ -60,10 +63,22 @@ void Screen::mouseUp(const juce::MouseEvent& e)
         onValueClick(slot);
 }
 
+bool Screen::sameFrame(const RootnoteProcessor::DisplayState& other) const
+{
+    const auto sameBands = [](const BandView* a, const BandView* b, int count) {
+        for (int i = 0; i < count; ++i)
+            if (a[i].hz != b[i].hz || a[i].gainDb != b[i].gainDb)
+                return false;
+        return true;
+    };
+    return state.boostHz == other.boostHz && state.cutHz == other.cutHz && state.boostFromMidi == other.boostFromMidi
+        && state.numBoostBands == other.numBoostBands && state.numCutBands == other.numCutBands
+        && sameBands(state.boostBands, other.boostBands, state.numBoostBands)
+        && sameBands(state.cutBands, other.cutBands, state.numCutBands);
+}
+
 void Screen::update(const RootnoteProcessor::DisplayState& newState, const TunerReading& reading)
 {
-    state = newState;
-
     float block[512];
     bool heard = false;
     for (size_t count = 0; (count = processor.readSpectrumSamples(block, std::size(block))) > 0; heard = true)
@@ -71,12 +86,46 @@ void Screen::update(const RootnoteProcessor::DisplayState& newState, const Tuner
             recent[writeAt++ & (kFftSize - 1)] = block[i];
 
     // Without new audio (the host stopped) the picture falls away instead of freezing.
+    bool changed = false;
     if (heard)
-        analyse(state.sampleRate);
+    {
+        analyse(newState.sampleRate);
+        changed = true;
+    }
     else
+    {
         for (float& db : spectrumDb)
+        {
+            changed = changed || db > kBottomDb;
             db = juce::jmax(kBottomDb, db - 3.0f);
+        }
+    }
+    if (changed)
+        buildPaths();
 
+    // The text and the legend only change with the frame, the reading or a parameter.
+    const auto& all = processor.getParameters();
+    bool same = sameFrame(newState) && reading.valid == shownReading.valid && reading.hz == shownReading.hz
+             && shownParameters.size() == static_cast<size_t>(all.size());
+    shownParameters.resize(static_cast<size_t>(all.size()));
+    for (int i = 0; i < all.size(); ++i)
+    {
+        const float v = all[i]->getValue();
+        same = same && shownParameters[static_cast<size_t>(i)] == v;
+        shownParameters[static_cast<size_t>(i)] = v;
+    }
+    state = newState;
+    if (!same)
+    {
+        shownReading = reading;
+        buildText(reading);
+    }
+    if (changed || !same)
+        repaint();
+}
+
+void Screen::buildText(const TunerReading& reading)
+{
     auto& apvts = processor.getApvts();
     const double a4 = value(apvts, ids::a4);
     const double boostNote = hzToNote(state.boostHz, a4);
@@ -115,8 +164,7 @@ void Screen::analyse(double sampleRate)
 {
     for (size_t i = 0; i < kFftSize; ++i)
     {
-        const double hann = 0.5 - 0.5 * std::cos(juce::MathConstants<double>::twoPi * static_cast<double>(i) / kFftSize);
-        re[i] = hann * static_cast<double>(recent[(writeAt + i) & (kFftSize - 1)]);
+        re[i] = window[i] * static_cast<double>(recent[(writeAt + i) & (kFftSize - 1)]);
         im[i] = 0.0;
     }
     fft.forward(re.data(), im.data());
@@ -151,6 +199,21 @@ void Screen::analyse(double sampleRate)
     }
 }
 
+void Screen::buildPaths()
+{
+    line.clear();
+    for (int i = 0; i < kPoints; ++i)
+    {
+        const float x = kGraphX + kGraphW * static_cast<float>(i) / (kPoints - 1);
+        const float y = kGraphY + kGraphH * juce::jlimit(0.0f, 1.0f, (kTopDb - spectrumDb[i]) / (kTopDb - kBottomDb));
+        i == 0 ? line.startNewSubPath(x, y) : line.lineTo(x, y);
+    }
+    area = line;
+    area.lineTo(kGraphX + kGraphW, kGraphY + kGraphH);
+    area.lineTo(kGraphX, kGraphY + kGraphH);
+    area.closeSubPath();
+}
+
 void Screen::paint(juce::Graphics& g)
 {
     const auto bounds = getLocalBounds().toFloat();
@@ -166,17 +229,6 @@ void Screen::paint(juce::Graphics& g)
         g.fillRect(kGraphX + kGraphW * static_cast<float>(o) / 9.0f, kGraphY, 1.0f, kGraphH);
     }
 
-    line.clear();
-    for (int i = 0; i < kPoints; ++i)
-    {
-        const float x = kGraphX + kGraphW * static_cast<float>(i) / (kPoints - 1);
-        const float y = kGraphY + kGraphH * juce::jlimit(0.0f, 1.0f, (kTopDb - spectrumDb[i]) / (kTopDb - kBottomDb));
-        i == 0 ? line.startNewSubPath(x, y) : line.lineTo(x, y);
-    }
-    area = line;
-    area.lineTo(kGraphX + kGraphW, kGraphY + kGraphH);
-    area.lineTo(kGraphX, kGraphY + kGraphH);
-    area.closeSubPath();
     g.setColour(juce::Colours::white.withAlpha(0.04f));
     g.fillPath(area);
     g.setColour(juce::Colours::white.withAlpha(0.28f));

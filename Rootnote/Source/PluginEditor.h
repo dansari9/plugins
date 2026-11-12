@@ -46,6 +46,17 @@ private:
     void timerCallback() override { refresh(); }
     void paintPlate(juce::Graphics&);
     void paintFooter(juce::Graphics&);
+
+    /** Everything the footer shows; it is repainted only when this changes. */
+    struct Footer
+    {
+        int midiMode = 0, meterLeds = 0;
+        bool boostLit = false, cutLit = false, hold = true, constantQ = true;
+        double glide = 0.0, mix = 0.0, output = 0.0, a4 = 0.0;
+        auto tied() const { return std::tie(midiMode, meterLeds, boostLit, cutLit, hold, constantQ, glide, mix, output, a4); }
+        bool operator!=(const Footer& other) const { return tied() != other.tied(); }
+    };
+    Footer footer;
     void bindEncoders();
     void setParameter(const char* id, double value);
     void toggleParameter(const char* id);
@@ -82,7 +93,6 @@ private:
     float meterDb = -100.0f;
     uint32_t lastNoteOns = 0;
     int midiLit = 0;         // frames the MIDI dots stay lit after a note
-    bool boostFromMidi = false, cutFromMidi = false;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(RootnoteEditor)
 };

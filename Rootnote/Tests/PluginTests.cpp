@@ -1376,6 +1376,13 @@ TEST_CASE("Plugin: remapping or closing the editor mid-drag leaves every gesture
     CHECK(gestures.begins(ids::boostGain) == 1);
     CHECK(get(processor, ids::boostGain) > 9.0f);
 
+    // Selecting the page already shown changes nothing: the drag goes on.
+    faceplate.selectPage(0);
+    const float dragged = get(processor, ids::boostGain);
+    desk.drag(*gain, { 40.0f, 10.0f });
+    CHECK(get(processor, ids::boostGain) > dragged);
+    CHECK(gestures.ends(ids::boostGain) == 0);
+
     // Gain becomes Depth under the pointer; the rest of the drag moves nothing.
     faceplate.selectPage(1);
     CHECK(gestures.ends(ids::boostGain) == 1);
