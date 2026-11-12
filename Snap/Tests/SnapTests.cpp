@@ -230,7 +230,8 @@ static void testSound() // (6), (7), (8)
 
     // (8) No allocation inside processBlock, including while parameters move.
     onAudioThread = true;
-    delete new int(1);
+    int* volatile probe = new int(1); // volatile: an unobserved new/delete pair may legally be elided
+    delete probe;
     onAudioThread = false;
     CHECK(audioAllocations.exchange(0) == 1); // the counter itself works
     Proc p;

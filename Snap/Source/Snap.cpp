@@ -15,8 +15,12 @@ auto percent(bool sign)
 
 AudioProcessorValueTreeState::ParameterLayout layout()
 {
+    // 0.1 steps snapped as round(v * 10) / 10: JUCE's start + interval * k gets FMA-contracted on some
+    // compilers (0 -> 1.5e-6, 60 -> 60.000004), so defaults and saved values would differ per platform.
     auto p = [](const char* id, const char* name, float lo, float hi, float def, AudioParameterFloatAttributes a) {
-        return std::make_unique<AudioParameterFloat>(ParameterID { id, 1 }, name, NormalisableRange<float>(lo, hi, 0.1f), def, a);
+        NormalisableRange<float> r(lo, hi, nullptr, nullptr, [](float s, float e, float v) { return jlimit(s, e, std::round(v * 10) / 10 + 0.0f); });
+        r.interval = 0.1f; // still drives the slider step and the displayed decimals
+        return std::make_unique<AudioParameterFloat>(ParameterID { id, 1 }, name, r, def, a);
     };
     return { p(ids[0], "Attack", -100, 100, 0, percent(true)), p(ids[1], "Sustain", -100, 100, 0, percent(true)),
              p(ids[2], "Mix", 0, 100, 100, percent(false)),
