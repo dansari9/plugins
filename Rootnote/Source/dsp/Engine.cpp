@@ -276,7 +276,7 @@ void Engine::processChunk(float* left, float* right, int numSamples) noexcept
             right[i] = static_cast<float>(blendSignals(dryR, yr, wet));
     }
 
-    limiterGainNow = limiter.gainReduction();
+    limiterGainNow = blendSignals(1.0, limiter.gainReduction(), limiterRamp.value);
 }
 
 double Engine::tailSeconds(const EngineParams& p, double sampleRate) noexcept

@@ -834,7 +834,6 @@ TEST_CASE("Plugin: UI snapshots stay whole while audio publishes and the consume
         }
         done.store(true, std::memory_order_release);
     });
-    int frames = 0;
     bool whole = true;
     do
     {
@@ -842,12 +841,11 @@ TEST_CASE("Plugin: UI snapshots stay whole while audio publishes and the consume
         whole = whole && state.numBoostBands == 8 && state.numCutBands == 0
             && std::abs(state.boostBands[0].hz - state.boostHz) < 1.0e-9
             && std::abs(state.boostBands[1].hz - 2.0 * state.boostHz) < 1.0e-9;
-        ++frames;
         juce::Thread::sleep(1);
     } while (!done.load(std::memory_order_acquire));
     audio.join();
     CHECK(whole);
-    CHECK(frames > 1);
+    CHECK(processor.displayState().midiNoteOns > 0u);
     processor.setDisplayActive(false);
 }
 

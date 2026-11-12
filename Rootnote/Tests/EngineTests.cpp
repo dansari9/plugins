@@ -530,6 +530,29 @@ TEST_CASE("Engine: limiter endpoints retain limited audio even with enormous dry
     CHECK(peak(out, 24000, out.size()) > 0.5);
 }
 
+TEST_CASE("Engine: limiter readout shows the applied reduction when toggled")
+{
+    Engine engine;
+    engine.prepare(48000.0, 512);
+    EngineParams p = neutral();
+    engine.setParams(p);
+    Signal loud(4800, 2.0f);
+    run(engine, loud, nullptr, 0, loud.size());
+    CHECK_NEAR(engine.limiterGain(), 1.0, 1.0e-12);
+
+    p.limiter = true;
+    engine.setParams(p);
+    std::fill(loud.begin(), loud.end(), 2.0f);
+    run(engine, loud, nullptr, 0, loud.size());
+    CHECK(engine.limiterGain() < 0.5);
+
+    p.limiter = false;
+    engine.setParams(p);
+    std::fill(loud.begin(), loud.end(), 2.0f);
+    run(engine, loud, nullptr, 0, loud.size());
+    CHECK_NEAR(engine.limiterGain(), 1.0, 1.0e-12);
+}
+
 TEST_CASE("Engine: reported tail covers overdamped cuts at both spectrum edges")
 {
     for (double hz : { 20.0, 20000.0 })
