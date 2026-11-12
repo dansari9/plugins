@@ -159,10 +159,28 @@ preservation rule.
 For Snare Core/Tom Shift, use Match cut to remove the detected original note.
 The presets are also the host's programs, for host preset browsers.
 Preset names are retained after edits. **A/B** stores the settings and preset
-name of the slot you leave; B initially copies A. Bypass is shared. Only the
-active settings are saved in the host session; restoring starts a fresh A/B
-comparison at A. Very high Q can ring for over a minute; the host tail report
+name of the slot you leave; B initially copies A. Bypass is shared. The host
+session keeps both slots and which one is active. Very high Q can ring for over a minute; the host tail report
 covers this rather than truncating it to the Ring decay setting.
+
+## Saved state and frozen identifiers
+
+A session restores every setting exactly: all parameters (bit for bit), the
+preset, both A/B slots and the active one, and the editor's size and page.
+The state carries a schema version (`RootnoteProcessor::kStateSchema`, 2 since
+0.4.3); states of 0.4.0–0.4.2 (no version) load with their values, missing
+values take their defaults, out-of-range ones are clamped, unknown fields are
+ignored, and a truncated or damaged state changes nothing. Selecting the
+current program again (as hosts do while restoring) keeps the edits.
+
+**Freeze rule.** These identify Rootnote to hosts and saved sessions and must
+never change: the AU type/codes `aufx RtNt Dwks`, the VST3 class ID (from the
+`RtNt`/`Dwks` codes with `JUCE_VST3_CAN_REPLACE_VST2=0`), the bundle ID
+`com.dripworks.rootnote`, and every parameter's ID string, version hint (1),
+position, range and default. A new parameter is appended with a new ID; a
+retired one stays in place. Any state change bumps `kStateSchema` and keeps
+reading the older ones, with a fixture in `Tests/fixtures`. The plugin test
+"identifiers are frozen" pins all of this, so CI fails on any change.
 
 ## AU cache and rescanning
 

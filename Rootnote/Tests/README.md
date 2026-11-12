@@ -115,3 +115,18 @@ tails must be below −90 dBFS RMS. Earlier high-Q/Ring tails are intentional.
 | Focus was dead while linked | Turning it unlinks; legend shows LINK / ALL / N/A where a value has no effect |
 | A page key held and released off the key swallowed the next click | Hold, drag off, release; the next click selects |
 | Host text entry: choices were case-sensitive, Bool/Int accepted junk as 0 | `parsed()` checks for choices, bands, switches and the default fallback |
+
+# 0.4.3 reliability
+
+| Finding / requirement | Coverage |
+| --- | --- |
+| A/B slots and the active slot were lost with the session; the editor page too | Full round trip with random non-default values: bit-exact parameters, A/B, preset, size, page, identical bytes on re-save, identical audio |
+| A truncated or unclosed state (`<RootnoteState pres…`) parsed leniently as empty and reset every setting | Truncations at every 7 bytes and unclosed XML leave the state unchanged |
+| `setCurrentProgram(current)` from a host restoring a session reapplied the preset over the edits | Same-program call keeps the edits; program-state paths equal the state |
+| `prepareToPlay(0)` would prepare the engine with no rate | Unprepared processor passes audio through |
+| Thread creation failure in the tuner would throw out of `prepareToPlay` | Caught: the tuner stays silent (not testable without exhausting threads) |
+| Load order / rates | Restore before or after preparing, while playing, with an editor open, at 44.1/48/96/192 kHz and blocks 7–1024: same parameters and sample-identical audio |
+| Old sessions | Real 0.4.0/0.4.1/0.4.2 blobs (`fixtures/`) with edits and defaults |
+| Hostile states | Random bytes with and without header, bit flips, wrong root, NaN/Inf/text/out-of-range values, unknown fields, 8 MB field, bad A/B: never crash, always legal and playable |
+| Frozen identity | Codes, bundle ID, schema, and the ordered parameter IDs, version hints, ranges and defaults |
+| Lifecycle | 60 create/play/edit/save/restore/destroy cycles with editors: no extra threads, under 16 MB growth |

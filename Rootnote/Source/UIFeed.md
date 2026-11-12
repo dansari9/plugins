@@ -18,8 +18,8 @@ multiple activity users, but only one consumer of the display/spectrum/peaks.
 | `setKnobNote(bank, note)` | Sets the boost or cut note as a gesture and takes that bank back from a held MIDI note, even if the value is unchanged (an atomic request the next audio block consumes). Use it for every explicit note choice. |
 | `parseValue(id, text, a4)` (Parameters.h) | Typed text in a parameter's units, or nothing for text that is no value. The parameters' host text conversion uses it too. |
 | `matchCutToHit()` / `tuneBoostToKey()` | Apply the detected pitch via host-notified APVTS gestures and `setKnobNote()`. Match also enables Cut; Tune snaps to the selected scale and clears Fine. |
-| `loadPreset()`, `selectAbSlot()` | Message-thread operations; all sound values go through APVTS. Host state restoration invalidates A/B using an atomic request consumed on the message thread. |
-| `currentPreset()`, `storedEditorSize()` / `storeEditorSize()` | Atomics, never `apvts.state`: a host may replace that tree on another thread. They are added to the saved state and read back from it. |
+| `loadPreset()`, `selectAbSlot()` | Message-thread operations; all sound values go through APVTS. A/B slots are saved and restored with the state, behind a mutex that is never held while parameters are set. |
+| `currentPreset()`, `storedEditorSize()` / `storeEditorSize()`, `storedEditorPage()` / `storeEditorPage()` | Atomics, never `apvts.state`: a host may replace that tree on another thread. They are added to the saved state and read back from it. |
 
 The factory presets are also the host's programs. `setCurrentProgram()` may
 come from any thread: it sets precomputed normalised values with no gestures,
