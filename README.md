@@ -5,6 +5,7 @@ Audio effect plugins. Each plugin is a separate directory with its own CMake pro
 | Plugin | Directory | Formats |
 | --- | --- | --- |
 | Spring Tank | [SpringReverb](SpringReverb/) | AU, VST3, Standalone, AAX when the Avid SDK is present |
+| Snap | [Snap](Snap/) | Drum transient shaper: AU, VST3, Standalone |
 
 ## Spring Tank
 
