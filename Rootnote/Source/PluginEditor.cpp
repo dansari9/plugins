@@ -131,6 +131,8 @@ RootnoteEditor::RootnoteEditor(RootnoteProcessor& p)
     place(link, 810, 390, 62, 30);
     place(limit, 876, 390, 60, 30);
 
+    page = juce::jlimit(0, kNumPages - 1, processor.storedEditorPage());
+    screen.setPage(page);
     bindEncoders();
 
     const auto stored = processor.storedEditorSize(); // read first: setting the limits already resizes
@@ -192,6 +194,7 @@ void RootnoteEditor::selectPage(int newPage)
     if (newPage == page)
         return;
     page = newPage;
+    processor.storeEditorPage(page);
     bindEncoders();
     screen.setPage(page);
     refresh();

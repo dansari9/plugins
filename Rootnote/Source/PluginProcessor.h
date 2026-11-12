@@ -6,6 +6,8 @@
 
 #include <juce_audio_processors/juce_audio_processors.h>
 
+#include <mutex>
+
 class RootnoteProcessor : public juce::AudioProcessor
 {
 public:
@@ -54,13 +56,28 @@ public:
 
     // The factory presets are the host's programs. setCurrentProgram() can come
     // from any thread, the audio thread included: it only sets the parameters
-    // (no gestures, no allocation, no state tree).
+    // (no gestures, no allocation, no state tree). Selecting the current
+    // program again changes nothing: hosts do that while restoring a session,
+    // which must not reset the edits made after loading the preset.
     int getNumPrograms() override { return numPresets(); }
     int getCurrentProgram() override { return currentPreset(); }
-    void setCurrentProgram(int index) override { applyPreset(index, false); }
+    void setCurrentProgram(int index) override
+    {
+        if (index != currentPreset())
+            applyPreset(index, false);
+    }
     const juce::String getProgramName(int index) override { return presetName(index); }
     void changeProgramName(int, const juce::String&) override {}
 
+    /**
+        The state is the parameters (plain values, by ID), the preset, both A/B
+        slots and the active one, and the editor's size and page, under an
+        explicit schema version. Restoring reads states of every 0.4.x
+        release: missing values take their defaults, out-of-range ones are
+        clamped, unknown ones are ignored, and a damaged state changes nothing.
+        Any thread but the audio thread.
+    */
+    static constexpr int kStateSchema = 2; // 1: 0.4.0-0.4.2, without a version, A/B or page
     void getStateInformation(juce::MemoryBlock& destData) override;
     void setStateInformation(const void* data, int sizeInBytes) override;
 
@@ -124,7 +141,7 @@ public:
     /**
         Two settings to compare, A (0) and B (1). Switching stores the current
         parameters and preset in the slot being left and recalls the other
-        one; B starts as a copy of A. Bypass is shared. Not saved in the state.
+        one; B starts as a copy of A. Bypass is shared. Saved in the state.
     */
     int abSlot();
     void selectAbSlot(int slot);
@@ -133,19 +150,24 @@ public:
     juce::Point<int> storedEditorSize() const noexcept;
     void storeEditorSize(int width, int height) noexcept;
 
+    /** Editor page kept in the plug-in state. */
+    int storedEditorPage() const noexcept { return editorPage.load(std::memory_order_relaxed); }
+    void storeEditorPage(int page) noexcept { editorPage.store(page, std::memory_order_relaxed); }
+
 private:
     void processSpan(float* const* channels, int numChannels, int from, int to) noexcept;
     void publishDisplay(const juce::AudioBuffer<float>& buffer, int numChannels) noexcept;
     void setParameterValue(const char* id, double value);
     void applyPreset(int index, bool asGesture);
 
-    void resetAbIfRestored(); // message thread only
-
     struct AbSlot
     {
         std::vector<float> values; // normalised, in parameter order; empty until the slot has been left once
         int preset = 0;
     };
+    // A host may save or restore on another thread while the editor switches.
+    // Never held while parameters are set: their listeners may call back.
+    std::mutex abMutex;
     AbSlot abSlots[2];
     int currentAbSlot = 0;
 
@@ -158,7 +180,7 @@ private:
     // Kept out of apvts.state, which replaceState() swaps on whatever thread
     // the host restores from: the editor reads these every frame.
     std::atomic<int> presetIndex { 0 };
-    std::atomic<int> editorWidth { 0 }, editorHeight { 0 };
+    std::atomic<int> editorWidth { 0 }, editorHeight { 0 }, editorPage { 0 };
 
     rootnote::Engine engine;
     rootnote::AnalysisWorker analysis;
@@ -177,7 +199,6 @@ private:
     std::atomic<int> newestSlot { 2 };
     juce::uint32 lastFrameMs = 0;            // message thread only; 0 = no frame yet
     std::atomic<double> displaySampleRate { 48000.0 };
-    std::atomic<bool> resetAbPending { false };
     std::atomic<float> outputPeak[2] { { 0.0f }, { 0.0f } };
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(RootnoteProcessor)
