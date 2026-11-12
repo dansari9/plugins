@@ -1111,13 +1111,16 @@ TEST_CASE("Plugin: A/B keeps two settings apart")
     processor.selectAbSlot(7);
     CHECK(processor.abSlot() == 1);
 
-    // A restored state starts again from A.
+    // Both slots and the active one come back with the state, in a new instance too.
     juce::MemoryBlock state;
     processor.getStateInformation(state);
-    processor.setStateInformation(state.getData(), static_cast<int>(state.getSize()));
-    CHECK(processor.abSlot() == 0);
-    processor.selectAbSlot(1);
-    CHECK(holds(processor, ids::mix, 40.0f));
+    RootnoteProcessor other;
+    other.setStateInformation(state.getData(), static_cast<int>(state.getSize()));
+    CHECK(other.abSlot() == 1 && other.currentPreset() == 5 && holds(other, ids::mix, 40.0f));
+    other.selectAbSlot(0);
+    CHECK(other.currentPreset() == 2 && holds(other, ids::mix, 100.0f) && holds(other, ids::boostGain, 3.0f));
+    other.selectAbSlot(1);
+    CHECK(holds(other, ids::mix, 40.0f) && holds(other, ids::series, 1.0f));
 }
 
 TEST_CASE("Plugin: the display state has the live notes and bands, with or without audio")
@@ -2149,6 +2152,466 @@ TEST_CASE("Plugin: the legend says when a value has no effect, and Focus takes o
     CHECK(get(processor, ids::focus) > 65.0f);
     CHECK(legendValue(boost[3], apvts) != "LINK");
     CHECK(gestures.balanced());
+}
+
+
+// ---- State and load reliability ---------------------------------------------------------
+
+namespace
+{
+/** Every parameter at a random value it can hold, different from its default. */
+void randomise(RootnoteProcessor& processor, juce::Random& random)
+{
+    for (auto* parameter : processor.getParameters())
+    {
+        auto* ranged = static_cast<juce::RangedAudioParameter*>(parameter);
+        float value = ranged->getDefaultValue();
+        while (value == ranged->getDefaultValue())
+            value = ranged->convertTo0to1(ranged->convertFrom0to1(random.nextFloat()));
+        ranged->setValueNotifyingHost(value);
+    }
+}
+
+juce::MemoryBlock stateOf(RootnoteProcessor& processor)
+{
+    juce::MemoryBlock state;
+    processor.getStateInformation(state);
+    return state;
+}
+
+void restore(RootnoteProcessor& processor, const juce::MemoryBlock& state)
+{
+    processor.setStateInformation(state.getData(), static_cast<int>(state.getSize()));
+}
+
+/** Bit for bit: every normalised value and the plain value behind it. */
+bool sameParameters(RootnoteProcessor& a, RootnoteProcessor& b)
+{
+    for (int i = 0; i < a.getParameters().size(); ++i)
+    {
+        auto* pa = static_cast<juce::RangedAudioParameter*>(a.getParameters()[i]);
+        const auto id = pa->getParameterID();
+        if (pa->getValue() != b.getParameters()[i]->getValue()
+            || a.getApvts().getRawParameterValue(id)->load() != b.getApvts().getRawParameterValue(id)->load())
+        {
+            std::printf("    differs: %s\n", id.toRawUTF8());
+            return false;
+        }
+    }
+    return true;
+}
+
+/** Every value is a legal one: finite and inside its range. */
+bool validParameters(RootnoteProcessor& processor)
+{
+    for (auto* parameter : processor.getParameters())
+    {
+        auto* ranged = static_cast<juce::RangedAudioParameter*>(parameter);
+        const float plain = processor.getApvts().getRawParameterValue(ranged->getParameterID())->load();
+        const auto& range = ranged->getNormalisableRange();
+        if (!std::isfinite(plain) || plain < range.start || plain > range.end || !(ranged->getValue() >= 0.0f && ranged->getValue() <= 1.0f))
+        {
+            std::printf("    invalid: %s plain %g normalised %g\n", ranged->getParameterID().toRawUTF8(), (double) plain, (double) ranged->getValue());
+            return false;
+        }
+    }
+    return true;
+}
+
+/** Two seconds of kicks and noise through the processor, as one buffer per block. */
+std::vector<float> render(RootnoteProcessor& processor, double fs = 48000.0, int blockSize = 512)
+{
+    Random random(3);
+    std::vector<float> input(static_cast<size_t>(fs * 2.0), 0.0f);
+    KickSpec kick;
+    kick.hz = 55.0;
+    for (int hit = 0; hit < 4; ++hit)
+        addKick(input, static_cast<size_t>(fs * (0.05 + 0.45 * hit)), kick, fs, random);
+    for (auto& x : input)
+        x += 0.01f * (static_cast<float>(random.uniform()) - 0.5f);
+
+    std::vector<float> output;
+    juce::MidiBuffer midi;
+    for (size_t position = 0; position < input.size(); position += static_cast<size_t>(blockSize))
+    {
+        const int n = static_cast<int>(std::min(static_cast<size_t>(blockSize), input.size() - position));
+        juce::AudioBuffer<float> block(2, n);
+        block.copyFrom(0, 0, input.data() + position, n);
+        block.copyFrom(1, 0, input.data() + position, n);
+        processor.processBlock(block, midi);
+        for (int i = 0; i < n; ++i)
+            output.push_back(block.getSample(0, i) + 0.5f * block.getSample(1, i));
+    }
+    return output;
+}
+
+juce::MemoryBlock fixture(const char* name)
+{
+    juce::MemoryBlock data;
+    juce::File(ROOTNOTE_FIXTURES).getChildFile(name).loadFileAsData(data);
+    return data;
+}
+
+/** JUCE's binary state header around any text, valid XML or not. */
+juce::MemoryBlock blobOf(const juce::String& text)
+{
+    juce::MemoryOutputStream out;
+    out.writeInt(0x21324356);
+    out.writeInt(static_cast<int>(text.getNumBytesAsUTF8()) + 1);
+    out << text;
+    out.writeByte(0);
+    return out.getMemoryBlock();
+}
+} // namespace
+
+TEST_CASE("Plugin: identifiers are frozen: codes, parameter IDs, order, ranges and defaults")
+{
+    // Changing any of these breaks saved sessions and automation in every host. Never edit this table:
+    // add new parameters at the end with new IDs instead.
+    CHECK(JucePlugin_PluginCode == 0x52744e74);       // 'RtNt'
+    CHECK(JucePlugin_ManufacturerCode == 0x44776b73); // 'Dwks'
+    CHECK(juce::String(JucePlugin_AUMainType) == "aufx" || JucePlugin_AUMainType == 'aufx');
+    CHECK(juce::String(JUCE_STRINGIFY(JucePlugin_CFBundleIdentifier)) == "com.dripworks.rootnote");
+    CHECK(juce::String(JucePlugin_Name) == "Rootnote");
+    CHECK(JucePlugin_VSTUniqueID == JucePlugin_PluginCode);
+    CHECK(JUCE_VST3_CAN_REPLACE_VST2 == 0); // part of the VST3 class ID
+    CHECK(RootnoteProcessor::kStateSchema == 2);
+
+    struct Frozen { const char* id; double start, end, interval, middle, defaultValue; };
+    const Frozen frozen[] = {
+        { "boost_note", 12, 96, 0.00999999978, 54, 36 },
+        { "boost_fine", -50, 50, 0.100000001, 0, 0 },
+        { "boost_gain", 0, 24, 0.100000001, 12, 9 },
+        { "boost_q", 0.5, 200, 0, 10, 12 },
+        { "series", 0, 2, 1, 1, 0 },
+        { "bands", 1, 32, 1, 16, 8 },
+        { "blend", 0, 1, 0.00999999978, 0.5, 0.5 },
+        { "focus_link", 0, 1, 1, 1, 1 },
+        { "focus", 20, 8000, 0, 400, 65 },
+        { "range", 0.100000001, 6, 0.00999999978, 3.04999995, 1.5 },
+        { "tilt", -12, 6, 0.100000001, -3, -3 },
+        { "q_mode", 0, 1, 1, 0, 0 },
+        { "cut_on", 0, 1, 1, 1, 0 },
+        { "cut_note", 12, 96, 0.00999999978, 54, 36 },
+        { "cut_depth", -30, 0, 0.100000001, -15, -12 },
+        { "cut_q", 0.5, 60, 0, 5.47722578, 8 },
+        { "cut_overtones", 0, 100, 0.100000001, 50, 50 },
+        { "cut_bands", 1, 16, 1, 8, 6 },
+        { "ring", 0, 100, 0.100000001, 50, 0 },
+        { "ring_decay", 50, 4000, 0, 447.213593, 600 },
+        { "ring_drop", 0, 12, 0.00999999978, 6, 0 },
+        { "midi_mode", 0, 2, 1, 1, 0 },
+        { "glide", 0, 500, 1, 250, 0 },
+        { "note_off", 0, 1, 1, 0, 0 },
+        { "key", 0, 11, 1, 6, 0 },
+        { "scale", 0, 8, 1, 4, 0 },
+        { "key_lock", 0, 1, 1, 1, 0 },
+        { "a4", 415, 466, 0.100000001, 440.5, 440 },
+        { "mix", 0, 100, 0.100000001, 50, 100 },
+        { "output", -24, 12, 0.100000001, -6, 0 },
+        { "limiter", 0, 1, 1, 1, 1 },
+        { "bypass", 0, 1, 1, 1, 0 },
+    };
+    RootnoteProcessor processor;
+    const auto& all = processor.getParameters();
+    REQUIRE(all.size() == static_cast<int>(std::size(frozen)));
+    for (int i = 0; i < all.size(); ++i)
+    {
+        auto* p = static_cast<juce::RangedAudioParameter*>(all[i]);
+        const Frozen& f = frozen[i];
+        const auto& range = p->getNormalisableRange();
+        const auto near = [](double a, double b) { return std::abs(a - b) <= 1.0e-6 * std::max(1.0, std::abs(b)); };
+        CHECK_MSG(p->getParameterID() == f.id && p->getParameterIndex() == i && p->getVersionHint() == 1, f.id);
+        CHECK_MSG(near(range.start, f.start) && near(range.end, f.end) && near(range.interval, f.interval), f.id);
+        CHECK_MSG(near(p->convertFrom0to1(0.5f), f.middle), f.id);
+        CHECK_MSG(near(p->convertFrom0to1(p->getDefaultValue()), f.defaultValue), f.id);
+    }
+    CHECK(processor.getBypassParameter() == processor.getApvts().getParameter("bypass"));
+}
+
+TEST_CASE("Plugin: a full state round trip is bit-exact, keeps A/B, preset and editor, and sounds the same")
+{
+    juce::Random random(2024);
+    RootnoteProcessor source;
+    source.loadPreset(4);
+    randomise(source, random);
+    source.selectAbSlot(1); // A keeps these; B goes on with others
+    randomise(source, random);
+    source.storeEditorSize(1080, 607);
+    source.storeEditorPage(3);
+    const auto state = stateOf(source);
+
+    RootnoteProcessor restored;
+    restore(restored, state);
+    CHECK(sameParameters(source, restored));
+    CHECK(restored.abSlot() == 1 && restored.currentPreset() == source.currentPreset());
+    CHECK(restored.storedEditorSize() == juce::Point<int>(1080, 607) && restored.storedEditorPage() == 3);
+    CHECK(stateOf(restored) == state);
+    CHECK(stateOf(source) == state); // saving changes nothing
+
+    // The program-state paths of the hosts are the same state.
+    juce::MemoryBlock program;
+    source.getCurrentProgramStateInformation(program);
+    RootnoteProcessor viaProgram;
+    viaProgram.setCurrentProgramStateInformation(program.getData(), static_cast<int>(program.getSize()));
+    CHECK(sameParameters(source, viaProgram) && viaProgram.abSlot() == 1);
+
+    // A host selecting the current program while restoring keeps the edits.
+    restored.setCurrentProgram(restored.getCurrentProgram());
+    CHECK(sameParameters(source, restored));
+
+    // Slot A comes back the same in both.
+    source.selectAbSlot(0);
+    restored.selectAbSlot(0);
+    CHECK(sameParameters(source, restored));
+    CHECK(restored.currentPreset() == 4);
+
+    // The same input gives the same output, sample for sample.
+    for (auto* p : { &source, &restored })
+    {
+        set(*p, ids::bypass, 0.0f);
+        set(*p, ids::mix, 100.0f);
+        prepare(*p);
+    }
+    CHECK(render(source) == render(restored));
+}
+
+TEST_CASE("Plugin: a state loads the same before or after preparing, with an editor open, at any rate and block size")
+{
+    juce::Random random(77);
+    RootnoteProcessor source;
+    randomise(source, random);
+    set(source, ids::bypass, 0.0f);
+    source.storeEditorPage(2);
+    const auto state = stateOf(source);
+
+    struct Setup { double fs; int block; };
+    for (const Setup setup : { Setup { 48000.0, 512 }, Setup { 44100.0, 64 }, Setup { 96000.0, 1024 }, Setup { 192000.0, 7 } })
+    {
+        RootnoteProcessor before, after, withEditor;
+        restore(before, state);
+        prepare(before, setup.fs, setup.block);
+
+        prepare(after, setup.fs, setup.block);
+        render(after, setup.fs, setup.block); // already playing
+        restore(after, state);
+        after.reset();
+
+        prepare(withEditor, setup.fs, setup.block);
+        {
+            std::unique_ptr<juce::AudioProcessorEditor> editor(withEditor.createEditor());
+            restore(withEditor, state);
+            dynamic_cast<RootnoteEditor&>(*editor).refresh();
+            CHECK(sameParameters(source, withEditor));
+        }
+        std::unique_ptr<juce::AudioProcessorEditor> reopened(withEditor.createEditor());
+        CHECK(withEditor.storedEditorPage() == 2);
+        reopened.reset();
+
+        CHECK(sameParameters(source, before) && sameParameters(source, after));
+        const auto reference = render(before, setup.fs, setup.block);
+        bool finite = true;
+        for (float x : reference)
+            finite = finite && std::isfinite(x);
+        CHECK(finite);
+        CHECK(render(after, setup.fs, setup.block) == reference);
+        withEditor.reset();
+        CHECK(render(withEditor, setup.fs, setup.block) == reference);
+    }
+
+    // A host that never prepares, or prepares with no usable rate, gets its audio back untouched.
+    RootnoteProcessor unprepared;
+    restore(unprepared, state);
+    unprepared.prepareToPlay(0.0, 512);
+    juce::AudioBuffer<float> block(2, 64);
+    block.clear();
+    block.setSample(0, 3, 0.5f);
+    juce::MidiBuffer midi;
+    unprepared.processBlock(block, midi);
+    CHECK(block.getSample(0, 3) == 0.5f);
+}
+
+TEST_CASE("Plugin: states saved by 0.4.0, 0.4.1 and 0.4.2 load with their values")
+{
+    // Written by each release's own code (Tests/fixtures/README.md); preset 3 then these edits.
+    const std::pair<const char*, float> edited[] = {
+        { "boost_note", 31.25f }, { "boost_fine", -12.5f }, { "boost_gain", 14.2f }, { "boost_q", 33.0f }, { "bands", 11.0f },
+        { "blend", 0.3f }, { "focus_link", 0.0f }, { "focus", 140.0f }, { "range", 2.25f }, { "tilt", -4.5f },
+        { "q_mode", 1.0f }, { "cut_on", 1.0f }, { "cut_note", 40.5f }, { "cut_depth", -21.0f }, { "cut_q", 15.0f },
+        { "cut_overtones", 35.0f }, { "cut_bands", 9.0f }, { "ring", 45.0f }, { "ring_decay", 1200.0f }, { "ring_drop", 3.5f },
+        { "midi_mode", 2.0f }, { "glide", 80.0f }, { "note_off", 1.0f }, { "key", 9.0f }, { "scale", 7.0f },
+        { "key_lock", 1.0f }, { "a4", 432.0f }, { "mix", 85.0f }, { "output", -4.5f }, { "limiter", 0.0f }, { "bypass", 0.0f }
+    };
+    for (const char* version : { "0.4.0", "0.4.1", "0.4.2" })
+    {
+        const auto data = fixture((juce::String("state-") + version + ".bin").toRawUTF8());
+        REQUIRE(data.getSize() > 0);
+        RootnoteProcessor processor;
+        restore(processor, data);
+        for (const auto& [id, value] : edited)
+            CHECK_MSG(holds(processor, id, value), std::string(version) + " " + id);
+        CHECK(processor.currentPreset() == 3);
+        CHECK(processor.storedEditorSize() == juce::Point<int>(1200, 675));
+        CHECK(processor.abSlot() == 0 && processor.storedEditorPage() == 0);
+
+        // Saved again, it is today's schema with the same values.
+        RootnoteProcessor again;
+        restore(again, stateOf(processor));
+        CHECK(sameParameters(processor, again));
+        CHECK(juce::AudioProcessor::getXmlFromBinary(stateOf(again).getData(), static_cast<int>(stateOf(again).getSize()))
+                  ->getIntAttribute("schema") == RootnoteProcessor::kStateSchema);
+    }
+
+    // Each release's defaults: 0.4.0 and 0.4.1 sessions keep their MIDI Ch 1+2, 0.4.2 its Off.
+    for (const auto& [name, midiMode] : { std::pair { "default-0.4.0.bin", 1.0f }, { "default-0.4.1.bin", 1.0f }, { "default-0.4.2.bin", 0.0f } })
+    {
+        RootnoteProcessor processor;
+        juce::Random random(5);
+        randomise(processor, random);
+        restore(processor, fixture(name));
+        CHECK_MSG(holds(processor, ids::midiMode, midiMode), name);
+        CHECK_MSG(holds(processor, ids::boostNote, 36.0f) && holds(processor, ids::limiter, 1.0f) && processor.currentPreset() == 0, name);
+    }
+}
+
+TEST_CASE("Plugin: damaged, foreign or hostile states never crash and always leave a valid state")
+{
+    juce::Random random(4242);
+    RootnoteProcessor processor;
+    prepare(processor);
+    randomise(processor, random);
+    set(processor, ids::bypass, 0.0f);
+    const auto good = stateOf(processor);
+    const auto goodText = juce::String::fromUTF8(static_cast<const char*>(good.getData()) + 8, static_cast<int>(good.getSize()) - 9);
+    RootnoteProcessor reference;
+    restore(reference, good);
+
+    const auto unchanged = [&] { return sameParameters(processor, reference); };
+    const auto playable = [&] {
+        juce::AudioBuffer<float> block(2, 256);
+        block.clear();
+        block.setSample(0, 0, 1.0f);
+        juce::MidiBuffer midi;
+        processor.processBlock(block, midi);
+        if (!allFinite(block))
+            std::printf("    not finite output\n");
+        return allFinite(block) && validParameters(processor);
+    };
+
+    // Not a state at all: nothing changes.
+    juce::MemoryBlock empty;
+    restore(processor, empty);
+    processor.setStateInformation(nullptr, 100);
+    processor.setStateInformation(good.getData(), -5);
+    CHECK(unchanged());
+    for (int i = 0; i < 300; ++i)
+    {
+        juce::MemoryBlock noise(static_cast<size_t>(random.nextInt(4096)));
+        random.fillBitsRandomly(noise.getData(), noise.getSize());
+        if (i % 2 == 0 && noise.getSize() >= 4) // half of them with a valid header
+        {
+            const auto magic = juce::ByteOrder::swapIfBigEndian(static_cast<juce::uint32>(0x21324356));
+            std::memcpy(noise.getData(), &magic, sizeof(magic));
+        }
+        restore(processor, noise);
+    }
+    CHECK(unchanged());
+    for (size_t length = 0; length < good.getSize(); length += 7) // truncated
+        processor.setStateInformation(good.getData(), static_cast<int>(length));
+    CHECK(unchanged() && playable());
+    for (int i = 0; i < 300; ++i) // flipped bits
+    {
+        juce::MemoryBlock damaged(good);
+        static_cast<juce::uint8*>(damaged.getData())[random.nextInt(static_cast<int>(damaged.getSize()))] ^= static_cast<juce::uint8>(1 << random.nextInt(8));
+        restore(processor, damaged);
+        REQUIRE(validParameters(processor));
+    }
+    CHECK(playable());
+    for (const char* text : { "", "<", "<RootnoteState", "<Other><PARAM id=\"mix\" value=\"5\"/></Other>", "\xff\xfe garbage" })
+    {
+        restore(processor, good);
+        restore(processor, blobOf(text));
+        CHECK_MSG(unchanged(), text);
+    }
+
+    // Readable, but wrong: unreadable values take their default, out-of-range ones are clamped,
+    // unknown fields are ignored, and a bad A/B slot is dropped.
+    const juce::String hostile = R"(<RootnoteState schema="99" preset="abc" editorWidth="1e999" editorPage="-7" future="x">
+        <PARAM id="mix" value="nan"/><PARAM id="output" value="1e30"/><PARAM id="boost_note" value="-1e30"/>
+        <PARAM id="bands" value="seven"/><PARAM id="cut_on" value="0.86"/><PARAM id="focus" value="inf"/>
+        <PARAM id="limiter"/><PARAM id="unknown_param" value="3"/><FUTURE><X/></FUTURE>
+        <AB active="5"><SLOT index="0" preset="2" mix="0.5"/><SLOT index="1" preset="1"/></AB></RootnoteState>)";
+    restore(processor, blobOf(hostile));
+    CHECK(validParameters(processor) && playable());
+    CHECK(holds(processor, ids::mix, 100.0f) && holds(processor, ids::output, 12.0f) && holds(processor, ids::boostNote, 12.0f));
+    CHECK(holds(processor, ids::bands, 8.0f) && holds(processor, ids::cutOn, 1.0f) && holds(processor, ids::focus, 65.0f));
+    CHECK(holds(processor, ids::limiter, 1.0f));
+    CHECK(processor.currentPreset() == 0 && processor.storedEditorPage() == 0 && processor.abSlot() == 1);
+    processor.selectAbSlot(0); // slot A was incomplete: B's settings carry over
+    CHECK(holds(processor, ids::mix, 100.0f));
+
+    // Huge: a large state with a large unknown field still loads.
+    restore(processor, blobOf(goodText.replace("<AB", "<FUTURE data=\"" + juce::String::repeatedString("x", 8 << 20) + "\"/><AB")));
+    CHECK(unchanged());
+
+    // Any normalised value of any parameter, from a host: always legal afterwards.
+    for (int i = 0; i < 2000; ++i)
+    {
+        auto* parameter = processor.getParameters()[random.nextInt(processor.getParameters().size())];
+        parameter->setValueNotifyingHost(random.nextFloat());
+    }
+    CHECK(validParameters(processor) && playable());
+}
+
+TEST_CASE("Plugin: repeated create, play, save, restore and destroy cycles leave no threads or memory behind")
+{
+#if JUCE_LINUX
+    const auto threads = [] { return juce::File("/proc/self/task").getNumberOfChildFiles(juce::File::findDirectories); };
+    const auto residentPages = [] {
+        long size = 0, resident = 0;
+        if (FILE* f = std::fopen("/proc/self/statm", "r"))
+        {
+            if (std::fscanf(f, "%ld %ld", &size, &resident) != 2)
+                resident = 0;
+            std::fclose(f);
+        }
+        return resident;
+    };
+#endif
+    juce::Random random(11);
+    juce::MemoryBlock state;
+    const auto cycle = [&] {
+        auto processor = std::make_unique<RootnoteProcessor>();
+        if (state.getSize() > 0)
+            restore(*processor, state);
+        prepare(*processor, 48000.0, 256);
+        std::unique_ptr<juce::AudioProcessorEditor> editor(processor->createEditor());
+        randomise(*processor, random);
+        juce::AudioBuffer<float> block(2, 256);
+        block.clear();
+        juce::MidiBuffer midi;
+        for (int i = 0; i < 8; ++i)
+            processor->processBlock(block, midi);
+        dynamic_cast<RootnoteEditor&>(*editor).refresh();
+        processor->selectAbSlot(random.nextInt(2));
+        state = stateOf(*processor);
+        editor.reset();
+        processor->releaseResources();
+    };
+    for (int i = 0; i < 5; ++i)
+        cycle();
+    dispatchMessages();
+#if JUCE_LINUX
+    const int threadsBefore = threads();
+    const long pagesBefore = residentPages();
+#endif
+    for (int i = 0; i < 60; ++i)
+        cycle();
+    dispatchMessages();
+#if JUCE_LINUX
+    CHECK(threads() == threadsBefore);
+    CHECK(residentPages() - pagesBefore < 4096); // under 16 MB for 60 instances with editors
+#endif
 }
 
 /**

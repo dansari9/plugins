@@ -80,6 +80,7 @@ if(ROOTNOTE_BUILD_TESTS)
     # Drives the real processor and editor without a host or an audio device.
     add_executable(RootnotePluginTests Tests/PluginTests.cpp)
     target_include_directories(RootnotePluginTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/Tests)
+    target_compile_definitions(RootnotePluginTests PRIVATE ROOTNOTE_FIXTURES="${CMAKE_CURRENT_SOURCE_DIR}/Tests/fixtures")
     target_link_libraries(RootnotePluginTests
         PRIVATE
             Rootnote
