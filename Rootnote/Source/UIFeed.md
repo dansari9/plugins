@@ -11,7 +11,7 @@ multiple activity users, but only one consumer of the display/spectrum/peaks.
 
 | API | Meaning and threading |
 | --- | --- |
-| `displayState()` | Latest complete audio frame: sample rate, live boost/cut Hz, MIDI ownership and note-on counter, linear limiter gain, actual smoothed band Hz/gains. Before audio arrives, computes a preview from APVTS. A four-frame SPSC queue drops new frames when full; the UI drains it once per frame and retains its last complete reading. |
+| `displayState()` | Newest complete audio frame: sample rate, live boost/cut Hz, MIDI ownership and note-on counter, linear limiter gain, actual smoothed band Hz/gains. A triple buffer: audio swaps in each finished frame, the UI swaps out the newest, so it is never stale and never torn. Before audio arrives, or 250 ms after the host stopped processing, it is a preview computed from APVTS so knob moves still show. |
 | `tunerReading()` | Input pitch, hit counts, clarity and glide. Worker/UI share one short mutex; the audio producer never takes it. Invalid readings disable Match/Tune. |
 | `readSpectrumSamples(dest, count)` | Bounded SPSC FIFO of mono output samples at the display sample rate. One reader. FFT and windowing belong to the editor. A full FIFO drops an entire incoming block. |
 | `takeOutputPeak(channel)` | Atomic peak since the last read, linear amplitude, channel 0 or 1. UI applies meter decay. |

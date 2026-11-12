@@ -67,9 +67,9 @@ public:
     // thread: the audio thread publishes through atomics and a FIFO.
 
     /**
-        Drains complete audio snapshots, returns the newest, or a knob preview
-        before audio arrives. Actual band gains include smoothing. One message-
-        thread consumer; retains the last complete frame if none is available.
+        The newest complete frame the audio thread published, with the live
+        (smoothed) band gains. Without audio for a while (none yet, or the
+        host stopped) it is a preview computed from the knobs. One consumer.
     */
     DisplayState displayState() noexcept;
 
@@ -146,13 +146,15 @@ private:
 
     std::atomic<bool> stateRestored { false }; // set by setStateInformation, consumed by the audio thread
     std::atomic<int> displayUsers { 0 };
-    // Bounded SPSC queue: audio writes whole frames; the message thread reads.
-    // A full queue drops a new frame. Neither side can access the other's slot.
-    static constexpr size_t kDisplayFrames = 4;
-    DisplayState displayFrames[kDisplayFrames];
-    std::atomic<size_t> displayWrite { 0 }, displayRead { 0 };
-    DisplayState lastDisplay;
-    bool haveDisplay = false; // message thread only
+    // Triple buffer: the audio thread fills its slot and swaps it in as the
+    // newest; the editor swaps the newest out. Each side owns one slot.
+    static constexpr int kFresh = 4; // flag in newestSlot: not taken yet
+    static constexpr juce::uint32 kDisplayHoldMs = 250;
+    DisplayState displaySlots[3];
+    int audioSlot = 0;                       // audio thread only
+    int editorSlot = 1;                      // message thread only
+    std::atomic<int> newestSlot { 2 };
+    juce::uint32 lastFrameMs = 0;            // message thread only; 0 = no frame yet
     std::atomic<double> displaySampleRate { 48000.0 };
     std::atomic<bool> resetAbPending { false };
     std::atomic<float> outputPeak[2] { { 0.0f }, { 0.0f } };

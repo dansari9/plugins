@@ -815,6 +815,33 @@ TEST_CASE("Plugin: display frames contain smoothed gains and stop collecting whe
     CHECK(processor.takeOutputPeak(0) == 0.0f);
 }
 
+TEST_CASE("Plugin: the display shows the newest frame, and the knobs once audio stops")
+{
+    RootnoteProcessor processor;
+    prepare(processor, 48000.0, 128);
+    processor.setDisplayActive(true);
+    juce::AudioBuffer<float> block(2, 128);
+    juce::MidiBuffer midi;
+    // Many blocks without a read: the editor must see the last one, not an old one.
+    for (int note = 30; note <= 50; ++note)
+    {
+        block.clear();
+        midi.clear();
+        midi.addEvent(juce::MidiMessage::noteOn(1, note, 1.0f), 0);
+        processor.processBlock(block, midi);
+    }
+    midi.clear();
+    for (int i = 0; i < 40; ++i) // the note settles after a short ramp
+        processor.processBlock(block, midi);
+    CHECK_NEAR(processor.displayState().boostHz, noteToHz(50.0), 1.0e-6);
+
+    // The host stops calling processBlock: a knob move still shows.
+    set(processor, ids::boostNote, 40.0f);
+    juce::Thread::sleep(300);
+    CHECK_NEAR(processor.displayState().boostHz, noteToHz(40.0), 1.0e-6);
+    processor.setDisplayActive(false);
+}
+
 TEST_CASE("Plugin: UI snapshots stay whole while audio publishes and the consumer falls behind")
 {
     RootnoteProcessor processor;

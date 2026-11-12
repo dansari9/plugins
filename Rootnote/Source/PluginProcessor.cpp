@@ -117,35 +117,30 @@ void RootnoteProcessor::publishDisplay(const juce::AudioBuffer<float>& buffer, i
     if (displayUsers.load(std::memory_order_relaxed) <= 0)
         return;
 
-    const size_t w = displayWrite.load(std::memory_order_relaxed);
-    if (w - displayRead.load(std::memory_order_acquire) < kDisplayFrames)
-    {
-        auto& frame = displayFrames[w % kDisplayFrames];
-        frame.sampleRate = displaySampleRate.load(std::memory_order_relaxed);
-        frame.boostHz = engine.boostHz();
-        frame.cutHz = engine.cutHz();
-        frame.boostFromMidi = engine.boostFollowsMidi();
-        frame.cutFromMidi = engine.cutFollowsMidi();
-        frame.midiNoteOns = engine.midiNoteOnCount();
-        frame.limiterGain = static_cast<float>(engine.limiterGain());
-        const auto copyBands = [](const BandBank& bank, BandView* out) {
-            int count = 0;
-            for (int slot = 0; slot < kMaxSlots; ++slot)
-                if (bank.slotActive(slot))
-                    out[count++] = { bank.currentRootHz() * bank.slotRatio(slot), bank.slotGainDb(slot) };
-            return count;
-        };
-        frame.numBoostBands = copyBands(engine.boostBank(), frame.boostBands);
-        frame.numCutBands = copyBands(engine.cutBank(), frame.cutBands);
-        displayWrite.store(w + 1, std::memory_order_release);
-    }
+    auto& frame = displaySlots[audioSlot];
+    frame.sampleRate = displaySampleRate.load(std::memory_order_relaxed);
+    frame.boostHz = engine.boostHz();
+    frame.cutHz = engine.cutHz();
+    frame.boostFromMidi = engine.boostFollowsMidi();
+    frame.cutFromMidi = engine.cutFollowsMidi();
+    frame.midiNoteOns = engine.midiNoteOnCount();
+    frame.limiterGain = static_cast<float>(engine.limiterGain());
+    const auto copyBands = [](const BandBank& bank, BandView* out) {
+        int count = 0;
+        for (int slot = 0; slot < kMaxSlots; ++slot)
+            if (bank.slotActive(slot))
+                out[count++] = { bank.currentRootHz() * bank.slotRatio(slot), bank.slotGainDb(slot) };
+        return count;
+    };
+    frame.numBoostBands = copyBands(engine.boostBank(), frame.boostBands);
+    frame.numCutBands = copyBands(engine.cutBank(), frame.cutBands);
+    audioSlot = newestSlot.exchange(audioSlot | kFresh, std::memory_order_acq_rel) & 3;
 
     for (int ch = 0; ch < 2; ++ch)
     {
         const float peak = buffer.getMagnitude(juce::jmin(ch, numChannels - 1), 0, buffer.getNumSamples());
         float previous = outputPeak[ch].load(std::memory_order_relaxed);
         while (peak > previous && !outputPeak[ch].compare_exchange_weak(previous, peak, std::memory_order_relaxed)) {}
-
     }
 
     // A full FIFO only means the editor is not drawing; dropping the block is fine.
@@ -184,16 +179,16 @@ void RootnoteProcessor::setStateInformation(const void* data, int sizeInBytes)
 
 RootnoteProcessor::DisplayState RootnoteProcessor::displayState() noexcept
 {
-    size_t r = displayRead.load(std::memory_order_relaxed);
-    const size_t w = displayWrite.load(std::memory_order_acquire);
-    while (r != w)
+    const juce::uint32 now = juce::Time::getMillisecondCounter();
+    if (newestSlot.load(std::memory_order_relaxed) & kFresh)
     {
-        lastDisplay = displayFrames[r++ % kDisplayFrames];
-        haveDisplay = true;
+        editorSlot = newestSlot.exchange(editorSlot, std::memory_order_acq_rel) & 3;
+        lastFrameMs = juce::jmax(1u, now);
     }
-    displayRead.store(r, std::memory_order_release);
-    if (haveDisplay)
-        return lastDisplay;
+    // Audio blocks come every few milliseconds; a host that stopped calling
+    // must not freeze the bands, so the knobs take over after a short wait.
+    if (lastFrameMs != 0 && now - lastFrameMs < kDisplayHoldMs)
+        return displaySlots[editorSlot];
 
     const EngineParams p = parameters.read();
     DisplayState state;
@@ -211,8 +206,9 @@ void RootnoteProcessor::setDisplayActive(bool active) noexcept
     {
         // Consumer-side discard: reopening starts with fresh audio, not old spectra.
         spectrumFifo.discard();
-        displayRead.store(displayWrite.load(std::memory_order_acquire), std::memory_order_release);
-        haveDisplay = false;
+        if (newestSlot.load(std::memory_order_relaxed) & kFresh)
+            editorSlot = newestSlot.exchange(editorSlot, std::memory_order_acq_rel) & 3;
+        lastFrameMs = 0;
         for (auto& peak : outputPeak)
             peak.exchange(0.0f, std::memory_order_relaxed);
     }
