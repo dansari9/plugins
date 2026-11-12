@@ -54,36 +54,16 @@ void AnalysisWorker::push(const float* left, const float* right, int numSamples)
         overflowed.store(true, std::memory_order_relaxed);
 }
 
-void AnalysisWorker::publish(const TunerReading& r) noexcept
+void AnalysisWorker::publish(const TunerReading& r)
 {
-    sequence.fetch_add(1, std::memory_order_acq_rel);
-    valid.store(r.valid, std::memory_order_relaxed);
-    hz.store(r.hz, std::memory_order_relaxed);
-    lastHitHz.store(r.lastHitHz, std::memory_order_relaxed);
-    glide.store(r.glideSemitones, std::memory_order_relaxed);
-    clarity.store(r.clarity, std::memory_order_relaxed);
-    pitchedHits.store(r.pitchedHits, std::memory_order_relaxed);
-    onsets.store(r.onsets, std::memory_order_relaxed);
-    sequence.fetch_add(1, std::memory_order_acq_rel);
+    const std::lock_guard<std::mutex> lock(readingMutex);
+    published = r;
 }
 
-TunerReading AnalysisWorker::reading() const noexcept
+TunerReading AnalysisWorker::reading() const
 {
-    TunerReading r;
-    for (int attempt = 0; attempt < 16; ++attempt)
-    {
-        const uint32_t before = sequence.load(std::memory_order_acquire);
-        r.valid = valid.load(std::memory_order_relaxed);
-        r.hz = hz.load(std::memory_order_relaxed);
-        r.lastHitHz = lastHitHz.load(std::memory_order_relaxed);
-        r.glideSemitones = glide.load(std::memory_order_relaxed);
-        r.clarity = clarity.load(std::memory_order_relaxed);
-        r.pitchedHits = pitchedHits.load(std::memory_order_relaxed);
-        r.onsets = onsets.load(std::memory_order_relaxed);
-        if ((before & 1u) == 0u && before == sequence.load(std::memory_order_acquire))
-            break;
-    }
-    return r;
+    const std::lock_guard<std::mutex> lock(readingMutex);
+    return published;
 }
 
 void AnalysisWorker::run()

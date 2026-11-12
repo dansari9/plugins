@@ -300,3 +300,40 @@ TEST_CASE("AnalysisWorker: recovers from a flooded FIFO and starts afresh on a n
     CHECK_NEAR(centsBetween(worker.reading().hz, 60.0), 0.0, 10.0);
     worker.enable(false);
 }
+
+TEST_CASE("AnalysisWorker: every reading is one whole reading, never a mix of two")
+{
+    const double fs = 48000.0;
+    Random random(12);
+    const std::vector<float> kicks = kickRow({ 55.0, 58.3, 61.7, 65.4, 55.0, 58.3 }, fs, random);
+
+    AnalysisWorker worker;
+    worker.setSampleRate(fs);
+    worker.enable(true);
+    std::this_thread::sleep_for(std::chrono::milliseconds(150));
+
+    // A reader as impatient as it gets, while readings appear and are wiped by sample-rate changes.
+    std::atomic<bool> stop { false };
+    std::atomic<int> torn { 0 };
+    std::thread reader([&] {
+        while (!stop.load())
+        {
+            const TunerReading r = worker.reading();
+            const bool whole = r.valid == (r.hz > 0.0) && r.valid == (r.pitchedHits > 0u)
+                && r.valid == (r.lastHitHz > 0.0) && r.onsets >= r.pitchedHits;
+            torn += whole ? 0 : 1;
+        }
+    });
+
+    for (int round = 0; round < 3; ++round)
+    {
+        play(worker, kicks, fs);
+        CHECK(waitFor(worker, 3));
+        worker.setSampleRate(fs);
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    stop = true;
+    reader.join();
+    CHECK(torn.load() == 0);
+    worker.enable(false);
+}

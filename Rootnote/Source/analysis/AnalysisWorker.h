@@ -36,12 +36,12 @@ public:
     /** Audio thread. right may be null. */
     void push(const float* left, const float* right, int numSamples) noexcept;
 
-    /** Any thread. */
-    TunerReading reading() const noexcept;
+    /** A consistent copy of the latest reading. Any thread but the audio thread: it takes a short lock. */
+    TunerReading reading() const;
 
 private:
     void run();
-    void publish(const TunerReading& reading) noexcept;
+    void publish(const TunerReading& reading);
 
     SpscFifo fifo { static_cast<size_t>(1) << 16 };
 
@@ -56,14 +56,8 @@ private:
     std::atomic<bool> overflowed { false };
     std::atomic<bool> resync { false };
 
-    // Published reading, guarded by a sequence counter (odd while being written).
-    std::atomic<uint32_t> sequence { 0 };
-    std::atomic<bool> valid { false };
-    std::atomic<double> hz { 0.0 };
-    std::atomic<double> lastHitHz { 0.0 };
-    std::atomic<double> glide { 0.0 };
-    std::atomic<double> clarity { 0.0 };
-    std::atomic<uint32_t> pitchedHits { 0 };
-    std::atomic<uint32_t> onsets { 0 };
+    // The reading as the UI sees it. Never touched by the audio thread.
+    mutable std::mutex readingMutex;
+    TunerReading published;
 };
 } // namespace rootnote
