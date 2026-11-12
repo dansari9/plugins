@@ -41,6 +41,7 @@ void operator delete(void* p) noexcept { std::free(p); }
 void operator delete(void* p, std::size_t) noexcept { std::free(p); }
 void operator delete(void* p, std::align_val_t) noexcept { std::free(p); }
 void operator delete(void* p, std::size_t, std::align_val_t) noexcept { std::free(p); }
+static void escape(void* p) { asm volatile("" : : "r"(p) : "memory"); } // p and its memory become observable
 
 static int failures = 0;
 #define CHECK(c) ((c) ? (void) 0 : (void) (++failures, std::cerr << "FAIL " << __LINE__ << ": " #c "\n"))
@@ -320,7 +321,9 @@ static void testSound() // (6), (7), (8)
     CHECK(traced(100) > 3 && traced(0) == 0);
 
     // (8) No allocation inside processBlock: in every rate / layout / block size run so far, and below while
-    // parameters move. The counter itself is checked (volatile: an unobserved new/delete pair may be elided).
+    // parameters move. The counter itself is checked. The probes must survive the optimiser (GCC 15 elides a
+    // new/delete expression pair even through a volatile pointer): they call the replaceable functions
+    // directly, which is never elidable, and escape every pointer through an opaque asm.
     CHECK(audioAllocations.exchange(0) == 0);
     auto counted = [](auto allocate) {
         onAudioThread = true;
@@ -328,10 +331,11 @@ static void testSound() // (6), (7), (8)
         onAudioThread = false;
         return audioAllocations.exchange(0) > 0;
     };
-    CHECK(counted([] { int* volatile q = new int(1); delete q; }));
-    CHECK(counted([] { void* volatile q = ::operator new(64, std::align_val_t(64)); ::operator delete(q, std::align_val_t(64)); }));
+    CHECK(counted([] { void* q = ::operator new(sizeof(int)); escape(q); ::operator delete(q); }));
+    CHECK(counted([] { void* q = ::operator new(64, std::align_val_t(64)); escape(q); ::operator delete(q, std::align_val_t(64)); }));
 #ifdef SNAP_COUNTS_MALLOC
-    CHECK(counted([] { juce::AudioBuffer<float> b(2, 512); float* volatile v = b.getWritePointer(0); (void) v; })); // JUCE's malloc buffers
+    CHECK(counted([] { void* q = std::malloc(64); escape(q); std::free(q); }));
+    CHECK(counted([] { juce::AudioBuffer<float> b(2, 512); escape(b.getWritePointer(0)); })); // JUCE's malloc buffers
 #endif
     Proc p;
     prepare(p, fs, 512, 2);
