@@ -611,16 +611,16 @@ TEST_CASE("Plugin: the editor opens, shows the tuner, resizes and closes headles
         playKicks(processor, 55.0, 48000.0);
         CHECK(waitForReading(processor, 1));
 
-        for (const auto size : { juce::Point<int>(480, 420),
+        for (const auto size : { juce::Point<int>(720, 405),
                                  juce::Point<int>(RootnoteEditor::kDefaultWidth, RootnoteEditor::kDefaultHeight),
-                                 juce::Point<int>(1400, 1600), juce::Point<int>(700, 500) })
+                                 juce::Point<int>(1920, 1080), juce::Point<int>(1200, 675) })
         {
             editor->setSize(size.x, size.y);
             const juce::Image snapshot = editor->createComponentSnapshot(editor->getLocalBounds());
             CHECK(snapshot.getWidth() == size.x && snapshot.getHeight() == size.y);
         }
     }
-    CHECK(processor.storedEditorSize() == juce::Point<int>(700, 500));
+    CHECK(processor.storedEditorSize() == juce::Point<int>(1200, 675));
 
     // The size comes back with the state, and a second editor can follow the first.
     juce::MemoryBlock state;
@@ -628,7 +628,74 @@ TEST_CASE("Plugin: the editor opens, shows the tuner, resizes and closes headles
     RootnoteProcessor other;
     other.setStateInformation(state.getData(), static_cast<int>(state.getSize()));
     std::unique_ptr<juce::AudioProcessorEditor> editor(other.createEditor());
-    CHECK(editor->getWidth() == 700 && editor->getHeight() == 500);
+    CHECK(editor->getWidth() == 1200 && editor->getHeight() == 675);
+}
+
+/** A control of the editor by its accessible title ("d", "Gain"), visible or not. */
+template <typename Type>
+Type* findControl(juce::Component& parent, const juce::String& title)
+{
+    for (auto* child : parent.getChildren())
+    {
+        if (auto* match = dynamic_cast<Type*>(child); match != nullptr && child->getTitle() == title)
+            return match;
+        if (auto* found = findControl<Type>(*child, title))
+            return found;
+    }
+    return nullptr;
+}
+
+TEST_CASE("Plugin: the faceplate keys and encoders write the parameters")
+{
+    using rootnote::ui::Encoder;
+    using rootnote::ui::Key;
+    RootnoteProcessor processor;
+    prepare(processor);
+    set(processor, ids::boostNote, 36.0f); // C2: the pitch keys start on octave 2
+    std::unique_ptr<juce::AudioProcessorEditor> editor(processor.createEditor());
+    auto& faceplate = dynamic_cast<RootnoteEditor&>(*editor);
+
+    // Click a pitch key: the boost note; Alt-click: the cut note, switched on.
+    auto* fSharp = findControl<Key>(faceplate, juce::String::fromUTF8("f\xe2\x99\xaf"));
+    REQUIRE(fSharp != nullptr);
+    fSharp->onPress(juce::ModifierKeys());
+    CHECK(holds(processor, ids::boostNote, 42.0f));
+    findControl<Key>(faceplate, "d")->onPress(juce::ModifierKeys(juce::ModifierKeys::altModifier));
+    CHECK(holds(processor, ids::cutNote, 38.0f));
+    CHECK(holds(processor, ids::cutOn, 1.0f));
+
+    // The boost page's encoders are bound to their parameters.
+    auto* gain = findControl<Encoder>(faceplate, "Gain");
+    REQUIRE(gain != nullptr);
+    CHECK(gain->isVisible());
+    gain->setValue(15.0, juce::sendNotificationSync);
+    CHECK(holds(processor, ids::boostGain, 15.0f));
+
+    // The cut page rebinds the same encoders; Fine sets the cents of the cut note.
+    faceplate.selectPage(1);
+    auto* depth = findControl<Encoder>(faceplate, "Depth");
+    REQUIRE(depth != nullptr);
+    CHECK(depth == gain); // the first encoder, now Depth
+    CHECK_NEAR(depth->getValue(), -12.0, 1.0e-4);
+    depth->setValue(-20.0, juce::sendNotificationSync);
+    CHECK(holds(processor, ids::cutDepth, -20.0f));
+    CHECK(holds(processor, ids::boostGain, 15.0f));
+
+    auto* fine = findControl<Encoder>(faceplate, "Fine");
+    REQUIRE(fine != nullptr);
+    fine->onDragStart();
+    fine->setValue(25.0, juce::sendNotificationSync);
+    fine->onDragEnd();
+    CHECK(holds(processor, ids::cutNote, 38.25f));
+    set(processor, ids::cutNote, 37.9f);
+    CHECK_NEAR(fine->getValue(), -10.0, 0.05);
+
+    // Pages with fewer controls hide the rest.
+    faceplate.selectPage(2);
+    int visible = 0;
+    for (auto* child : editor->getChildComponent(0)->getChildren())
+        visible += dynamic_cast<Encoder*>(child) != nullptr && child->isVisible() ? 1 : 0;
+    CHECK(visible == 3);
 }
 
 TEST_CASE("Plugin: a preset sets its exact values, everything else to default, and leaves the song alone")
@@ -887,9 +954,14 @@ int writeSnapshot(const juce::File& file)
     processor.loadPreset(2);
     set(processor, ids::boostNote, 30.0f);
     set(processor, ids::boostGain, 9.0f);
+    set(processor, ids::boostQ, 12.0f);
     set(processor, ids::bands, 8.0f);
+    set(processor, ids::range, 2.0f);
+    set(processor, ids::ring, 25.0f);
+    set(processor, ids::glide, 40.0f);
     set(processor, ids::key, 6.0f);
     set(processor, ids::scale, static_cast<float>(Scale::minor));
+    set(processor, ids::keyLock, 1.0f);
 
     std::unique_ptr<juce::AudioProcessorEditor> editor(processor.createEditor());
     auto* rootnoteEditor = dynamic_cast<RootnoteEditor*>(editor.get());
@@ -921,7 +993,8 @@ int writeSnapshot(const juce::File& file)
     }
 
     rootnoteEditor->refresh();
-    const juce::Image image = editor->createComponentSnapshot(editor->getLocalBounds());
+    // At twice the size, as the mockup is rendered.
+    const juce::Image image = editor->createComponentSnapshot(editor->getLocalBounds(), true, 2.0f);
     file.getParentDirectory().createDirectory();
     file.deleteFile();
     juce::FileOutputStream stream(file);

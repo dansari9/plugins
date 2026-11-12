@@ -1,15 +1,33 @@
-# Rootnote 0.3.0
+# Rootnote 0.4.0
 
 Dripworks note-based resonant drum-tuning EQ. Cut unwanted resonances, boost a
 note and its harmonic, octave or membrane series, and add a transient-excited
 Ring tail. This is an EQ/resonator, not a pitch shifter. Zero reported latency;
 mono, stereo and mono-to-stereo processing. JUCE 8.0.15, C++17.
 
-The editor is deliberately minimal: a scrollable control for every parameter,
-note/Hz/hit readouts, Match cut, Tune to key, factory presets, A/B, spectrum,
-band positions, output peaks and limiter reduction. The tuner and display feed
-run only while an editor is open. The [UI feed contract](Source/UIFeed.md)
-documents how to replace the editor without changing the processor.
+The editor is the **Faceplate**: a light hardware-style panel with one dark
+screen (boost note, hit and status lines, output spectrum with white boost and
+orange cut pillars, a legend of the encoder values), twelve pitch keys, five
+pages and eight colour-coded encoders.
+
+- **Pitch keys:** click sets the boost note, Alt-click sets the cut note and
+  switches Cut on. `oct −`/`oct +` choose the keys' octave. The bar under a key
+  shows whether it is in the selected key/scale.
+- **Pages** (boost, cut, ring, out, midi) give the encoders their roles:
+  Boost: Gain, Q, Bands, Focus, Range, Blend, Tilt, Fine. Cut: Depth, Q,
+  Overtones, Bands, Note (whole semitones), Fine (its cents), Cut on/off.
+  Ring: Amount, Decay, Drop. Out: Mix, Output, Glide, A4, Q mode. MIDI: Mode,
+  Note-off, Key, Scale.
+- **Encoders:** drag up/down, Shift for fine control, double-click to reset.
+- **Series keys** harm/oct/drum, **link** (Focus follows the note), **limit**.
+- **Header:** preset (click the name for the list, arrows to step), A/B,
+  settings (UI size, Q mode, note-off) and the orange ON switch (bypass).
+
+The editor keeps its aspect ratio; hosts resize it, and Settings offers 75-200%.
+The tuner and display feed run only while an editor is open. The
+[UI feed contract](Source/UIFeed.md) documents the processor's editor interface.
+The font is Geist Mono (SIL OFL 1.1, `Assets/Fonts`), subset by `make_fonts.py`,
+which also draws the ♯ glyph Geist Mono lacks.
 
 ## Build and test
 

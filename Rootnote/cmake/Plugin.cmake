@@ -45,6 +45,18 @@ target_sources(Rootnote
         Source/Presets.cpp
         Source/PluginProcessor.cpp
         Source/PluginEditor.cpp
+        Source/ui/Pages.cpp
+        Source/ui/Screen.cpp
+        Source/ui/Theme.cpp
+        Source/ui/Widgets.cpp
+)
+
+# The editor's typeface: Geist Mono (OFL), built by Assets/Fonts/make_fonts.py.
+juce_add_binary_data(RootnoteFonts
+    SOURCES
+        ${CMAKE_CURRENT_SOURCE_DIR}/Assets/Fonts/GeistMono-Regular.ttf
+        ${CMAKE_CURRENT_SOURCE_DIR}/Assets/Fonts/GeistMono-Medium.ttf
+        ${CMAKE_CURRENT_SOURCE_DIR}/Assets/Fonts/GeistMono-SemiBold.ttf
 )
 
 target_compile_definitions(Rootnote
@@ -58,6 +70,7 @@ target_compile_definitions(Rootnote
 target_link_libraries(Rootnote
     PRIVATE
         RootnoteCore
+        RootnoteFonts
         juce::juce_audio_utils
         juce::juce_recommended_config_flags
         juce::juce_recommended_warning_flags
@@ -83,6 +96,7 @@ endif()
 # Set per source file so it comes after JUCE's recommended warning flags.
 if(NOT MSVC)
     set_source_files_properties(
-        Source/Parameters.cpp Source/Presets.cpp Source/PluginProcessor.cpp Source/PluginEditor.cpp Tests/PluginTests.cpp
+        Source/Parameters.cpp Source/Presets.cpp Source/PluginProcessor.cpp Source/PluginEditor.cpp
+        Source/ui/Pages.cpp Source/ui/Screen.cpp Source/ui/Theme.cpp Source/ui/Widgets.cpp Tests/PluginTests.cpp
         PROPERTIES COMPILE_OPTIONS -Wno-float-equal)
 endif()
