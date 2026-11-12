@@ -1,4 +1,4 @@
-# Rootnote 0.4.2
+# Rootnote 0.4.3
 
 Dripworks note-based resonant drum-tuning EQ. Cut unwanted resonances, boost a
 note and its harmonic, octave or membrane series, and add a transient-excited
@@ -7,22 +7,37 @@ mono, stereo and mono-to-stereo processing. JUCE 8.0.15, C++17.
 
 The editor is the **Faceplate**: a light hardware-style panel with one dark
 screen (boost note, hit and status lines, output spectrum with white boost and
-orange cut pillars, a legend of the encoder values), twelve pitch keys, five
-pages and eight colour-coded encoders.
+orange cut pillars under the blue Focus window, a legend of the page's values),
+twelve pitch keys, five pages and up to eight colour-coded encoders.
 
 - **Pitch keys:** click sets the boost note, Alt-click sets the cut note and
-  switches Cut on. `oct −`/`oct +` choose the keys' octave. The bar under a key
-  shows whether it is in the selected key/scale.
+  switches Cut on. `oct −`/`oct +` move the boost note (Alt: the cut note) an
+  octave down/up at once, from the note that sounds (a held MIDI note too);
+  the number beside them is the boost note's octave, which the pitch keys play
+  in. The bar under a key shows whether it is in the selected key/scale.
 - **Pages** (boost, cut, ring, out, midi) give the encoders their roles:
   Boost: Gain, Q, Bands, Focus, Range, Blend, Tilt, Fine. Cut: Depth, Q,
-  Overtones, Bands, Note (whole semitones), Fine (its cents), Cut on/off.
+  Overtones, Bands, Fine (cents of the cut note), Cut on/off; the cut note
+  itself is set with the keys, Match cut or by typing it on the screen.
   Ring: Amount, Decay, Drop. Out: Mix, Output, Glide, A4, Q mode. MIDI: Mode,
   Note-off, Key, Scale. Hold a page key to peek at its values on the screen;
   a click selects it.
 - **Encoders:** drag up/down, Shift for fine control, double-click to reset.
-  Alt-, Cmd- or right-click an encoder, or click its value on the screen, to
-  type a value ("55 Hz", "F#1", "-6 dB"). With the keyboard focus (click or
-  Tab), the arrow keys step it, Shift finer, and Return opens the text field.
+  With the keyboard focus (click or Tab), the arrow keys step it, Shift finer.
+- **Typing values:** click any value in the screen's bottom row (or Alt-, Cmd-
+  or right-click an encoder, or press Return on it) to type over it. Units and
+  case are optional: `-3.1`, `-3.1db`, `q8`, `50%`, `C#1`, `db1`, `55 Hz`,
+  `-12ct`, `on`, `min`. Return or clicking elsewhere applies it as one host
+  gesture, Escape cancels, and text that is no value changes nothing. Host
+  text entry reads the same formats.
+- **Focus window:** the blue curve is the weighting Focus and Range give the
+  boost bands (centre dashed, ±Range marked under the axis); "link" means it
+  follows the boost note. Turning or typing Focus switches the link off. The
+  legend shows LINK, ALL (Bands of the octave series) or N/A (Blend outside
+  the harmonic series) where a value has no effect.
+- **Match cut** is the cut's switch: lit while Cut is on; a click switches it
+  off, or on at the detected hit. Without a hit it (like **tune to key**)
+  blinks and changes nothing. **Key lock** snaps MIDI notes to the key.
 - **Series keys** harm/oct/drum, **link** (Focus follows the note), **limit**.
 - **Header:** preset (click the name for the list, arrows to step), A/B,
   settings (UI size, Q mode, note-off) and the orange ON switch (bypass).
@@ -119,7 +134,7 @@ See [Live's routing manual](https://www.ableton.com/en/manual/routing-and-i-o/).
 ## Tuning and presets
 
 Play a few isolated hits with the editor open. **Match cut** places Cut on the
-detected frequency and enables it. **Tune to key** puts Boost on the nearest
+detected frequency and enables it; clicked again it switches Cut off. **Tune to key** puts Boost on the nearest
 degree of the selected key/scale and clears Fine. These actions are explicit;
 presets never silently replace a note using a detector reading. Rootnote uses
 C4 = MIDI 60; hosts may label octaves differently. MIDI note-off defaults to
@@ -167,7 +182,8 @@ AUs, as described in [Apple's troubleshooting guide](https://support.apple.com/e
 ## Headless editor snapshot
 
 Render a demo kick, detected Cut and MIDI-controlled Boost at the default
-960 × 540 logical size (2× PNG). The optional second path receives an identical copy:
+960 × 540 logical size (2× PNG). The optional second path receives an identical
+copy; `--snapshot-entry` renders the cut page with a value being typed:
 
 ```sh
 xvfb-run -a Rootnote/build/RootnotePluginTests --snapshot Rootnote/artifacts/rootnote_editor.png /workspace/rootnote-logs/editor.png

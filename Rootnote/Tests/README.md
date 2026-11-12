@@ -102,3 +102,16 @@ six extremes at 48 kHz measure full tails. Loud drum hits, clicks, DC, restored
 states and callback sizes 1–8193 exercise finite output, limiter bounds and
 exact initial/reset silence. The final half-second after two reported T60
 tails must be below −90 dBFS RMS. Earlier high-Q/Ring tails are intentional.
+
+# 0.4.3 changes and audit
+
+| Change / finding | Regression coverage |
+| --- | --- |
+| Octave keys move the sounding note (boost; Alt: cut), clamped, one gesture; keys follow the note's octave | Engine band doubles after `oct +`; automation moves the keys' octave; MIDI note shifted and taken back; two presses within a frame |
+| Match cut toggles Cut; LED = Cut on; no hit blinks (Tune to key too) | Toggle on/off with a detected hit, blink without, LED after automation |
+| Every legend value is typed in place on the screen; garbage reverts | Every slot of every page: garbage and own-text round trip; natural formats for `parseValue` and host text |
+| Cut page has no Note encoder | Encoder absent, six encoders shown |
+| Focus window drawn from `rangeWeight` | Centre and ±Range follow Focus, Range, link and the boost note; hidden at 0 dB |
+| Focus was dead while linked | Turning it unlinks; legend shows LINK / ALL / N/A where a value has no effect |
+| A page key held and released off the key swallowed the next click | Hold, drag off, release; the next click selects |
+| Host text entry: choices were case-sensitive, Bool/Int accepted junk as 0 | `parsed()` checks for choices, bands, switches and the default fallback |
