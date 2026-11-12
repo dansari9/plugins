@@ -141,18 +141,14 @@ struct Svf
 // Butterworth damping 2cos((2i+1)pi/2N) of the cascaded sections: 8th-order approx filter, 4th-order images filter.
 constexpr double approxK[] = { 1.9615705608, 1.6629392246, 1.1111404660, 0.3901806440 }, imagesK[] = { 1.8477590650, 0.7653668647 };
 
-// ADC soft clip: identity up to the knee, then a tanh shoulder towards +-1. Its residual (clip - x) and the
-// residual's antiderivative drive first-order antiderivative antialiasing (ADAA) without touching clean signals.
+// Full clip antiderivative for first-order ADAA. The linear region takes an explicit zero-delay path.
 constexpr double knee = 0.5, soft = 1 - knee;
-double clipResidual(double x)
-{
-    const double a = std::abs(x);
-    return a <= knee ? 0 : std::copysign(knee + soft * std::tanh((a - knee) / soft), x) - x;
-}
+double clip(double x) { return std::copysign(knee + soft * std::tanh((std::abs(x) - knee) / soft), x); }
 double clipIntegral(double x)
 {
-    const double a = std::abs(x), u = (a - knee) / soft; // log cosh(u) written so it cannot overflow
-    return a <= knee ? 0 : knee * a + soft * soft * (u + std::log1p(std::exp(-2 * u)) - std::log(2.0)) - 0.5 * (a * a + knee * knee);
+    const double a = std::abs(x), u = (a - knee) / soft; // stable log cosh, continuous at the knee
+    return a <= knee ? 0.5 * a * a : knee * a - 0.5 * knee * knee
+        + soft * soft * (u + std::log1p(std::exp(-2 * u)) - std::log(2.0));
 }
 
 double lerp(const double* table, double p)
@@ -183,32 +179,30 @@ struct Channel
         const auto o = s.run(x, f.filter);
         return f.v[SDry] * x + f.v[SLP] * o[0] + f.v[SBP] * f.filter.k * o[1] + f.v[SHP] * o[2];
     }
-    // Converter at one virtual sample instant: dither (<= 1/2 LSB) -> quantizer -> DAC with fixed vintage
-    // ladder errors on the four MSBs. A slow tracker removes only the DC the converter adds (mid-riser idle offset).
-    void hold(double v, const Frame& f)
+    // Host-rate dither -> ideal quantizer. Track only converter-added DC for the fixed DAC coupling stage.
+    double convert(double v, const Frame& f)
     {
         double q = v;
         if (f.bits > 0)
         {
-            static constexpr double ladder[] = { 0.6, -0.4, 0.3, -0.2 }; // weight errors of the MSBs (two's complement), in LSB
             const double lsb = std::ldexp(1.0, 1 - f.bits), half = std::ldexp(1.0, f.bits - 1);
             const double u = (v + f.v[SDither] * lsb * (random() - 0.5)) / lsb;
-            const double k = jlimit(-half, half - 1, f.tread ? std::round(u) : std::floor(u)); // mid-tread / mid-riser
+            const double k = jlimit(-half, half - 1, f.tread ? std::round(u) : std::floor(u));
             q = (k + (f.tread ? 0 : 0.5)) * lsb;
-            for (int j = 0, code = (int) k; j < jmin(4, f.bits); ++j) // code 0 = silence has no error
-                q += ((code >> (f.bits - 1 - j)) & 1) * ladder[j] * lsb;
         }
         dc += f.dcCoef * (q - v - dc);
-        held = q - dc;
+        return q;
     }
     double process(double x, const Frame& f)
     {
-        // Preamp into the ADC clip (ADAA), filter[pre], approx (anti-alias) lowpass.
+        // Preamp/ADC (ADAA), filter[pre], dither, quantizer, approx lowpass.
         const double a = jlimit(-64.0, 64.0, x * f.v[SPre]), aD = clipIntegral(a);
-        double y = a + (std::abs(a - adcPrev) < 1e-6 ? clipResidual(0.5 * (a + adcPrev)) : (aD - adcPrevD) / (a - adcPrev));
+        const double mid = 0.5 * (a + adcPrev);
+        double y = std::abs(a) <= knee && std::abs(adcPrev) <= knee ? a
+            : std::abs(a - adcPrev) < 1e-6 ? (std::abs(mid) <= knee ? mid : clip(mid)) : (aD - adcPrevD) / (a - adcPrev);
         adcPrev = a, adcPrevD = aD;
-        y = jlimit(-1.0, 1.0, y);
         y += (1 - f.v[SOrder]) * (filter(pre, y, f) - y);
+        y = convert(y, f);
         double lp = y;
         for (int k = 0; k < 4; ++k)
             lp = approx[k].run(lp, f.approx[k])[0];
@@ -220,7 +214,7 @@ struct Channel
         jw += f.jitCoef * (2 * random() - 1 - jw);
         const double inc = jmin(1.0, f.inc * (1 + 0.03 * f.v[SJitter] * jlimit(-1.0, 1.0, jw * f.jitNorm)));
         if (f.identity) // a tick on every host sample: the S&H is the identity
-            phase = 0, hold(y, f);
+            phase = 0, held = y;
         else if ((phase += inc) >= 1)
         {
             phase -= 1;
@@ -228,18 +222,19 @@ struct Channel
             double v = 0;
             for (int j = d > 0 ? 1 : 0; j < taps; ++j) // input at time n - d from samples n - j, j - d >= 0
                 v += hist[(pos - j) & ringMask] * lerp(impulse, (j - d) * over);
-            hold(v, f);
+            held = v;
             for (int j = 0; j < taps; ++j)
                 ring[(pos + j) & ringMask] += (held - old) * (lerp(blep, (j + d) * over) - 1);
         }
         y = held + ring[pos];
         ring[pos] = 0, pos = (pos + 1) & ringMask;
 
-        // Images (reconstruction) lowpass, filter[post].
+        // Images lowpass -> fixed DAC coupling (converter DC removal) -> filter[post].
         lp = y;
         for (int k = 0; k < 2; ++k)
             lp = images[k].run(lp, f.images[k])[0];
         y += f.v[SImages] * (lp - y);
+        y -= dc;
         return y + f.v[SOrder] * (filter(post, y, f) - y);
     }
 };
@@ -275,6 +270,15 @@ struct CrumbProcessor::Dsp
     std::array<Channel, 2> ch;
     double fs = 48000;
 
+    void reset()
+    {
+        for (uint32 c = 0; c < 2; ++c)
+        {
+            ch[c] = Channel();
+            ch[c].seed = 0x9e3779b9u * (c + 1);
+        }
+        targets(true);
+    }
     void targets(bool jump)
     {
         auto p = [this](int i) { return (double) raw[(size_t) i]->load(); };
@@ -292,7 +296,7 @@ struct CrumbProcessor::Dsp
             f.v[k] = smooth[(size_t) k].getNextValue();
         const double fr = jmin(fs, std::exp2(f.v[SRate])), nyquist = 0.49 * fs;
         auto g = [&](double hz) { return std::tan(pi * jmin(nyquist, hz) / fs); };
-        f.inc = fr / fs, f.identity = f.inc >= 1 - 1e-9 && f.v[SJitter] <= 0, f.dcCoef = jmin(1.0, 2 * pi * 5 / fr);
+        f.inc = fr / fs, f.identity = f.inc >= 1 - 1e-9 && f.v[SJitter] <= 0, f.dcCoef = jmin(1.0, 2 * pi * 5 / fs);
         const double ga = g(0.5 * fr * std::exp2(f.v[SDev])), gi = g(0.5 * fr * std::exp2(2 * f.v[SShift])); // Nyquist(fr) * 2^oct
         for (int k = 0; k < 4; ++k)
             f.approx[k] = svf(ga, approxK[k]);
@@ -302,9 +306,9 @@ struct CrumbProcessor::Dsp
     }
 };
 
-CrumbProcessor::CrumbProcessor()
+CrumbProcessor::CrumbProcessor(File directory)
     : AudioProcessor(BusesProperties().withInput("Input", AudioChannelSet::stereo()).withOutput("Output", AudioChannelSet::stereo())),
-      apvts(*this, nullptr, "CRUMB", layout()), dsp(std::make_unique<Dsp>())
+      apvts(*this, nullptr, "CRUMB", layout()), presetDirectory(std::move(directory)), dsp(std::make_unique<Dsp>())
 {
     for (int i = 0; i < numParams; ++i)
         dsp->raw[(size_t) i] = apvts.getRawParameterValue(ids[i]);
@@ -325,14 +329,9 @@ void CrumbProcessor::prepareToPlay(double fs, int)
     auto& d = *dsp;
     d.fs = fs > 0 && fs < 1.0e7 ? fs : 48000.0; // a nonsense rate (NaN, inf, <= 0) must not reach the DSP
     sampleRate = d.fs;
-    for (uint32 c = 0; c < 2; ++c) // fresh, reproducible state: an independent fixed seed per channel
-    {
-        d.ch[c] = Channel();
-        d.ch[c].seed = 0x9e3779b9u * (c + 1);
-    }
     for (auto& s : d.smooth)
         s.reset(d.fs, 0.02);
-    d.targets(true);
+    d.reset();
 }
 
 void CrumbProcessor::processBlock(AudioBuffer<float>& buffer, MidiBuffer&)
@@ -342,12 +341,14 @@ void CrumbProcessor::processBlock(AudioBuffer<float>& buffer, MidiBuffer&)
     for (int c = channels; c < buffer.getNumChannels(); ++c)
         buffer.clear(c, 0, n);
     auto& d = *dsp;
+    if (resetPending.exchange(false, std::memory_order_acquire))
+        d.reset();
     d.targets(false);
     Frame f;
     f.bits = (int) d.raw[Bits]->load(), f.tread = d.raw[DcShift]->load() > 0.5f;
     f.jitCoef = 1 - std::exp(-2 * pi * 30 / d.fs), f.jitNorm = 0.5 / std::sqrt(f.jitCoef / (3 * (2 - f.jitCoef))); // ~5 ms walk, +-2 sigma
     float* x[2] = { buffer.getWritePointer(0), buffer.getWritePointer(channels - 1) };
-    const int w = scope.write.load(std::memory_order_relaxed);
+    const auto w = scope.write.load(std::memory_order_relaxed);
     float peak[2] {};
     for (int i = 0; i < n && channels > 0; ++i)
     {
@@ -360,19 +361,39 @@ void CrumbProcessor::processBlock(AudioBuffer<float>& buffer, MidiBuffer&)
             x[c][i] = (float) ((dry + mix * (d.ch[(size_t) c].process(dry, f) - dry)) * gain);
             in += (float) dry / (float) channels, out += x[c][i] / (float) channels, peak[c] = jmax(peak[c], std::abs(x[c][i]));
         }
-        scope.push(w + i, in, out);
+        scope.push(w + (uint32_t) i, in, out);
     }
-    scope.write.store(w + n, std::memory_order_release);
+    scope.write.store(w + (uint32_t) n, std::memory_order_release);
     for (int c = 0; c < 2; ++c) // the editor takes the peak (exchange with 0); a race only loses one block's peak
         scope.peak[c].store(jmax(scope.peak[c].load(std::memory_order_relaxed), peak[jmin(c, channels - 1)]), std::memory_order_relaxed);
 }
 
+// Compound changes serialize with saves. A synchronous host callback during publication gets the last
+// committed state, never a half-written preset. The recursive lock also permits nested preset helpers.
+struct CrumbProcessor::Transaction
+{
+    CrumbProcessor& p;
+    const ScopedLock guard;
+    explicit Transaction(CrumbProcessor& owner) : p(owner), guard(p.lock)
+    {
+        if (p.transactionDepth == 0)
+            p.getStateInformation(p.committedState);
+        ++p.transactionDepth;
+    }
+    ~Transaction() { --p.transactionDepth; }
+};
+
 void CrumbProcessor::getStateInformation(MemoryBlock& dest)
 {
+    const ScopedLock sl(lock);
+    if (transactionDepth > 0)
+    {
+        dest = committedState;
+        return;
+    }
     auto state = apvts.copyState();
     state.setProperty("stateVersion", stateVersion, nullptr);
     // Additive since 0.1.0 milestone 3 (older readers ignore them): preset, A/B slots ("preset;v0,..,v15" normalised), editor size.
-    const ScopedLock sl(lock);
     state.setProperty("preset", preset.load(), nullptr);
     if (preset < 0 && userName.isNotEmpty())
         state.setProperty("presetName", userName, nullptr);
@@ -385,6 +406,7 @@ void CrumbProcessor::getStateInformation(MemoryBlock& dest)
             for (const float& v : slots[k])
                 t << v << (&v == &slots[k].back() ? "" : ",");
             state.setProperty(k == 0 ? "slotA" : "slotB", String(t.str()), nullptr);
+            state.setProperty(k == 0 ? "slotNameA" : "slotNameB", slotName[k], nullptr);
         }
     if (editorWidth > 0)
         state.setProperty("editorWidth", editorWidth.load(), nullptr);
@@ -394,69 +416,122 @@ void CrumbProcessor::getStateInformation(MemoryBlock& dest)
 
 void CrumbProcessor::setStateInformation(const void* data, int size) { parse(data, size, false); }
 
-// Reads the flat <CRUMB a=".."><PARAM id=".." value=".."/>..</CRUMB> text inside JUCE's binary envelope with a single
-// non-recursive scan instead of JUCE's XML parser (which recurses per level, expands DTD entities and over-reads
-// truncated character references). JUCE's writer escapes '<', '>' and '"' inside values, so every state it writes
-// splits cleanly into tags and attributes. Unknown entries are ignored, values are clamped, missing or unparsable
-// ones reset to default; a blob that is not one complete <CRUMB> element (or holds "<!") leaves the state alone.
-// paramsOnly (user preset files) skips the root's preset, A/B and editor attributes.
+// Validate the entire flat XML grammar before JUCE decodes attributes. Depth <= 2, no DTDs, and only
+// complete, valid character references reach its parser. Malformed documents never mutate state.
 bool CrumbProcessor::parse(const void* data, int size, bool paramsOnly)
 {
     const auto* bytes = static_cast<const char*>(data);
     if (bytes == nullptr || size < 8 || ByteOrder::littleEndianInt(bytes) != 0x21324356 || ByteOrder::littleEndianInt(bytes + 4) > (uint32) size - 8)
         return false;
     const std::string_view xml(bytes + 8, ByteOrder::littleEndianInt(bytes + 4)), space(" \t\r\n");
-    const char* const rootKeys[] = { "preset", "presetName", "ab", "slotA", "slotB", "editorWidth" };
-    std::optional<std::string_view> found[numParams], root[6];
-    int depth = 0;
-    bool complete = false;
-    for (size_t open = xml.find('<'), close = 0; !complete && open != std::string_view::npos; open = xml.find('<', close))
-    {
-        if ((close = xml.find('>', open)) == std::string_view::npos)
-            return false;
-        auto tag = xml.substr(open + 1, close - open - 1);
-        if (tag.empty() || tag[0] == '!' || (tag[0] == '/' && depth == 0))
-            return false;
-        if (tag[0] == '?' || tag[0] == '/') // the <?xml ?> declaration, or a closing tag
-        {
-            complete = tag[0] == '/' && --depth == 0;
-            continue;
-        }
-        const bool empty = tag.back() == '/';
-        tag.remove_suffix(empty ? 1 : 0);
-        const auto name = tag.substr(0, tag.find_first_of(space));
-        if (depth == 0 && name != "CRUMB")
-            return false;
-        std::string_view id, value;
-        if ((depth == 1 && name == "PARAM") || depth == 0)
-            for (auto rest = tag.substr(name.size());;) // attributes: name="text"
-            {
-                const auto eq = rest.find("=\""), end = eq == std::string_view::npos ? eq : rest.find('"', eq + 2);
-                if (end == std::string_view::npos)
-                    break;
-                auto key = rest.substr(0, eq);
-                key.remove_prefix(std::min(key.size(), key.find_first_not_of(space)));
-                const auto text = rest.substr(eq + 2, end - eq - 2);
-                id = key == "id" ? text : id, value = key == "value" ? text : value;
-                for (int k = 0; k < 6 && depth == 0; ++k)
-                    if (key == rootKeys[k] && !root[k])
-                        root[k] = text;
-                rest.remove_prefix(end + 1);
-            }
-        for (int i = 0; i < numParams && depth == 1; ++i)
-            if (id == ids[i] && !found[i]) // the first entry wins
-                found[i] = value;
-        depth += empty ? 0 : 1;
-        complete = depth == 0;
-    }
-    if (!complete)
+    if (xml.size() > 1 << 20 || !CharPointer_UTF8::isValidString(xml.data(), (int) xml.size()))
         return false;
-    auto number = [](std::optional<std::string_view> t) -> std::optional<double> {
-        std::istringstream in(std::string(t.value_or(""))); // locale-independent, reports overflow
+    size_t pos = 0;
+    auto skip = [&] { while (pos < xml.size() && space.find(xml[pos]) != std::string_view::npos) ++pos; };
+    auto name = [&] {
+        const size_t start = pos;
+        auto first = [](char c) { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_' || c == ':'; };
+        if (pos < xml.size() && first(xml[pos]))
+            while (++pos < xml.size() && (first(xml[pos]) || (xml[pos] >= '0' && xml[pos] <= '9') || xml[pos] == '-' || xml[pos] == '.')) {}
+        return xml.substr(start, pos - start);
+    };
+    std::string_view stack[2];
+    int depth = 0;
+    bool complete = false, declaration = false;
+    skip();
+    while (pos < xml.size() && !complete)
+    {
+        if (xml[pos++] != '<' || pos == xml.size()) return false;
+        const bool decl = xml[pos] == '?', closing = xml[pos] == '/';
+        pos += decl || closing ? 1 : 0;
+        const auto tag = name();
+        if (tag.empty() || (decl && (declaration || depth != 0 || tag != "xml"))) return false;
+        if (closing)
+        {
+            skip();
+            if (depth == 0 || stack[depth - 1] != tag || pos == xml.size() || xml[pos++] != '>') return false;
+            complete = --depth == 0;
+        }
+        else
+        {
+            StringArray keys;
+            for (;;)
+            {
+                const auto before = pos;
+                skip();
+                if (pos == xml.size()) return false;
+                if (xml[pos] == '/' || xml[pos] == '>' || (decl && xml[pos] == '?')) break;
+                if (pos == before) return false; // attributes require separating whitespace
+                const auto key = name();
+                const String attr { std::string(key) };
+                if (key.empty() || keys.contains(attr)) return false;
+                keys.add(attr);
+                skip();
+                if (pos == xml.size() || xml[pos++] != '=') return false;
+                skip();
+                if (pos == xml.size() || (xml[pos] != '\'' && xml[pos] != '"')) return false;
+                const char quote = xml[pos++];
+                while (pos < xml.size() && xml[pos] != quote)
+                {
+                    const auto c = (unsigned char) xml[pos++];
+                    if (c == '<' || (c < 32 && c != 9 && c != 10 && c != 13)) return false;
+                    if (c != '&') continue;
+                    const auto end = xml.find(';', pos);
+                    if (end == std::string_view::npos) return false;
+                    const auto ref = xml.substr(pos, end - pos);
+                    if (ref != "amp" && ref != "lt" && ref != "gt" && ref != "quot" && ref != "apos")
+                    {
+                        if (ref.empty() || ref[0] != '#') return false;
+                        const bool hex = ref.size() > 1 && ref[1] == 'x';
+                        const size_t start = hex ? 2 : 1;
+                        uint32 code = 0;
+                        if (start == ref.size()) return false;
+                        for (size_t i = start; i < ref.size(); ++i)
+                        {
+                            const char r = ref[i];
+                            const int digit = r >= '0' && r <= '9' ? r - '0' : hex && r >= 'a' && r <= 'f' ? r - 'a' + 10 : hex && r >= 'A' && r <= 'F' ? r - 'A' + 10 : -1;
+                            if (digit < 0 || code > 0x10ffffu / (hex ? 16u : 10u)) return false;
+                            code = code * (hex ? 16u : 10u) + (uint32) digit;
+                        }
+                        if (!(code == 9 || code == 10 || code == 13 || (code >= 32 && code <= 0xd7ff) || (code >= 0xe000 && code <= 0xfffd) || (code >= 0x10000 && code <= 0x10ffff))) return false;
+                    }
+                    pos = end + 1;
+                }
+                if (pos == xml.size()) return false;
+                ++pos;
+            }
+            const bool empty = xml[pos] == '/';
+            if (decl || empty) { if (xml[pos++] != (decl ? '?' : '/')) return false; }
+            if (pos == xml.size() || xml[pos++] != '>') return false;
+            if (decl) declaration = true;
+            else
+            {
+                if (depth == 2 || (depth == 0 && tag != "CRUMB")) return false;
+                stack[depth] = tag;
+                depth += empty ? 0 : 1;
+                complete = depth == 0;
+            }
+        }
+        skip();
+    }
+    if (!complete || pos != xml.size()) return false;
+    const auto tree = XmlDocument::parse(String::fromUTF8(xml.data(), (int) xml.size()));
+    if (!tree) return false;
+    const char* const rootKeys[] = { "preset", "presetName", "ab", "slotA", "slotB", "editorWidth", "slotNameA", "slotNameB" };
+    std::optional<String> found[numParams], root[8];
+    for (int k = 0; k < 8; ++k)
+        if (tree->hasAttribute(rootKeys[k])) root[k] = tree->getStringAttribute(rootKeys[k]);
+    for (auto* child : tree->getChildIterator())
+        if (child->hasTagName("PARAM"))
+            for (int i = 0; i < numParams; ++i)
+                if (!found[i] && child->getStringAttribute("id") == ids[i]) found[i] = child->getStringAttribute("value");
+    auto number = [](std::optional<String> t) -> std::optional<double> {
+        std::istringstream in(t.value_or("").toStdString());
         in.imbue(std::locale::classic());
         double v = 0;
-        return t && in >> v && (in >> std::ws).eof() ? std::optional(jlimit(-1.0e6, 1.0e6, v)) : std::nullopt;
+        return t && in >> v && std::isfinite(v) && (in >> std::ws).eof() ? std::optional(jlimit(-1.0e6, 1.0e6, v)) : std::nullopt;
     };
+    const Transaction transaction(*this);
     // Migration hook: stateVersion 1 is the only format so far. When a later version changes the meaning of stored
     // data, read the root's stateVersion here and translate `found` before it is applied (append-only IDs need nothing).
     for (int i = 0; i < numParams; ++i)
@@ -468,22 +543,22 @@ bool CrumbProcessor::parse(const void* data, int size, bool paramsOnly)
     }
     if (paramsOnly)
         return true;
-    const ScopedLock sl(lock);
     preset = (int) jlimit(-1.0, 24.0, number(root[0]).value_or(-1)); // a state from before presets: "custom"
-    userName = String(std::string(root[1].value_or(""))).retainCharacters("abcdefghijklmnopqrstuvwxyz0123456789 _-").substring(0, 40);
+    userName = root[1].value_or("");
     ab = number(root[2]).value_or(0) > 0.5 ? 1 : 0;
     for (int k = 0; k < 2; ++k) // a slot counts only with a preset and 16 normalised values
     {
-        const auto t = StringArray::fromTokens(String(std::string(root[3 + k].value_or(""))), ";,", "");
-        slots[k].clear(), slotName[k] = {};
-        slotPreset[k] = (int) jlimit(-1.0, 24.0, number(t[0].toStdString()).value_or(-1));
+        const auto t = StringArray::fromTokens(root[3 + k].value_or(""), ";,", "");
+        slots[k].clear(), slotName[k] = root[6 + k].value_or("");
+        slotPreset[k] = (int) jlimit(-1.0, 24.0, number(t[0]).value_or(-1));
         for (int i = 1; i < t.size() && t.size() == 17; ++i)
-            if (const auto v = number(t[i].toStdString()); v && *v >= 0 && *v <= 1)
+            if (const auto v = number(t[i]); v && *v >= 0 && *v <= 1)
                 slots[k].push_back((float) *v);
         if (slots[k].size() != 16)
             slots[k].clear();
     }
     editorWidth = (int) jlimit(0.0, 4096.0, number(root[5]).value_or(0));
+    resetPending.store(true, std::memory_order_release);
     return true;
 }
 
@@ -533,14 +608,17 @@ void CrumbProcessor::setCurrentProgram(int index)
     float n[16];
     for (int i = 0; i < Bypass; ++i)
         n[i] = apvts.getParameter(ids[i])->convertTo0to1(crumb::presets[index].v[i]);
-    setAll(n);
-    preset = index;
+    {
+        const Transaction transaction(*this);
+        setAll(n);
+        preset = index;
+    }
     updateHostDisplay(ChangeDetails().withProgramChanged(true));
 }
 
 const String CrumbProcessor::getProgramName(int index) { return isPositiveAndBelow(index, 25) ? String::fromUTF8(crumb::presets[index].name) : String(); }
 
-File CrumbProcessor::presetFolder() { return File::getSpecialLocation(File::userApplicationDataDirectory).getChildFile("daveydidit/crumb/Presets"); }
+File CrumbProcessor::presetFolder() const { return presetDirectory != File() ? presetDirectory : File::getSpecialLocation(File::userApplicationDataDirectory).getChildFile("daveydidit/crumb/Presets"); }
 
 String CrumbProcessor::presetName()
 {
@@ -550,6 +628,7 @@ String CrumbProcessor::presetName()
 
 void CrumbProcessor::stepPreset(int delta)
 {
+    const Transaction transaction(*this);
     auto files = presetFolder().findChildFiles(File::findFiles, false, "*.xml");
     files.sort();
     int at = preset;
@@ -562,14 +641,12 @@ void CrumbProcessor::stepPreset(int delta)
     const auto text = files[at - 25].loadFileAsString();
     m.writeInt(0x21324356), m.writeInt((int) text.getNumBytesAsUTF8()), m << text;
     if (parse(m.getData(), (int) m.getDataSize(), true))
-    {
-        const ScopedLock sl(lock);
         preset = -1, userName = files[at - 25].getFileNameWithoutExtension();
-    }
 }
 
 File CrumbProcessor::saveUserPreset()
 {
+    const Transaction transaction(*this);
     const auto folder = presetFolder();
     folder.createDirectory();
     File file;
@@ -578,14 +655,13 @@ File CrumbProcessor::saveUserPreset()
     auto xml = apvts.copyState().createXml();
     if (xml == nullptr || !xml->writeTo(file))
         return {};
-    const ScopedLock sl(lock);
     preset = -1, userName = file.getFileNameWithoutExtension();
     return file;
 }
 
 void CrumbProcessor::selectAb(int slot)
 {
-    const ScopedLock sl(lock);
+    const Transaction transaction(*this);
     if (slot == ab || !isPositiveAndBelow(slot, 2))
         return;
     auto& leaving = slots[ab];

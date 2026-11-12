@@ -4,8 +4,8 @@ A vintage-sampler bit crusher by daveydidit. Version 0.1.0. Zero latency, mono o
 settings. One screen, no menus: 25 factory presets, user presets, A/B, a live scope and an output meter.
 
 Signal path: preamp (0 … +48 dB) into a soft ADC clip (tanh shoulder above 0.5, antiderivative antialiasing) →
-filter (pre) → approx (anti-alias) lowpass → sample & hold on a jittered virtual clock → dither and quantizer →
-fixed vintage DAC (ladder errors on the top bits, coupling-cap DC removal) → images lowpass → filter (post) → mix → output.
+filter (pre) → dither and quantizer → approx (anti-alias) lowpass → sample & hold on a jittered virtual clock →
+images lowpass → fixed DAC coupling (converter-added DC removal) → filter (post) → mix → output.
 
 The hold steps are bandlimited with a minimum-phase BLEP, and the virtual ADC reads the input through the same
 causal kernel, so the only aliasing is the emulated fold-down at the virtual rate. No oversampling, no lookahead.
@@ -92,7 +92,7 @@ On macOS, use `-G Xcode` and build `Crumb_AU` and `Crumb_VST3`. `auval -v aufx C
 
 ## State versioning
 
-The state is the parameter tree as XML (`<CRUMB stateVersion="1">`), read by a non-recursive scanner. Loading
+The state is the parameter tree as XML (`<CRUMB stateVersion="1">`), validated by a flat-schema scanner before XML decoding. Loading
 ignores unknown entries, clamps out-of-range values, resets missing or unreadable values to their default, and
 leaves the state alone for data that is not a complete Crumb state.
 
@@ -101,7 +101,7 @@ leaves the state alone for data that is not a complete Crumb state.
   sessions lack them and load linked, identical on both channels.
 - Additive root attributes (since milestone 3, ignored by older builds, optional when loading): `preset`
   (factory index, −1 = user/unknown), `presetName` (user preset), `ab` (active slot), `slotA` / `slotB`
-  (`preset;v0,…,v15`: the 16 non-bypass parameters, normalised, 9 digits) and `editorWidth`. A state without them
+  (`preset;v0,…,v15`: the 16 non-bypass parameters, normalised, 9 digits), `slotNameA` / `slotNameB` (user preset names), and `editorWidth`. A state without them
   (0.1.0 milestone 1) loads as before, shown as preset "custom", slot A, default size.
 - Bump `stateVersion` only when stored data changes meaning; translate older data in the migration hook in
   `setStateInformation`. The v1 fixture in `Tests/CrumbTests.cpp` must keep loading unchanged.

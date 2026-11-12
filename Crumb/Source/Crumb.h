@@ -17,13 +17,14 @@ struct Scope
 {
     static constexpr int size = 1 << 14; // 85 ms at 192 kHz: a 20 ms window plus room to find a trigger
     std::array<std::atomic<float>, size> in {}, out {};
-    std::atomic<int> write { 0 };
+    std::atomic<uint32_t> write { 0 };
     std::atomic<float> peak[2] {}; // output meter, taken (exchanged with 0) by the editor
-    void push(int at, float i, float o) { in[(size_t) (at & (size - 1))].store(i, std::memory_order_relaxed), out[(size_t) (at & (size - 1))].store(o, std::memory_order_relaxed); }
+    void push(uint32_t at, float i, float o) { in[(size_t) (at & (size - 1))].store(i, std::memory_order_relaxed), out[(size_t) (at & (size - 1))].store(o, std::memory_order_relaxed); }
     void read(float* i, float* o, int n) const // the newest n <= size pairs, oldest first
     {
-        for (int w = write.load(std::memory_order_acquire), k = 0; k < n; ++k)
-            i[k] = in[(size_t) ((w - n + k) & (size - 1))].load(std::memory_order_relaxed), o[k] = out[(size_t) ((w - n + k) & (size - 1))].load(std::memory_order_relaxed);
+        const auto w = write.load(std::memory_order_acquire);
+        for (uint32_t k = 0; k < (uint32_t) n; ++k)
+            i[k] = in[(size_t) ((w - (uint32_t) n + k) & (size - 1))].load(std::memory_order_relaxed), o[k] = out[(size_t) ((w - (uint32_t) n + k) & (size - 1))].load(std::memory_order_relaxed);
     }
 };
 struct Preset
@@ -39,7 +40,7 @@ class CrumbProcessor : public juce::AudioProcessor
 public:
     static constexpr int stateVersion = 1;
 
-    CrumbProcessor();
+    explicit CrumbProcessor(juce::File presetDirectory = {});
     ~CrumbProcessor() override;
     void prepareToPlay(double sampleRate, int blockSize) override;
     void releaseResources() override {}
@@ -68,19 +69,24 @@ public:
     std::atomic<double> sampleRate { 48000 };
     std::atomic<int> editorWidth { 0 }; // 0 = never resized; saved as an additive root attribute
 
-    // Message thread. preset: 0..24 factory, -1 user file or unknown (old state); A/B as in Rootnote.
-    static juce::File presetFolder();
+    // Preset UI and host-state transactions. preset: 0..24 factory, -1 user file or unknown (old state).
+    juce::File presetFolder() const;
     void stepPreset(int delta); // through factory presets, then the user files
     juce::File saveUserPreset();
     juce::String presetName();
     std::atomic<int> preset { 0 };
-    int abSlot() const { return ab; }
+    int abSlot() const { const juce::ScopedLock sl(lock); return ab; }
     void selectAb(int slot);
 
 private:
     void setAll(const float* normalised); // every parameter but bypass, as one gesture each
     bool parse(const void* data, int size, bool paramsOnly);
-    juce::CriticalSection lock; // A/B slots, user preset name, state transactions
+    struct Transaction;
+    mutable juce::CriticalSection lock; // A/B slots, user preset name, state transactions
+    int transactionDepth = 0;
+    juce::MemoryBlock committedState; // reentrant host saves see the previous complete transaction
+    const juce::File presetDirectory;
+    std::atomic<bool> resetPending { false };
     std::vector<float> slots[2];
     int slotPreset[2] { 0, 0 }, ab = 0;
     juce::String userName, slotName[2];

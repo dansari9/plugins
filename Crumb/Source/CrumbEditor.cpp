@@ -193,7 +193,8 @@ struct Editor : AudioProcessorEditor, Timer
 
     void timerCallback() override
     {
-        slotA.setToggleState(proc.abSlot() == 0, dontSendNotification), slotB.setToggleState(proc.abSlot() == 1, dontSendNotification);
+        const int slot = proc.abSlot();
+        slotA.setToggleState(slot == 0, dontSendNotification), slotB.setToggleState(slot == 1, dontSendNotification);
         String now = proc.presetName() + String(proc.preset.load());
         for (auto* id : { "preamp", "bits", "dcShift", "dither", "rate", "jitter", "approxOn", "approxDev", "imagesOn", "imagesShift", "fType", "fOrder", "cutoff", "reso" })
             now << display(id) << "|";
@@ -265,7 +266,7 @@ struct Editor : AudioProcessorEditor, Timer
             path.push_back({ filter, filterOn });
         path.insert(path.end(), { { "dither", value("dither") > 0 && bits() > 0 }, { "quantize " + b, bits() > 0 }, { "approx lp", value("approxOn") > 0.5f },
                                   { "resample " + String(rate / 1000, rate >= 1000 ? 1 : 2) + " khz" + (value("jitter") > 0 ? String::fromUTF8(" \xc2\xb1 jitter") : ""), true },
-                                  { "images lp", value("imagesOn") > 0.5f } });
+                                  { "images lp", value("imagesOn") > 0.5f }, { "dac", bits() > 0 } });
         if (!preFilter)
             path.push_back({ filter, filterOn });
         path.insert(path.end(), { { "fx", true }, { "out", true } });
