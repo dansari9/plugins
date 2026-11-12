@@ -94,6 +94,13 @@ public:
     /** Forgets every MIDI note, so both banks play their knob notes again. */
     void releaseMidi() noexcept { control.reset(); }
 
+    /**
+        Gives banks (NoteControl::boostChanged / cutChanged) back to their knob
+        notes, even if the knob did not move. Keys still held stay known, so
+        the next note-on plays as usual.
+    */
+    void takeBackFromMidi(unsigned targets) noexcept;
+
     /** In place, one or two channels. */
     void process(float* const* channels, int numChannels, int numSamples) noexcept;
 

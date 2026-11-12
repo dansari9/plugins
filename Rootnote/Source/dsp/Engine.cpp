@@ -164,6 +164,14 @@ void Engine::setParams(const EngineParams& newParams) noexcept
     retarget(wetRamp, params.bypass ? 0.0 : 1.0, levelRampSamples, snap);
 }
 
+void Engine::takeBackFromMidi(unsigned targets) noexcept
+{
+    if (targets == 0u)
+        return;
+    control.takeBack(targets);
+    applyPitch(targets, kParamPitchRampSeconds);
+}
+
 void Engine::handleMidi(const MidiEvent& event) noexcept
 {
     const unsigned changed = control.handleEvent(event);

@@ -449,3 +449,47 @@ TEST_CASE("MIDI in the engine: key lock and MIDI mode from the parameters")
     engine.handleMidi(on(1, 54));
     CHECK(engine.boostTargetNote() == 36.0);
 }
+
+TEST_CASE("MIDI: the knob can take a bank back without moving")
+{
+    NoteControl control;
+    control.setConfig(config());
+    control.handleEvent(on(1, 60));
+    control.handleEvent(on(2, 50));
+    CHECK(control.midiOwns(NoteControl::boost) && control.midiOwns(NoteControl::cut));
+
+    // Same knob value: setConfig alone keeps MIDI; takeBack returns the bank to the knob.
+    control.setConfig(config());
+    CHECK(control.note(NoteControl::boost) == 60.0);
+    control.takeBack(NoteControl::boostChanged);
+    CHECK(control.note(NoteControl::boost) == 36.0);
+    CHECK(!control.midiOwns(NoteControl::boost) && control.midiOwns(NoteControl::cut));
+    CHECK(control.heldCount(NoteControl::boost) == 1); // the key is still down: releasing it is still known
+    control.handleEvent(off(1, 60));
+    CHECK(control.note(NoteControl::boost) == 36.0);
+
+    control.takeBack(NoteControl::cutChanged);
+    CHECK(control.note(NoteControl::cut) == 38.0);
+
+    // The next note plays as usual.
+    control.handleEvent(on(1, 48));
+    CHECK(control.note(NoteControl::boost) == 48.0);
+
+    // In the engine, the pitch ramps back to the knob note.
+    Engine engine;
+    engine.prepare(48000.0, 512);
+    EngineParams params;
+    params.boostNote = 36.0;
+    engine.setParams(params);
+    engine.handleMidi(on(1, 60));
+    advance(engine, 4800);
+    CHECK_NEAR(boostNote(engine), 60.0, 1.0e-6);
+    engine.setParams(params);
+    engine.takeBackFromMidi(0u);
+    advance(engine, 4800);
+    CHECK_NEAR(boostNote(engine), 60.0, 1.0e-6);
+    engine.takeBackFromMidi(NoteControl::boostChanged);
+    CHECK(!engine.boostFollowsMidi());
+    advance(engine, 4800);
+    CHECK_NEAR(boostNote(engine), 36.0, 1.0e-6);
+}

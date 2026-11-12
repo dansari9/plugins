@@ -94,6 +94,15 @@ public:
             released(voice);
     }
 
+    /** The knob takes the targets (boostChanged / cutChanged) back from MIDI, moved or not. */
+    void takeBack(unsigned targets) noexcept
+    {
+        if ((targets & boostChanged) != 0u)
+            voices[boost].midiOwns = false;
+        if ((targets & cutChanged) != 0u)
+            voices[cut].midiOwns = false;
+    }
+
     /** Returns a mask of the targets whose note changed. */
     unsigned handleEvent(const MidiEvent& event) noexcept
     {
