@@ -2322,6 +2322,11 @@ TEST_CASE("Plugin: identifiers are frozen: codes, parameter IDs, order, ranges a
     CHECK(juce::String(JucePlugin_Manufacturer) == "daveydidit"); // visible brand only; codes above stay
     CHECK(JucePlugin_VSTUniqueID == JucePlugin_PluginCode);
     CHECK(JUCE_VST3_CAN_REPLACE_VST2 == 0); // part of the VST3 class ID
+    using V3 = juce::VST3Interface; // the class IDs hosts store in sessions (moduleinfo.json CIDs)
+    CHECK(V3::jucePluginId(JucePlugin_ManufacturerCode, JucePlugin_PluginCode, V3::Type::component)
+          == V3::hexStringToId("ABCDEF019182FAEB44776B7352744E74"));
+    CHECK(V3::jucePluginId(JucePlugin_ManufacturerCode, JucePlugin_PluginCode, V3::Type::controller)
+          == V3::hexStringToId("ABCDEF011234ABCD44776B7352744E74"));
     CHECK(RootnoteProcessor::kStateSchema == 2);
 
     struct Frozen { const char* id; double start, end, interval, middle, defaultValue; };

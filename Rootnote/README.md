@@ -123,6 +123,20 @@ Logic lists Rootnote under **Audio Units > daveydidit** once you rescan
 (**Plug-in Manager > Reset & Rescan Selection**). Existing sessions still load
 because the codes and bundle ID are unchanged.
 
+Logic's own patches (`~/Music/Audio Music Apps/Plug-In Settings/Rootnote`)
+and Live's `.adv` presets are unaffected. Hosts look for `.aupreset` and
+`.vstpreset` files in `~/Library/Audio/Presets/<maker>/Rootnote`, so ones saved
+before 0.4.4 under `Dripworks` no longer show. Copy them across once in
+Terminal; this keeps the originals, never overwrites a file of the same name
+and does nothing if there is no old folder:
+
+```sh
+d=~/Library/Audio/Presets; [ -d "$d/Dripworks/Rootnote" ] && mkdir -p "$d/daveydidit/Rootnote" && cp -Rn "$d/Dripworks/Rootnote/." "$d/daveydidit/Rootnote/"
+```
+
+On Windows and Linux the VST3 folders are `Documents\VST3 Presets\<maker>\Rootnote`
+and `~/.vst3/presets/<maker>/Rootnote`; copy the same way.
+
 ## Ableton Live
 
 Use the **VST3** on the drum audio track and enable **Ch 1+2** in Rootnote's MIDI
