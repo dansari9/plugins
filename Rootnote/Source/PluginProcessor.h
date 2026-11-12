@@ -57,15 +57,12 @@ public:
     // The factory presets are the host's programs. setCurrentProgram() can come
     // from any thread, the audio thread included: it only sets the parameters
     // (no gestures, no allocation, no state tree). Selecting the current
-    // program again changes nothing: hosts do that while restoring a session,
-    // which must not reset the edits made after loading the preset.
+    // program again reloads it, as a host's preset menu means. Restoring a
+    // session goes through setStateInformation() instead (the AU and VST3
+    // wrappers never select a program for it), so it keeps the edits.
     int getNumPrograms() override { return numPresets(); }
     int getCurrentProgram() override { return currentPreset(); }
-    void setCurrentProgram(int index) override
-    {
-        if (index != currentPreset())
-            applyPreset(index, false);
-    }
+    void setCurrentProgram(int index) override { applyPreset(index, false); }
     const juce::String getProgramName(int index) override { return presetName(index); }
     void changeProgramName(int, const juce::String&) override {}
 
@@ -150,6 +147,9 @@ public:
     juce::Point<int> storedEditorSize() const noexcept;
     void storeEditorSize(int width, int height) noexcept;
 
+    /** Counts completed setStateInformation() calls: an open editor takes the restored page and size when it changes. */
+    uint32_t restoreCount() const noexcept { return restores.load(std::memory_order_acquire); }
+
     /** Editor page kept in the plug-in state. */
     int storedEditorPage() const noexcept { return editorPage.load(std::memory_order_relaxed); }
     void storeEditorPage(int page) noexcept { editorPage.store(page, std::memory_order_relaxed); }
@@ -165,9 +165,12 @@ private:
         std::vector<float> values; // normalised, in parameter order; empty until the slot has been left once
         int preset = 0;
     };
-    // A host may save or restore on another thread while the editor switches.
-    // Never held while parameters are set: their listeners may call back.
-    std::mutex abMutex;
+    // Saving, restoring and switching A/B are each one transaction under this
+    // lock, parameter changes included, so none sees half of another (a host
+    // may save or restore on its own thread while the editor switches).
+    // Recursive: a parameter listener may save on the same thread. Never taken
+    // on the audio thread.
+    std::recursive_mutex stateMutex;
     AbSlot abSlots[2];
     int currentAbSlot = 0;
 
@@ -187,6 +190,7 @@ private:
     rootnote::SpscFifo spectrumFifo { static_cast<size_t>(1) << 15 };
 
     std::atomic<bool> stateRestored { false }; // set by setStateInformation, consumed by the audio thread
+    std::atomic<uint32_t> restores { 0 };
     std::atomic<unsigned> knobTakeovers { 0 };  // NoteControl::boostChanged / cutChanged, consumed by the audio thread
     std::atomic<int> displayUsers { 0 };
     // Triple buffer: the audio thread fills its slot and swaps it in as the

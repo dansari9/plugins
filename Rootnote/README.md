@@ -113,9 +113,10 @@ control remains available in VST3 and Standalone and defaults to **Off**; use
 the note controls in Logic. Saved sessions retain their stored MIDI mode.
 
 The AU identity is `aufx RtNt Dwks`; validate with `auval -v aufx RtNt Dwks`.
-The type changed from the pre-0.4.2 MIDI-controlled AU. Existing sessions using
-that old AU identity need a new Audio FX instance and their settings reapplied;
-this is not an automatic replacement of the old instrument-slot instance.
+The 0.4.0 and 0.4.1 test builds were a MIDI-controlled AU (`aumf RtNt Dwks`).
+Logic sessions made with those builds do not find 0.4.2 or later: insert
+Rootnote again as an Audio FX and reapply the settings. From 0.4.2 on the AU
+identity `aufx RtNt Dwks` is frozen, so sessions find every later release.
 
 ## Ableton Live
 
@@ -166,12 +167,18 @@ covers this rather than truncating it to the Ring decay setting.
 ## Saved state and frozen identifiers
 
 A session restores every setting exactly: all parameters (bit for bit), the
-preset, both A/B slots and the active one, and the editor's size and page.
-The state carries a schema version (`RootnoteProcessor::kStateSchema`, 2 since
-0.4.3); states of 0.4.0–0.4.2 (no version) load with their values, missing
+preset, both A/B slots and the active one, and the editor's size and page
+(an open editor switches to them at once and drops a value being typed).
+Saving, restoring and switching A/B are each one transaction, whichever
+threads the host and editor use. The state carries a schema version
+(`RootnoteProcessor::kStateSchema`, 2 since 0.4.3); every state from 0.4.0 on
+loads with its values (for AU sessions, see the identity note above), missing
 values take their defaults, out-of-range ones are clamped, unknown fields are
-ignored, and a truncated or damaged state changes nothing. Selecting the
-current program again (as hosts do while restoring) keeps the edits.
+ignored, a value that is not exactly one number counts as missing, and a
+truncated or damaged state changes nothing. A newer schema is read the same
+way, which the freeze rule below keeps safe. Selecting a program in the host,
+the current one included, loads that preset; restoring a session does not
+select a program, so it keeps the edits.
 
 **Freeze rule.** These identify Rootnote to hosts and saved sessions and must
 never change: the AU type/codes `aufx RtNt Dwks`, the VST3 class ID (from the

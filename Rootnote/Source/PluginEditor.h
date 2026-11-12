@@ -31,6 +31,7 @@ public:
 
     /** Shows a page (0 boost, 1 cut, 2 ring, 3 out, 4 midi) on the encoders and the legend. */
     void selectPage(int page);
+    int currentPage() const noexcept { return page; }
 
     /** Holding a page key this long only shows its page on the display; a shorter press selects it. */
     static constexpr juce::uint32 kPagePeekMs = 350;
@@ -67,6 +68,7 @@ private:
     void showMenu(juce::PopupMenu, juce::Component& target, std::function<void(int)> onChosen);
     void pageKeyChanged(int index);
     void shiftOctave(rootnote::NoteControl::Target, int semitones);
+    void applyRestoredState();
     void place(juce::Component&, float x, float y, float w, float h);
 
     RootnoteProcessor& plugin; // not "processor": AudioProcessorEditor has one
@@ -96,6 +98,7 @@ private:
     int octave = 1;          // octave of the pitch keys: the boost note's
     struct Played { double note = 36.0; bool midi = false; };
     Played played[2];        // per bank, from the last frame
+    uint32_t seenRestores = 0; // the processor's restoreCount() last applied
     int matchBlink = 0, tuneBlink = 0; // frames a key still blinks: it found no hit
     float meterDb = -100.0f;
     uint32_t lastNoteOns = 0;

@@ -30,6 +30,9 @@ public:
     void showEntry(int slot);
     bool isShowingEntry() const { return entry.isVisible(); }
 
+    /** Closes the text field without applying it. */
+    void cancelEntry() { closeEntry(false); }
+
     /**
         The boost's Focus window as drawn, in screen x: its centre (the focus
         frequency, or the boost note when linked) and centre -+ Range octaves.

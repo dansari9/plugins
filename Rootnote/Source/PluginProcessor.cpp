@@ -20,20 +20,50 @@ const juce::Identifier kActive { "active" };
 const juce::Identifier kSlot { "SLOT" };
 const juce::Identifier kIndex { "index" };
 
-/** A number stored in the state, or nothing when it is missing, not a number or not finite. */
+/** Exactly one number, as the state writes them: "-12.5", ".5", "1e+30". Not "1.2.3", "2-1", "0x10" or "nan". */
+bool isNumberToken(const juce::String& text)
+{
+    auto p = text.getCharPointer();
+    if (*p == '+' || *p == '-')
+        ++p;
+    int digits = 0;
+    for (; p.isDigit(); ++p)
+        ++digits;
+    if (*p == '.')
+        for (++p; p.isDigit(); ++p)
+            ++digits;
+    if (digits == 0)
+        return false;
+    if (*p == 'e' || *p == 'E')
+    {
+        ++p;
+        if (*p == '+' || *p == '-')
+            ++p;
+        if (!p.isDigit())
+            return false;
+        while (p.isDigit())
+            ++p;
+    }
+    return p.isEmpty();
+}
+
+/** A number stored in the state, or nothing when it is missing, not exactly one number or not finite. */
 std::optional<double> storedNumber(const juce::ValueTree& tree, const juce::Identifier& name)
 {
     const auto text = tree.getProperty(name).toString().trim();
-    if (text.isEmpty() || !text.containsOnly("0123456789+-.eE") || !text.containsAnyOf("0123456789"))
+    if (!isNumberToken(text))
         return {};
-    const double value = text.getDoubleValue();
+    const double value = text.getDoubleValue(); // locale independent
     return std::isfinite(value) ? std::optional<double>(value) : std::nullopt;
 }
 
+/** A whole number stored in the state, clamped; the fallback when it is missing or not whole. */
 int storedInt(const juce::ValueTree& tree, const juce::Identifier& name, int low, int high, int fallback)
 {
     const auto value = storedNumber(tree, name);
-    return value ? static_cast<int>(juce::jlimit(static_cast<double>(low), static_cast<double>(high), *value)) : fallback;
+    if (!value || *value != std::floor(*value))
+        return fallback;
+    return static_cast<int>(juce::jlimit(static_cast<double>(low), static_cast<double>(high), *value));
 }
 
 /** As a host sees a move on the plug-in's own interface. Does nothing when the value is already there. */
@@ -207,7 +237,10 @@ juce::AudioProcessorEditor* RootnoteProcessor::createEditor()
 
 void RootnoteProcessor::getStateInformation(juce::MemoryBlock& destData)
 {
-    // Parameters in parameter order, so the same settings always give the same bytes.
+    // One transaction: the parameters, the preset and A/B as they are together.
+    const std::lock_guard<std::recursive_mutex> lock(stateMutex);
+    // Parameters in parameter order, so the same settings always give the same bytes: the APVTS's
+    // own tree starts in ID order, a restored one is in parameter order.
     const auto live = apvts.copyState();
     juce::ValueTree state(kStateType);
     for (auto* parameter : getParameters())
@@ -226,21 +259,18 @@ void RootnoteProcessor::getStateInformation(juce::MemoryBlock& destData)
 
     const auto& all = getParameters();
     juce::ValueTree ab(kAb);
+    ab.setProperty(kActive, currentAbSlot, nullptr);
+    for (int slot = 0; slot < 2; ++slot)
     {
-        const std::lock_guard<std::mutex> lock(abMutex);
-        ab.setProperty(kActive, currentAbSlot, nullptr);
-        for (int slot = 0; slot < 2; ++slot)
-        {
-            if (abSlots[slot].values.empty())
-                continue;
-            juce::ValueTree child(kSlot);
-            child.setProperty(kIndex, slot, nullptr);
-            child.setProperty(kPreset, abSlots[slot].preset, nullptr);
-            for (int i = 0; i < all.size(); ++i)
-                child.setProperty(static_cast<juce::RangedAudioParameter*>(all[i])->getParameterID(),
-                                  abSlots[slot].values[static_cast<size_t>(i)], nullptr);
-            ab.appendChild(child, nullptr);
-        }
+        if (abSlots[slot].values.empty())
+            continue;
+        juce::ValueTree child(kSlot);
+        child.setProperty(kIndex, slot, nullptr);
+        child.setProperty(kPreset, abSlots[slot].preset, nullptr);
+        for (int i = 0; i < all.size(); ++i)
+            child.setProperty(static_cast<juce::RangedAudioParameter*>(all[i])->getParameterID(),
+                              abSlots[slot].values[static_cast<size_t>(i)], nullptr);
+        ab.appendChild(child, nullptr);
     }
     state.appendChild(ab, nullptr);
 
@@ -303,15 +333,14 @@ void RootnoteProcessor::setStateInformation(const void* data, int sizeInBytes)
             slots[index] = std::move(slot);
     }
 
+    // One transaction: no save or A/B switch sees half of it.
+    const std::lock_guard<std::recursive_mutex> lock(stateMutex);
     presetIndex.store(storedInt(stored, kPreset, 0, numPresets() - 1, 0), std::memory_order_relaxed);
     storeEditorSize(storedInt(stored, kEditorWidth, 0, 16384, 0), storedInt(stored, kEditorHeight, 0, 16384, 0));
     storeEditorPage(storedInt(stored, kEditorPage, 0, 4, 0));
-    {
-        const std::lock_guard<std::mutex> lock(abMutex);
-        abSlots[0] = std::move(slots[0]);
-        abSlots[1] = std::move(slots[1]);
-        currentAbSlot = storedInt(ab, kActive, 0, 1, 0);
-    }
+    abSlots[0] = std::move(slots[0]);
+    abSlots[1] = std::move(slots[1]);
+    currentAbSlot = storedInt(ab, kActive, 0, 1, 0);
     apvts.replaceState(restoredTree);
 
     // The APVTS skips a parameter whose snapped value already matches, so a
@@ -325,6 +354,7 @@ void RootnoteProcessor::setStateInformation(const void* data, int sizeInBytes)
             ranged->setValueNotifyingHost(restored);
     }
     stateRestored.store(true, std::memory_order_release);
+    restores.fetch_add(1, std::memory_order_release); // last: an editor that sees it finds everything restored
 }
 
 RootnoteProcessor::DisplayState RootnoteProcessor::displayState() noexcept
@@ -415,27 +445,24 @@ void RootnoteProcessor::applyPreset(int index, bool asGesture)
 
 int RootnoteProcessor::abSlot()
 {
-    const std::lock_guard<std::mutex> lock(abMutex);
+    const std::lock_guard<std::recursive_mutex> lock(stateMutex);
     return currentAbSlot;
 }
 
 void RootnoteProcessor::selectAbSlot(int slot)
 {
+    const std::lock_guard<std::recursive_mutex> lock(stateMutex);
+    if (slot == currentAbSlot || !juce::isPositiveAndBelow(slot, 2))
+        return;
     const auto& all = getParameters();
-    AbSlot entering;
-    {
-        const std::lock_guard<std::mutex> lock(abMutex);
-        if (slot == currentAbSlot || !juce::isPositiveAndBelow(slot, 2))
-            return;
-        AbSlot& leaving = abSlots[currentAbSlot];
-        leaving.preset = currentPreset();
-        leaving.values.resize(static_cast<size_t>(all.size()));
-        for (int i = 0; i < all.size(); ++i)
-            leaving.values[static_cast<size_t>(i)] = all[i]->getValue();
-        currentAbSlot = slot;
-        entering = abSlots[slot];
-    }
+    AbSlot& leaving = abSlots[currentAbSlot];
+    leaving.preset = currentPreset();
+    leaving.values.resize(static_cast<size_t>(all.size()));
+    for (int i = 0; i < all.size(); ++i)
+        leaving.values[static_cast<size_t>(i)] = all[i]->getValue();
+    currentAbSlot = slot;
 
+    const AbSlot entering = abSlots[slot]; // a copy: a listener may save, which reads the slots
     if (entering.values.empty()) // never left: it starts as a copy of the other slot
         return;
     for (int i = 0; i < all.size(); ++i)

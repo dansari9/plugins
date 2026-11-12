@@ -144,6 +144,7 @@ RootnoteEditor::RootnoteEditor(RootnoteProcessor& p)
                                    stored.x > 0 ? stored.x : kDefaultWidth);
     setSize(width, width * kPlateHeight / kPlateWidth);
 
+    seenRestores = plugin.restoreCount();
     plugin.setDisplayActive(true);
     startTimerHz(30);
     refresh();
@@ -315,8 +316,29 @@ void RootnoteEditor::showSettings()
     });
 }
 
+void RootnoteEditor::applyRestoredState()
+{
+    // A text field or a drag from before belongs to the old settings: drop it, then show the restored page and size.
+    screen.cancelEntry();
+    page = juce::jlimit(0, kNumPages - 1, plugin.storedEditorPage());
+    screen.setPage(page);
+    bindEncoders();
+    const auto stored = plugin.storedEditorSize();
+    if (stored.x > 0)
+    {
+        const int width = juce::jlimit(getConstrainer()->getMinimumWidth(), getConstrainer()->getMaximumWidth(), stored.x);
+        setSize(width, width * kPlateHeight / kPlateWidth);
+    }
+}
+
 void RootnoteEditor::refresh()
 {
+    if (const auto restores = plugin.restoreCount(); restores != seenRestores)
+    {
+        seenRestores = restores;
+        applyRestoredState();
+    }
+
     const auto state = plugin.displayState();
     const auto hit = plugin.tunerReading();
     screen.update(state, hit);

@@ -1604,6 +1604,11 @@ TEST_CASE("Plugin: the factory presets are the host's programs")
     processor.setCurrentProgram(42);
     processor.setCurrentProgram(-1);
     CHECK(processor.getCurrentProgram() == 8);
+
+    // Selecting the current program again reloads it, as a host's preset menu means.
+    set(processor, ids::bands, 5.0f);
+    processor.setCurrentProgram(8);
+    CHECK(holds(processor, ids::bands, 24.0f));
 }
 
 TEST_CASE("Plugin: a stored size below the editor's limits opens at the smallest size")
@@ -2376,10 +2381,6 @@ TEST_CASE("Plugin: a full state round trip is bit-exact, keeps A/B, preset and e
     viaProgram.setCurrentProgramStateInformation(program.getData(), static_cast<int>(program.getSize()));
     CHECK(sameParameters(source, viaProgram) && viaProgram.abSlot() == 1);
 
-    // A host selecting the current program while restoring keeps the edits.
-    restored.setCurrentProgram(restored.getCurrentProgram());
-    CHECK(sameParameters(source, restored));
-
     // Slot A comes back the same in both.
     source.selectAbSlot(0);
     restored.selectAbSlot(0);
@@ -2449,6 +2450,135 @@ TEST_CASE("Plugin: a state loads the same before or after preparing, with an edi
     juce::MidiBuffer midi;
     unprepared.processBlock(block, midi);
     CHECK(block.getSample(0, 3) == 0.5f);
+}
+
+TEST_CASE("Plugin: a restore while the editor is open shows the restored page and size and drops a pending entry")
+{
+    using rootnote::ui::Screen;
+    RootnoteProcessor source;
+    set(source, ids::cutDepth, -20.0f);
+    source.storeEditorPage(3);
+    source.storeEditorSize(1200, 675);
+    const auto state = stateOf(source);
+
+    RootnoteProcessor processor;
+    std::unique_ptr<juce::AudioProcessorEditor> editor(processor.createEditor());
+    auto& faceplate = dynamic_cast<RootnoteEditor&>(*editor);
+    Desk desk(*editor);
+    auto* screen = findFirst<Screen>(*editor);
+    faceplate.selectPage(1);
+    desk.click(*screen, legendPoint(0)); // typing the cut depth
+    REQUIRE(screen->isShowingEntry());
+    findFirst<juce::TextEditor>(*screen)->setText("-3");
+
+    restore(processor, state); // the host, with the editor still open
+    faceplate.refresh();
+    CHECK(faceplate.currentPage() == 3);
+    CHECK(editor->getWidth() == 1200 && editor->getHeight() == 675);
+    CHECK(!screen->isShowingEntry());
+    editor->unfocusAllComponents();
+    dispatchMessages();
+    CHECK(holds(processor, ids::cutDepth, -20.0f)); // the old field wrote nothing
+    CHECK(processor.storedEditorPage() == 3);
+}
+
+TEST_CASE("Plugin: saving, restoring and switching A/B are whole transactions, whatever thread they come from")
+{
+    // A listener on the gain runs in the middle of each operation and starts the other one
+    // on a second thread: it must wait for the first to finish, never see half of it.
+    struct MidOperation : juce::AudioProcessorParameter::Listener
+    {
+        std::function<void()> once;
+        void parameterValueChanged(int, float) override
+        {
+            if (auto run = std::exchange(once, nullptr))
+                run();
+        }
+        void parameterGestureChanged(int, bool) override {}
+    };
+
+    const auto savedActive = [](const juce::MemoryBlock& blob) {
+        const auto xml = juce::AudioProcessor::getXmlFromBinary(blob.getData(), static_cast<int>(blob.getSize()));
+        return xml->getChildByName("AB")->getIntAttribute("active");
+    };
+    const auto savedGain = [](const juce::MemoryBlock& blob) {
+        const auto xml = juce::AudioProcessor::getXmlFromBinary(blob.getData(), static_cast<int>(blob.getSize()));
+        for (auto* param : xml->getChildWithTagNameIterator("PARAM"))
+            if (param->getStringAttribute("id") == ids::boostGain)
+                return param->getDoubleAttribute("value");
+        return -1.0;
+    };
+
+    // Save during a switch to B: the saved state is all A or all B, and here, after the switch, all B.
+    {
+        RootnoteProcessor processor;
+        set(processor, ids::boostGain, 4.0f);
+        processor.selectAbSlot(1);
+        set(processor, ids::boostGain, 20.0f);
+        processor.selectAbSlot(0); // A live (4 dB), B stored (20 dB)
+
+        MidOperation mid;
+        juce::MemoryBlock saved;
+        std::atomic<bool> finishedEarly { false };
+        std::thread saver;
+        mid.once = [&] {
+            saver = std::thread([&] { processor.getStateInformation(saved); });
+            juce::Thread::sleep(100);
+            finishedEarly = saved.getSize() > 0;
+        };
+        auto* gain = processor.getApvts().getParameter(ids::boostGain);
+        gain->addListener(&mid);
+        processor.selectAbSlot(1);
+        gain->removeListener(&mid);
+        saver.join();
+        CHECK(!finishedEarly);
+        CHECK(savedActive(saved) == 1);
+        CHECK_NEAR(savedGain(saved), 20.0, 1.0e-4);
+        RootnoteProcessor reloaded;
+        restore(reloaded, saved);
+        reloaded.selectAbSlot(0);
+        CHECK(holds(reloaded, ids::boostGain, 4.0f));
+    }
+
+    // Switch during a restore: it comes after the whole restore, and switches from the restored slot.
+    {
+        RootnoteProcessor source;
+        set(source, ids::boostGain, 6.0f);
+        source.selectAbSlot(1);
+        set(source, ids::boostGain, 18.0f); // saved: B active at 18 dB, A stored at 6 dB
+        const auto state = stateOf(source);
+
+        RootnoteProcessor processor;
+        set(processor, ids::boostGain, 1.0f);
+        MidOperation mid;
+        std::thread switcher;
+        mid.once = [&] {
+            switcher = std::thread([&] { processor.selectAbSlot(0); });
+            juce::Thread::sleep(100);
+        };
+        auto* gain = processor.getApvts().getParameter(ids::boostGain);
+        gain->addListener(&mid);
+        restore(processor, state);
+        gain->removeListener(&mid);
+        switcher.join();
+        CHECK(processor.abSlot() == 0 && holds(processor, ids::boostGain, 6.0f));
+        processor.selectAbSlot(1);
+        CHECK(holds(processor, ids::boostGain, 18.0f));
+    }
+
+    // A listener that saves on the same thread, mid-switch, does not deadlock.
+    {
+        RootnoteProcessor processor;
+        processor.selectAbSlot(1);
+        set(processor, ids::boostGain, 3.0f);
+        MidOperation mid;
+        juce::MemoryBlock saved;
+        mid.once = [&] { processor.getStateInformation(saved); };
+        processor.getApvts().getParameter(ids::boostGain)->addListener(&mid);
+        processor.selectAbSlot(0);
+        processor.getApvts().getParameter(ids::boostGain)->removeListener(&mid);
+        CHECK(saved.getSize() > 0);
+    }
 }
 
 TEST_CASE("Plugin: states saved by 0.4.0, 0.4.1 and 0.4.2 load with their values")
@@ -2569,6 +2699,27 @@ TEST_CASE("Plugin: damaged, foreign or hostile states never crash and always lea
     CHECK(processor.currentPreset() == 0 && processor.storedEditorPage() == 0 && processor.abSlot() == 1);
     processor.selectAbSlot(0); // slot A was incomplete: B's settings carry over
     CHECK(holds(processor, ids::mix, 100.0f));
+
+    // A number is exactly one number: malformed or fractional ones are invalid, never a numeric prefix.
+    restore(processor, good);
+    const juce::String malformed = R"(<RootnoteState schema="2" preset="2-1" editorPage="1.5" editorWidth="1200x">
+        <PARAM id="mix" value="1.2.3"/><PARAM id="output" value="-3dB"/><PARAM id="bands" value="0x10"/>
+        <PARAM id="ring" value=" 50 "/><PARAM id="glide" value="1e+2"/>
+        <AB active="0.5"><SLOT index="1" preset="1" )" + [&] {
+            juce::String values;
+            for (auto* parameter : processor.getParameters())
+                values << static_cast<juce::RangedAudioParameter*>(parameter)->getParameterID() << "=\"0.4.5\" ";
+            return values;
+        }() + R"(/><SLOT index="0.5" preset="1"/></AB></RootnoteState>)";
+    restore(processor, blobOf(malformed));
+    CHECK(validParameters(processor));
+    CHECK(holds(processor, ids::mix, 100.0f) && holds(processor, ids::output, 0.0f) && holds(processor, ids::bands, 8.0f));
+    CHECK(holds(processor, ids::ring, 50.0f) && holds(processor, ids::glide, 100.0f));
+    CHECK(processor.currentPreset() == 0 && processor.storedEditorPage() == 0 && processor.storedEditorSize().x == 0);
+    CHECK(processor.abSlot() == 0);
+    set(processor, ids::ring, 10.0f);
+    processor.selectAbSlot(1); // slot B was invalid: it starts as a copy
+    CHECK(holds(processor, ids::ring, 10.0f));
 
     // Huge: a large state with a large unknown field still loads.
     restore(processor, blobOf(goodText.replace("<AB", "<FUTURE data=\"" + juce::String::repeatedString("x", 8 << 20) + "\"/><AB")));

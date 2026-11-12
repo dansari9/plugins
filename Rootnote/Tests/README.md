@@ -122,7 +122,7 @@ tails must be below −90 dBFS RMS. Earlier high-Q/Ring tails are intentional.
 | --- | --- |
 | A/B slots and the active slot were lost with the session; the editor page too | Full round trip with random non-default values: bit-exact parameters, A/B, preset, size, page, identical bytes on re-save, identical audio |
 | A truncated or unclosed state (`<RootnoteState pres…`) parsed leniently as empty and reset every setting | Truncations at every 7 bytes and unclosed XML leave the state unchanged |
-| `setCurrentProgram(current)` from a host restoring a session reapplied the preset over the edits | Same-program call keeps the edits; program-state paths equal the state |
+| Selecting the current program again must reload it (AU preset menu); restoring never selects a program | Reselecting reloads the preset; the round trip keeps edits; program-state paths equal the state |
 | `prepareToPlay(0)` would prepare the engine with no rate | Unprepared processor passes audio through |
 | Thread creation failure in the tuner would throw out of `prepareToPlay` | Caught: the tuner stays silent (not testable without exhausting threads) |
 | Load order / rates | Restore before or after preparing, while playing, with an editor open, at 44.1/48/96/192 kHz and blocks 7–1024: same parameters and sample-identical audio |
@@ -130,3 +130,6 @@ tails must be below −90 dBFS RMS. Earlier high-Q/Ring tails are intentional.
 | Hostile states | Random bytes with and without header, bit flips, wrong root, NaN/Inf/text/out-of-range values, unknown fields, 8 MB field, bad A/B: never crash, always legal and playable |
 | Frozen identity | Codes, bundle ID, schema, and the ordered parameter IDs, version hints, ranges and defaults |
 | Lifecycle | 60 create/play/edit/save/restore/destroy cycles with editors: no extra threads, under 16 MB growth |
+| Review 4: save, restore and A/B switch could interleave across threads | A listener mid-switch saves from a second thread (blocked until the switch ends, saves all B); a switch mid-restore runs after it; a same-thread save mid-switch does not deadlock |
+| Review 4: a restore with the editor open kept the old page, size and a typed field | Restore with a field open: the editor shows the restored page and size, the field is dropped and writes nothing |
+| Review 4: state numbers were read by prefix (`1.2.3`, `2-1`, `0.4.5`) | Exactly one number or missing: malformed values default, fractional page/preset/slot index are invalid, a malformed A/B slot is dropped |
