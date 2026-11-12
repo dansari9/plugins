@@ -11,6 +11,8 @@ constexpr double kCompression = 100.0;    // log(1 + k |X|), makes the flux leve
 constexpr double kMedianFactor = 1.5;
 constexpr double kAbsoluteFloor = 1.5;    // in compressed-flux units
 constexpr double kRelativeFloor = 0.08;   // of the largest recent flux
+constexpr double kMaskAmount = 0.5;       // of a hit's flux, added to the threshold right after it
+constexpr double kMaskSeconds = 0.040;    // time constant the mask fades with
 constexpr double kEnergyRiseDb = 4.0;
 constexpr double kEnergyFloorDb = -55.0;
 constexpr double kSlowReleaseDbPerSecond = 40.0;
@@ -34,6 +36,7 @@ void OnsetDetector::prepare(double sampleRate)
 {
     fs = sampleRate;
     medianFrames = std::clamp(static_cast<int>(std::lround(0.5 * sampleRate / kHop)), 8, 64);
+    maskDecay = std::exp(-static_cast<double>(kHop) / (kMaskSeconds * sampleRate));
     reset();
 }
 
@@ -50,6 +53,7 @@ void OnsetDetector::reset()
     fluxPrev1 = fluxPrev2 = 0.0;
     thresholdPrev1 = 0.0;
     recentPeak = 0.0;
+    mask = 0.0;
     slowDb = -120.0;
     levelPrevDb = -120.0;
     lastOnset = -1000000;
@@ -161,7 +165,6 @@ void OnsetDetector::analyseHop(std::vector<int64_t>& onsets)
         median = *middle;
     }
     recentPeak = std::max(recentPeak * std::exp(-static_cast<double>(kHop) / (3.0 * fs)), flux);
-    const double threshold = kMedianFactor * median + std::max(kAbsoluteFloor, kRelativeFloor * recentPeak);
 
     const int64_t minGap = static_cast<int64_t>(std::lround(kMinGapSeconds * fs));
     const auto report = [&](int64_t frameEnd)
@@ -176,7 +179,15 @@ void OnsetDetector::analyseHop(std::vector<int64_t>& onsets)
 
     // Flux peak one frame back: it needs the frame after it to be known.
     if (framesSeen >= 2 && fluxPrev1 > fluxPrev2 && fluxPrev1 >= flux && fluxPrev1 > thresholdPrev1)
+    {
         report(total - kHop);
+        mask = std::max(mask, kMaskAmount * fluxPrev1);
+    }
+
+    // The noisy tail of a snare flickers enough to look like new, softer
+    // hits, so the threshold stays raised for a moment after each hit.
+    const double threshold = kMedianFactor * median + std::max(kAbsoluteFloor, kRelativeFloor * recentPeak) + mask;
+    mask *= maskDecay;
 
     // Soft low hits: the level of this hop jumps above the slow envelope.
     if (framesSeen >= 1 && levelDb > kEnergyFloorDb && levelDb > levelPrevDb && levelDb - slowDb > kEnergyRiseDb)

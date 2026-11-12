@@ -13,7 +13,8 @@ namespace rootnote
     Main detector: spectral flux with high-frequency weighting on a 1024-point
     FFT, hop 256, on a stream of about 24 kHz. A frame is an onset when its
     flux is a local peak above an adaptive threshold (1.5 x the median of the
-    last 0.5 s plus a floor). A second detector catches soft, very low kicks
+    last 0.5 s plus a floor, raised for a moment after each hit so a noisy
+    tail is not taken for new hits). A second detector catches soft, very low kicks
     that have no click: the level of the newest hop against a slow envelope.
     Onsets are at least 60 ms apart. The reported time is refined to the
     steepest rise of the waveform envelope.
@@ -63,6 +64,8 @@ private:
     double fluxPrev2 = 0.0;          // flux of frame n-2
     double thresholdPrev1 = 0.0;
     double recentPeak = 0.0;
+    double mask = 0.0;               // extra threshold after a hit, fading
+    double maskDecay = 0.0;          // per hop
     double slowDb = -120.0;
     double levelPrevDb = -120.0;
     int64_t lastOnset = -1000000;
