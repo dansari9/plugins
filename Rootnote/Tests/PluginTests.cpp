@@ -595,8 +595,209 @@ TEST_CASE("Plugin: the editor opens, shows the tuner, resizes and closes without
     CHECK(editor->getWidth() == 700 && editor->getHeight() == 500);
 }
 
+TEST_CASE("Plugin: a preset sets its exact values, everything else to default, and leaves the song alone")
+{
+    RootnoteProcessor processor;
+    REQUIRE(RootnoteProcessor::numPresets() == 9);
+    CHECK(RootnoteProcessor::presetName(0) == "Default");
+    CHECK(RootnoteProcessor::presetName(1) == "Kick to 808 Tail");
+    CHECK(RootnoteProcessor::presetName(8) == "Noise to Tone");
+    CHECK(RootnoteProcessor::presetName(9).isEmpty());
+    CHECK(processor.currentPreset() == 0);
+
+    // What belongs to the song, plus a few values no preset mentions.
+    set(processor, ids::boostNote, 30.0f);
+    set(processor, ids::boostFine, 12.0f);
+    set(processor, ids::cutNote, 26.0f);
+    set(processor, ids::key, 6.0f);
+    set(processor, ids::scale, static_cast<float>(Scale::minor));
+    set(processor, ids::keyLock, 1.0f);
+    set(processor, ids::a4, 432.0f);
+    set(processor, ids::bypass, 1.0f);
+    set(processor, ids::output, -7.0f);
+    set(processor, ids::focusLink, 0.0f);
+
+    struct Value { const char* id; float value; };
+    const auto expect = [&](int index, std::initializer_list<Value> values) {
+        processor.loadPreset(index);
+        CHECK(processor.currentPreset() == index);
+        for (auto* parameter : processor.getParameters())
+        {
+            auto* ranged = dynamic_cast<juce::RangedAudioParameter*>(parameter);
+            const juce::String id = ranged->getParameterID();
+            float expected = ranged->convertFrom0to1(ranged->getDefaultValue());
+            for (const Value& kept : { Value { ids::boostNote, 30.0f }, { ids::boostFine, 12.0f }, { ids::cutNote, 26.0f },
+                                       { ids::key, 6.0f }, { ids::scale, 2.0f }, { ids::keyLock, 1.0f },
+                                       { ids::a4, 432.0f }, { ids::bypass, 1.0f } })
+                if (id == kept.id)
+                    expected = kept.value;
+            for (const Value& value : values)
+                if (id == value.id)
+                    expected = value.value;
+            CHECK_MSG(holds(processor, id.toRawUTF8(), expected),
+                      (RootnoteProcessor::presetName(index) + ": " + id).toStdString());
+        }
+    };
+
+    expect(1, { { ids::series, 0 }, { ids::bands, 4 }, { ids::boostQ, 80 }, { ids::boostGain, 12 }, { ids::ring, 40 },
+                { ids::ringDecay, 900 }, { ids::ringDrop, 2 }, { ids::limiter, 1 } });
+    expect(2, { { ids::bands, 6 }, { ids::boostQ, 10 }, { ids::boostGain, 6 }, { ids::range, 1 } });
+    expect(3, { { ids::series, 2 }, { ids::bands, 6 }, { ids::boostQ, 18 }, { ids::boostGain, 7 }, { ids::cutOn, 1 },
+                { ids::cutDepth, -10 } });
+    expect(4, { { ids::series, 2 }, { ids::bands, 8 }, { ids::boostQ, 25 }, { ids::boostGain, 8 }, { ids::cutOn, 1 } });
+    expect(5, { { ids::series, 1 }, { ids::boostQ, 14 }, { ids::boostGain, 8 }, { ids::tilt, -6 } });
+    expect(6, { { ids::boostGain, 0 }, { ids::cutOn, 1 }, { ids::cutDepth, -18 }, { ids::cutBands, 12 },
+                { ids::cutOvertones, 80 } });
+    expect(7, { { ids::midiMode, 1 }, { ids::glide, 40 }, { ids::bands, 12 }, { ids::boostQ, 60 }, { ids::ring, 30 } });
+    expect(8, { { ids::bands, 24 }, { ids::boostQ, 120 }, { ids::boostGain, 18 }, { ids::mix, 70 } });
+    expect(0, {});
+
+    // Out of range: nothing happens.
+    processor.loadPreset(3);
+    processor.loadPreset(99);
+    processor.loadPreset(-1);
+    CHECK(processor.currentPreset() == 3);
+
+    // The preset is part of the state.
+    juce::MemoryBlock state;
+    processor.getStateInformation(state);
+    RootnoteProcessor other;
+    other.setStateInformation(state.getData(), static_cast<int>(state.getSize()));
+    CHECK(other.currentPreset() == 3);
+    CHECK(holds(other, ids::boostQ, 25.0f));
+}
+
+TEST_CASE("Plugin: A/B keeps two settings apart")
+{
+    RootnoteProcessor processor;
+    CHECK(processor.abSlot() == 0);
+    processor.loadPreset(2);
+    set(processor, ids::boostGain, 3.0f);
+
+    // B starts as a copy of A.
+    processor.selectAbSlot(1);
+    CHECK(processor.abSlot() == 1);
+    CHECK(holds(processor, ids::boostGain, 3.0f) && processor.currentPreset() == 2);
+
+    processor.loadPreset(5);
+    set(processor, ids::mix, 40.0f);
+    set(processor, ids::bypass, 1.0f);
+
+    processor.selectAbSlot(0);
+    CHECK(processor.currentPreset() == 2);
+    CHECK(holds(processor, ids::boostGain, 3.0f) && holds(processor, ids::mix, 100.0f) && holds(processor, ids::series, 0.0f));
+    CHECK(holds(processor, ids::bypass, 1.0f)); // bypass is not part of a slot
+
+    processor.selectAbSlot(1);
+    CHECK(processor.currentPreset() == 5);
+    CHECK(holds(processor, ids::boostGain, 8.0f) && holds(processor, ids::mix, 40.0f) && holds(processor, ids::series, 1.0f));
+
+    processor.selectAbSlot(1);
+    processor.selectAbSlot(7);
+    CHECK(processor.abSlot() == 1);
+
+    // A restored state starts again from A.
+    juce::MemoryBlock state;
+    processor.getStateInformation(state);
+    processor.setStateInformation(state.getData(), static_cast<int>(state.getSize()));
+    CHECK(processor.abSlot() == 0);
+    processor.selectAbSlot(1);
+    CHECK(holds(processor, ids::mix, 40.0f));
+}
+
+TEST_CASE("Plugin: the display state has the live notes and bands, with or without audio")
+{
+    RootnoteProcessor processor;
+    set(processor, ids::boostNote, 30.0f);
+    set(processor, ids::cutNote, 26.0f);
+
+    // No audio yet: the knob notes.
+    auto state = processor.displayState();
+    CHECK_NEAR(state.boostHz, noteToHz(30.0), 1.0e-3);
+    CHECK_NEAR(state.cutHz, noteToHz(26.0), 1.0e-3);
+    CHECK(state.numBoostBands == 8 && state.numCutBands == 0);
+    CHECK_NEAR(state.boostBands[0].gainDb, 9.0, 1.0e-3);
+    CHECK(state.limiterGain == 1.0f);
+
+    set(processor, ids::cutOn, 1.0f);
+    CHECK(processor.displayState().numCutBands == 6);
+
+    // The bands follow a MIDI note.
+    prepare(processor);
+    juce::AudioBuffer<float> block(2, 512);
+    block.clear();
+    juce::MidiBuffer midi;
+    midi.addEvent(juce::MidiMessage::noteOn(1, 45, 1.0f), 0);
+    processor.processBlock(block, midi);
+    midi.clear();
+    for (int i = 0; i < 10; ++i)
+        processor.processBlock(block, midi);
+    state = processor.displayState();
+    CHECK(state.boostFromMidi);
+    CHECK_NEAR(state.boostBands[0].hz, 110.0, 1.0e-3);
+    CHECK_NEAR(state.boostBands[1].hz, 220.0, 1.0e-3);
+    CHECK_NEAR(state.cutBands[0].hz, noteToHz(26.0), 1.0e-3);
+    CHECK_NEAR(state.cutBands[0].gainDb, -12.0, 1.0e-3);
+}
+
+/**
+    Renders the editor with a demo state to a PNG: a kick ringing at D1, the
+    boost on F#1 played from MIDI, the cut matched to the hit.
+*/
+int writeSnapshot(const juce::File& file)
+{
+    RootnoteProcessor processor;
+    prepare(processor);
+    processor.loadPreset(2);
+    set(processor, ids::boostNote, 30.0f);
+    set(processor, ids::boostGain, 9.0f);
+    set(processor, ids::bands, 8.0f);
+    set(processor, ids::key, 6.0f);
+    set(processor, ids::scale, static_cast<float>(Scale::minor));
+
+    std::unique_ptr<juce::AudioProcessorEditor> editor(processor.createEditor());
+    auto* rootnoteEditor = dynamic_cast<RootnoteEditor*>(editor.get());
+    if (rootnoteEditor == nullptr)
+        return 1;
+
+    playKicks(processor, noteToHz(26.0 - 0.12), 48000.0);
+    waitForReading(processor, 3);
+    processor.matchCutToHit();
+
+    // One more hit with a MIDI note, drawn frame by frame as a host would.
+    Random random(7);
+    std::vector<float> signal(48000 / 4, 0.0f);
+    KickSpec kick;
+    kick.hz = noteToHz(26.0 - 0.12);
+    addKick(signal, 0, kick, 48000.0, random);
+    juce::MidiBuffer midi;
+    midi.addEvent(juce::MidiMessage::noteOn(1, 30, 1.0f), 0);
+    for (size_t position = 0; position + 512 <= signal.size(); position += 512)
+    {
+        juce::AudioBuffer<float> block(2, 512);
+        block.copyFrom(0, 0, signal.data() + position, 512);
+        block.copyFrom(1, 0, signal.data() + position, 512);
+        processor.processBlock(block, midi);
+        midi.clear();
+        if (position % 2048 == 0)
+            rootnoteEditor->refresh();
+    }
+
+    const juce::Image image = editor->createComponentSnapshot(editor->getLocalBounds(), true, 2.0f);
+    file.getParentDirectory().createDirectory();
+    file.deleteFile();
+    juce::FileOutputStream stream(file);
+    if (!stream.openedOk() || !juce::PNGImageFormat().writeImageToStream(image, stream))
+        return 1;
+    std::printf("wrote %s (%d x %d)\n", file.getFullPathName().toRawUTF8(), image.getWidth(), image.getHeight());
+    return 0;
+}
+
+/** "--snapshot <file.png>" renders the editor instead of running the tests. */
 int main(int argc, char** argv)
 {
     const juce::ScopedJuceInitialiser_GUI gui;
+    if (argc == 3 && juce::String(argv[1]) == "--snapshot")
+        return writeSnapshot(juce::File::getCurrentWorkingDirectory().getChildFile(juce::String(argv[2])));
     return testing::runAll(argc, argv);
 }

@@ -42,6 +42,7 @@ juce_add_plugin(Rootnote
 target_sources(Rootnote
     PRIVATE
         Source/Parameters.cpp
+        Source/Presets.cpp
         Source/PluginProcessor.cpp
         Source/PluginEditor.cpp
 )
@@ -82,6 +83,6 @@ endif()
 # Set per source file so it comes after JUCE's recommended warning flags.
 if(NOT MSVC)
     set_source_files_properties(
-        Source/Parameters.cpp Source/PluginProcessor.cpp Source/PluginEditor.cpp Tests/PluginTests.cpp
+        Source/Parameters.cpp Source/Presets.cpp Source/PluginProcessor.cpp Source/PluginEditor.cpp Tests/PluginTests.cpp
         PROPERTIES COMPILE_OPTIONS -Wno-float-equal)
 endif()
