@@ -37,11 +37,17 @@ float baseline(float top, float lineHeight, float px, bool centred = false)
 }
 
 // Text on a float baseline at x; align -1 left, 0 centred on x, 1 right-aligned at x. Returns its width.
+float shapeText(GlyphArrangement& a, const String& s, const Font& f, float x, float base, int align)
+{
+    a.clear(), a.addLineOfText(f, s, 0, 0);
+    const float w = a.getBoundingBox(0, a.getNumGlyphs(), true).getWidth();
+    a.moveRangeOfGlyphs(0, -1, x - w * (float) (align + 1) / 2, base);
+    return w;
+}
 float print(Graphics& g, const String& s, const Font& f, Colour c, float x, float base, int align = -1)
 {
-    const float w = GlyphArrangement::getStringWidth(f, s);
     GlyphArrangement a;
-    a.addLineOfText(f, s, x - w * (float) (align + 1) / 2, base);
+    const float w = shapeText(a, s, f, x, base, align);
     g.setColour(c), a.draw(g);
     return w;
 }
@@ -100,6 +106,9 @@ const KnobSpec knobSpecs[] = { { "preamp", "preamp", In, 48, top, 88, muted2 }, 
                                { "cutoff", "cutoff", Filter, 60, bottom, 80, muted2 },   { "reso", "reso", Filter, 148, bottom, 80, muted2 },
                                { "mix", "fx", Mix, 52, top, 96, white },                  { "output", "output", Mix, 52, bottom, 96, white } };
 
+const char* const displayIds[] = { "preamp", "bits", "dcShift", "dither", "rate", "jitter", "approxOn", "approxDev", "imagesOn", "imagesShift", "fType", "fOrder", "cutoff", "reso", "output" };
+const Identifier vuId[] { "vu0", "vu1" }, clipId[] { "clip0", "clip1" };
+
 struct Editor : AudioProcessorEditor, Timer
 {
     static constexpr int W = 1024, H = 576;
@@ -122,16 +131,27 @@ struct Editor : AudioProcessorEditor, Timer
     // Attachments after the components they drive, so they are destroyed first.
     std::unique_ptr<AudioProcessorValueTreeState::SliderAttachment> knobAtt[10];
     std::vector<std::unique_ptr<ParameterAttachment>> keyAtt;
-    ParameterAttachment* bitsAtt = nullptr;
     std::vector<float> in = std::vector<float>(crumb::Scope::size), out = std::vector<float>(crumb::Scope::size);
     float scopePeak = 0.1f, needle[2] {}, speed[2] {}, level[2] {};
     crumb::Scope::Meter seen;   // the meter totals last read: opening the editor starts from the current position
     double stepAt = 0, heard = 0; // ms: needle time integrated up to, last new audio
     bool clip[2] {};
-    String shown; // the parameter text on the plate: repaint all when it changes
+    std::array<std::atomic<float>*, 15> raw {};
+    std::array<RangedAudioParameter*, 15> parameters {};
+    std::array<float, 15> rawSeen {};
+    String displayed[15], presetSeen, rateText, unitText, status[3];
+    int presetIndexSeen = -2, slotSeen = -1;
+    bool valuesSeen = false;
+    uint32_t scopeSeen = 0;
+    float paintedNeedle[2] {};
+    Path waveform, shadow, hand;
+    struct VuFace { Path arcs[2], ticks[7]; GlyphArrangement numbers[7]; bool built = false; } vuFace[2];
 
     explicit Editor(CrumbProcessor& p) : AudioProcessorEditor(p), proc(p)
     {
+        for (size_t i = 0; i < raw.size(); ++i)
+            raw[i] = p.apvts.getRawParameterValue(displayIds[i]), parameters[i] = p.apvts.getParameter(displayIds[i]);
+        waveform.preallocateSpace(crumb::Scope::size * 3);
         setLookAndFeel(&look);
         addAndMakeVisible(plate);
         plate.setBounds(0, 0, W, H);
@@ -171,9 +191,9 @@ struct Editor : AudioProcessorEditor, Timer
         bind("dcShift", { &dcShift }), bind("approxOn", { &approx }), bind("imagesOn", { &images });
         bind("fType", { &types[0], &types[1], &types[2], &types[3], &types[4] }), bind("fOrder", { &pre, &post });
         keyAtt.push_back(std::make_unique<ParameterAttachment>(*p.apvts.getParameter("bits"), [this](float) { plate.repaint(); }));
-        bitsAtt = keyAtt.back().get();
-        minusKey.onClick = [this] { bitsAtt->setValueAsCompleteGesture((float) jmax(0, bits() - 1)); };
-        plus.onClick = [this] { bitsAtt->setValueAsCompleteGesture((float) jmin(24, bits() + 1)); };
+        auto* bitsAtt = keyAtt.back().get();
+        minusKey.onClick = [this, bitsAtt] { bitsAtt->setValueAsCompleteGesture((float) jmax(0, bits() - 1)); };
+        plus.onClick = [this, bitsAtt] { bitsAtt->setValueAsCompleteGesture((float) jmin(24, bits() + 1)); };
         layoutModules();
 
         const int stored = proc.editorWidth; // read first: setting the limits already resizes
@@ -188,10 +208,11 @@ struct Editor : AudioProcessorEditor, Timer
     }
     ~Editor() override { setLookAndFeel(nullptr); }
 
-    void place(Component& c, float x, float y, float w, float h)
+    void place(Key& c, float x, float y, float w, float h)
     {
-        plate.addAndMakeVisible(c);
-        c.setBounds(Rectangle<float>(x, y, w, h + (dynamic_cast<Key*>(&c) ? 1.0f : 0.0f)).toNearestInt()); // keys: + drop line
+        if (c.getParentComponent() != &plate)
+            plate.addAndMakeVisible(c);
+        c.setBounds(Rectangle<float>(x, y, w, h + 1).toNearestInt()); // keys: + drop line
     }
     bool preOrder() const { return value("fOrder") < 0.5f; }
     std::array<int, 8> order() const { return { In, preOrder() ? Filter : Dock, Quant, Approx, Resample, Images, preOrder() ? Dock : Filter, Mix }; }
@@ -224,7 +245,12 @@ struct Editor : AudioProcessorEditor, Timer
         proc.editorWidth = getWidth();
     }
     float value(const char* id) const { return proc.apvts.getRawParameterValue(id)->load(); }
-    String display(const char* id) const { auto* p = proc.apvts.getParameter(id); return minus(p->getText(p->getValue(), 0)); }
+    String display(const char* id) const
+    {
+        for (size_t i = 0; i < raw.size(); ++i)
+            if (std::string_view(id) == displayIds[i]) return displayed[i];
+        return {};
+    }
     int bits() const { return roundToInt(value("bits")); }
     // Stages that currently do nothing are dimmed: their knobs, their rail dots.
     bool active(int module) const
@@ -240,18 +266,33 @@ struct Editor : AudioProcessorEditor, Timer
 
     void timerCallback() override
     {
-        const int slot = proc.abSlot();
-        slotA.setToggleState(slot == 0, dontSendNotification), slotB.setToggleState(slot == 1, dontSendNotification);
-        String now = proc.presetName() + String(proc.preset.load());
-        for (auto* id : { "preamp", "bits", "dcShift", "dither", "rate", "jitter", "approxOn", "approxDev", "imagesOn", "imagesShift", "fType", "fOrder", "cutoff", "reso", "output" })
-            now << display(id) << "|";
-        if (now != shown)
+        const int slot = proc.abSlot(), pr = proc.preset.load();
+        const auto name = proc.presetName();
+        bool changed = !valuesSeen, chrome = !valuesSeen || slot != slotSeen || pr != presetIndexSeen || name != presetSeen;
+        bool orderChanged = false;
+        for (size_t i = 0; i < raw.size(); ++i)
         {
-            shown = now, layoutModules(), plate.repaint();
+            const float v = raw[i]->load();
+            if (!valuesSeen || !exactlyEqual(v, rawSeen[i]))
+            {
+                changed = true, orderChanged |= i == 11;
+                chrome |= i == 1 || i == 2 || i == 3 || i == 5 || i == 6 || i == 8 || i == 10 || i == 11;
+                rawSeen[i] = v, displayed[i] = minus(parameters[i]->getText(parameters[i]->convertTo0to1(v), 0));
+            }
+        }
+        if (changed)
+            updateDisplay();
+        if (orderChanged && valuesSeen)
+            layoutModules();
+        if (chrome)
+        {
+            slotA.setToggleState(slot == 0, dontSendNotification), slotB.setToggleState(slot == 1, dontSendNotification);
             for (int i = 0; i < 10; ++i)
                 knobs[i].setAlpha(knobActive(knobSpecs[i]) ? 1.0f : 0.4f);
             dcShift.setAlpha(bits() > 0 ? 1.0f : 0.4f);
+            plate.repaint();
         }
+        valuesSeen = true, presetSeen = name, presetIndexSeen = pr, slotSeen = slot;
         // VU: the RMS of the audio since the last new block (held between blocks, silence after 0.5 s without audio)
         // drives a 2nd-order needle (99 % in 300 ms, 1.5 % overshoot) in 1/240 s steps of elapsed time, at most 1 s of
         // catch-up; 0 VU = -12 dBFS RMS (K-12). The clip LED lights for 1 s after a sample over 0 dBFS.
@@ -269,42 +310,60 @@ struct Editor : AudioProcessorEditor, Timer
             for (int c = 0; c < 2; ++c)
                 speed[c] += (169 * (level[c] - needle[c]) - 20.8f * speed[c]) / 240, needle[c] += speed[c] / 240;
         stepAt = k < 240 ? stepAt : t;
+        const auto write = proc.scope.write.load(std::memory_order_acquire);
+        bool screens = changed || write != scopeSeen;
+        scopeSeen = write;
         for (int c = 0; c < 2; ++c)
         {
-            clip[c] = proc.scope.clipAt[c].load() + 1000 > t;
-            getProperties().set("vu" + String(c), needle[c]), getProperties().set("clip" + String(c), clip[c]); // for tests
+            const bool lit = proc.scope.clipAt[c].load() + 1000 > t;
+            screens |= lit != clip[c] || std::abs(needle[c] - paintedNeedle[c]) > 1e-6f;
+            clip[c] = lit;
+            if (!getProperties().contains(vuId[c]) || !exactlyEqual((float) getProperties()[vuId[c]], needle[c]))
+                getProperties().set(vuId[c], needle[c]); // for tests
+            if (!getProperties().contains(clipId[c]) || (bool) getProperties()[clipId[c]] != clip[c])
+                getProperties().set(clipId[c], clip[c]);
         }
-        plate.repaint(24, 56, 976, 216);
+        if (screens || chrome)
+        {
+            std::copy(std::begin(needle), std::end(needle), paintedNeedle);
+            if (!chrome) plate.repaint(24, 56, 976, 216);
+        }
     }
 
     void paintPlate(Graphics& g)
     {
         g.fillAll(face);
-        // Header: wordmark, centred preset pill (number + name) with its keys, maker and version.
-        const float hb = baseline(24, 24, 15);
-        print(g, "crumb", mono(15, 0.01f, 2), ink, 24, hb);
-        print(g, "daveydidit" + dot + "v" JucePlugin_VersionString, label(), muted, 1000, hb, 1);
-        g.setColour(pill), g.fillRoundedRectangle(296, 24, 248, 24, 8);
-        print(g, proc.preset >= 0 ? String(proc.preset.load()).paddedLeft('0', 2) : String("--"), mono(11, 0.02f), muted, 304, baseline(24, 24, 11));
-        g.setFont(mono(11, 0.02f)), g.setColour(ink), g.drawText(proc.presetName(), Rectangle<float>(328, 23, 184, 24), Justification::centred, true); // on the spec baseline
-
-        paintScope(g);
-        paintVu(g);
+        const auto clipBounds = g.getClipBounds();
+        if (clipBounds.intersects(Rectangle<int> { 24, 23, 976, 26 }))
+        {
+            // Header: wordmark, centred preset pill (number + name) with its keys, maker and version.
+            const float hb = baseline(24, 24, 15);
+            print(g, "crumb", mono(15, 0.01f, 2), ink, 24, hb);
+            print(g, "daveydidit" + dot + "v" JucePlugin_VersionString, label(), muted, 1000, hb, 1);
+            g.setColour(pill), g.fillRoundedRectangle(296, 24, 248, 24, 8);
+            print(g, proc.preset >= 0 ? String(proc.preset.load()).paddedLeft('0', 2) : String("--"), mono(11, 0.02f), muted, 304, baseline(24, 24, 11));
+            g.setFont(mono(11, 0.02f)), g.setColour(ink), g.drawText(proc.presetName(), Rectangle<float>(328, 23, 184, 24), Justification::centred, true); // on the spec baseline
+        }
+        if (clipBounds.intersects(Rectangle<int> { 24, 56, 632, 216 })) paintScope(g);
+        if (clipBounds.intersects(Rectangle<int> { 664, 56, 336, 216 })) paintVu(g);
 
         // Signal rail: a dot at each module's centre; the filter (orange) where it sits, the empty dock hollow.
         const auto x = moduleX();
-        g.setColour(line), g.drawLine(24, 280, 1000, 280, 2);
-        for (int m = 0; m < 8; ++m)
+        if (clipBounds.intersects(Rectangle<int> { 24, 268, 976, 24 }))
         {
-            const Point<float> c { x[(size_t) m] + widths[m] / 2, 280 };
-            if (m == Dock)
-                g.setColour(face), g.fillEllipse(Rectangle<float>(16, 16).withCentre(c)), g.setColour(line), g.drawEllipse(Rectangle<float>(14, 14).withCentre(c), 2);
-            else if (m == Filter && active(m))
-                g.setColour(orange.withAlpha(0.22f)), g.fillEllipse(Rectangle<float>(24, 24).withCentre(c)), g.setColour(orange), g.fillEllipse(Rectangle<float>(16, 16).withCentre(c));
-            else
-                g.setColour(active(m) ? railDot : line), g.fillEllipse(Rectangle<float>(8, 8).withCentre(c));
+            g.setColour(line), g.drawLine(24, 280, 1000, 280, 2);
+            for (int m = 0; m < 8; ++m)
+            {
+                const Point<float> c { x[(size_t) m] + widths[m] / 2, 280 };
+                if (m == Dock)
+                    g.setColour(face), g.fillEllipse(Rectangle<float>(16, 16).withCentre(c)), g.setColour(line), g.drawEllipse(Rectangle<float>(14, 14).withCentre(c), 2);
+                else if (m == Filter && active(m))
+                    g.setColour(orange.withAlpha(0.22f)), g.fillEllipse(Rectangle<float>(24, 24).withCentre(c)), g.setColour(orange), g.fillEllipse(Rectangle<float>(16, 16).withCentre(c));
+                else
+                    g.setColour(active(m) ? railDot : line), g.fillEllipse(Rectangle<float>(8, 8).withCentre(c));
+            }
         }
-
+        if (!clipBounds.intersects(Rectangle<int> { 24, 296, 976, 256 })) return;
         // Modules: panels with their names, knob names, the dock, the bits display, the flow arrows in the gutters.
         const char* names[] = { "in", "", "quantize", "approx", "resample", "images", "filter", "mix" };
         for (int m = 0; m < 8; ++m)
@@ -364,21 +423,28 @@ struct Editor : AudioProcessorEditor, Timer
         }
     }
 
-    // Scope screen: rate and resolution, three status lines, 20 ms of input (grey) and output (orange) started on a rising
-    // zero crossing of the input so the picture stands still.
-    void paintScope(Graphics& g)
+    void updateDisplay()
     {
-        g.setColour(screen), g.fillRoundedRectangle(24, 56, 632, 216, 12);
-        const float rate = value("rate"), b = baseline(72, 32, 32);
-        const String unit = (rate >= 1000 ? "khz" : "hz") + dot + (bits() > 0 ? String(bits()) + " bit" : "off");
-        print(g, unit, mono(15, 0.08f), screenText, 48 + print(g, rate >= 1000 ? String(rate / 1000, 1) : String(roundToInt(rate)), mono(32, 0.02f, 1), white, 40, b), b);
-        const String status[] = {
+        const float rate = value("rate");
+        unitText = (rate >= 1000 ? "khz" : "hz") + dot + (bits() > 0 ? String(bits()) + " bit" : "off");
+        rateText = rate >= 1000 ? String(rate / 1000, 1) : String(roundToInt(rate));
+        const String nextStatus[] = {
             String(value("dcShift") > 0.5f ? " mid-tread" : " mid-riser") + dot + "dither " + display("dither"),
             (value("approxOn") > 0.5f ? "approx " + display("approxDev") : String("approx off")) + dot
                 + (value("imagesOn") > 0.5f ? "images +" + display("imagesShift") : String("images off")),
             (value("fType") > 0.5f ? String(StringArray { "", "lp", "bp", "hp", "br" }[roundToInt(value("fType"))]) + " " + display("cutoff") + dot + (preOrder() ? "pre" : "post")
                                    : String("filter off")) + dot + "jitter " + display("jitter"),
         };
+        std::copy(std::begin(nextStatus), std::end(nextStatus), status);
+    }
+
+    // Scope screen: rate and resolution, three status lines, 20 ms of input (grey) and output (orange) started on a rising
+    // zero crossing of the input so the picture stands still.
+    void paintScope(Graphics& g)
+    {
+        g.setColour(screen), g.fillRoundedRectangle(24, 56, 632, 216, 12);
+        const float b = baseline(72, 32, 32);
+        print(g, unitText, mono(15, 0.08f), screenText, 48 + print(g, rateText, mono(32, 0.02f, 1), white, 40, b), b);
         for (int l = 0; l < 3; ++l)
         {
             const float w = print(g, status[l], mono(10), screenText, 640, baseline(72 + 16 * (float) l, 16, 10), 1);
@@ -400,7 +466,8 @@ struct Editor : AudioProcessorEditor, Timer
         scopePeak = jmax(0.05f, peak, scopePeak * 0.95f); // auto gain: fast up, slow down
         for (auto [data, colour, width] : { std::tuple { in.data(), trace, 2.5f }, { out.data(), orange, 2.0f } })
         {
-            Path p;
+            auto& p = waveform;
+            p.clear();
             for (int i = 0; i < n; ++i)
             {
                 const float px = 40 + 600 * (float) i / (float) (n - 1), py = 188 - 54 * jlimit(-1.1f, 1.1f, data[start + i] / scopePeak);
@@ -434,22 +501,32 @@ struct Editor : AudioProcessorEditor, Timer
                 return stops[k][1] + (stops[k + 1][1] - stops[k][1]) * (db - stops[k][0]) / (stops[k + 1][0] - stops[k][0]);
             };
             const float r = 71.04f;
+            auto& cached = vuFace[c];
+            int arcIndex = 0, tickIndex = 0;
             for (auto [t0, t1, colour, width] : { std::tuple { 0.0f, 0.88f, tick, 2.0f }, { 0.88f, 1.0f, orange, 2.4f } })
             {
-                Path arc;
-                arc.addCentredArc(pivot.x, pivot.y, r - 1, r - 1, 0, degreesToRadians(-50 + 100 * t0), degreesToRadians(-50 + 100 * t1), true);
+                auto& arc = cached.arcs[arcIndex++];
+                if (!cached.built) arc.addCentredArc(pivot.x, pivot.y, r - 1, r - 1, 0, degreesToRadians(-50 + 100 * t0), degreesToRadians(-50 + 100 * t1), true);
                 g.setColour(colour), g.strokePath(arc, PathStrokeType(width, PathStrokeType::curved, PathStrokeType::rounded));
             }
             for (auto [db, name] : { std::pair { -20.0f, "20" }, { -10.0f, "10" }, { -7.0f, "" }, { -5.0f, "" }, { -3.0f, "" }, { 0.0f, "0" }, { 3.0f, "+3" } })
             {
                 const Colour colour = db >= 0 ? orange : tick;
-                g.setColour(colour), g.drawLine(Line<float>(at(pos(db), r - 1), at(pos(db), r - 8)), 1.6f);
-                const auto p = at(pos(db), r + 16);
-                print(g, name, mono(9, 0.02f), db >= 0 ? orange : numeral, p.x, p.y + 2.4f, 0);
+                auto& mark = cached.ticks[tickIndex];
+                auto& number = cached.numbers[tickIndex++];
+                if (!cached.built)
+                {
+                    mark.addLineSegment(Line<float>(at(pos(db), r - 1), at(pos(db), r - 8)), 1.6f);
+                    const auto p = at(pos(db), r + 16);
+                    shapeText(number, name, mono(9, 0.02f), p.x, p.y + 2.4f, 0);
+                }
+                g.setColour(colour), g.fillPath(mark);
+                g.setColour(db >= 0 ? orange : numeral), number.draw(g);
             }
+            cached.built = true;
             const float t = jlimit(-0.04f, 1.03f, pos(Decibels::gainToDecibels(needle[c], -40.0f)));
             const auto tip = at(t, r - 14), d = (tip - pivot) / pivot.getDistanceFrom(tip), n = Point<float>(-d.y, d.x);
-            Path shadow, hand;
+            shadow.clear(), hand.clear();
             shadow.addTriangle(pivot + Point<float>(1, 1.6f) + n * 1.2f, pivot + Point<float>(1, 1.6f) - n * 1.2f, tip + Point<float>(1, 1.6f));
             hand.addTriangle(pivot + n * 2.1f, pivot - n * 2.1f, tip);
             g.setColour(Colours::black.withAlpha(0.3f)), g.fillPath(shadow);
