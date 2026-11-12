@@ -631,8 +631,10 @@ TEST_CASE("Plugin: a preset sets its exact values, everything else to default, a
     RootnoteProcessor processor;
     REQUIRE(RootnoteProcessor::numPresets() == 9);
     CHECK(RootnoteProcessor::presetName(0) == "Default");
-    CHECK(RootnoteProcessor::presetName(1) == "Kick to 808 Tail");
-    CHECK(RootnoteProcessor::presetName(8) == "Noise to Tone");
+    const char* names[] = { "Default", "Sub Afterglow", "Pocket Kick", "Snare Core", "Tom Shift",
+                            "Octave Weight", "Resonance Eraser", "Played Percussion", "Noise Lattice" };
+    for (int i = 0; i < RootnoteProcessor::numPresets(); ++i)
+        CHECK(RootnoteProcessor::presetName(i) == names[i]);
     CHECK(RootnoteProcessor::presetName(9).isEmpty());
     CHECK(processor.currentPreset() == 0);
 
@@ -652,6 +654,11 @@ TEST_CASE("Plugin: a preset sets its exact values, everything else to default, a
     const auto expect = [&](int index, std::initializer_list<Value> values) {
         processor.loadPreset(index);
         CHECK(processor.currentPreset() == index);
+        juce::MemoryBlock saved;
+        processor.getStateInformation(saved);
+        RootnoteProcessor restored;
+        restored.setStateInformation(saved.getData(), static_cast<int>(saved.getSize()));
+        CHECK(restored.currentPreset() == index);
         for (auto* parameter : processor.getParameters())
         {
             auto* ranged = dynamic_cast<juce::RangedAudioParameter*>(parameter);
@@ -667,6 +674,8 @@ TEST_CASE("Plugin: a preset sets its exact values, everything else to default, a
                     expected = value.value;
             CHECK_MSG(holds(processor, id.toRawUTF8(), expected),
                       (RootnoteProcessor::presetName(index) + ": " + id).toStdString());
+            CHECK_MSG(holds(restored, id.toRawUTF8(), expected),
+                      ("restored " + RootnoteProcessor::presetName(index) + ": " + id).toStdString());
         }
     };
 
@@ -695,7 +704,7 @@ TEST_CASE("Plugin: a preset sets its exact values, everything else to default, a
     RootnoteProcessor other;
     other.setStateInformation(state.getData(), static_cast<int>(state.getSize()));
     CHECK(other.currentPreset() == 3);
-    CHECK(holds(other, ids::boostQ, 18.0f)); // preset 3 is Snare Body Tune
+    CHECK(holds(other, ids::boostQ, 18.0f)); // preset 3 is Snare Core
 }
 
 TEST_CASE("Plugin: A/B keeps two settings apart")
