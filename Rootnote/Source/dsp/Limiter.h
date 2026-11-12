@@ -14,12 +14,16 @@ namespace rootnote
     at the threshold and saturates at the ceiling. The output can therefore
     never exceed the ceiling (-0.3 dBFS), and anything under the threshold
     passes unchanged.
+
+    The follower stops at +40 dBFS. Beyond that the tanh curve does the work,
+    and one absurd spike cannot hold the gain down for seconds afterwards.
 */
 class Limiter
 {
 public:
     static constexpr double kCeiling = 0.96605087898981337;   // -0.3 dBFS
     static constexpr double kThreshold = 0.86099375218460053; // -1.3 dBFS
+    static constexpr double kMaxEnvelope = 100.0;             // +40 dBFS
 
     void prepare(double sampleRate) noexcept
     {
@@ -45,7 +49,7 @@ public:
 
     void tick(double& left, double& right) noexcept
     {
-        const double peak = std::max(std::abs(left), std::abs(right));
+        const double peak = std::min(std::max(std::abs(left), std::abs(right)), kMaxEnvelope);
         envelope += (peak - envelope) * (peak > envelope ? attack : release);
         if (envelope > kThreshold)
         {

@@ -38,16 +38,34 @@ BandBank::Settings cutSettings(const EngineParams& p) noexcept
 ModalRing::Settings ringSettings(const EngineParams& p) noexcept
 {
     ModalRing::Settings s;
-    s.shape.series = p.series;
-    s.shape.bands = p.bands;
-    s.shape.blend = p.blend;
-    s.shape.focusLink = p.focusLink;
-    s.shape.focusHz = p.focusHz;
-    s.shape.rangeOct = p.rangeOct;
-    s.shape.tiltDbPerOct = p.tiltDbPerOct;
+    s.shape = boostSettings(p).shape();
     s.decaySeconds = p.ringDecaySeconds;
     s.dropSemitones = p.ringDropSemitones;
     return s;
+}
+
+/**
+    Upper bound for the T60 of every band a bank can have while its root is
+    anywhere in [lowRootHz, highRootHz]. The slowest band is at one end of the
+    spectrum: resonances get longer towards low frequencies, and the bilinear
+    transform stretches them again close to Nyquist.
+*/
+double bankRingBound(SeriesType series, int bands, QMode qMode, double q, double gainDb,
+                     double lowRootHz, double highRootHz, double sampleRate) noexcept
+{
+    const double top = kNyquistGuard * sampleRate;
+    const int lastSlot = (series == SeriesType::octaves ? kOctaveSlots : std::clamp(bands, 1, kMaxSlots)) - 1;
+    const double lowest = std::clamp(lowRootHz * seriesRatio(series, 0), kLowSkipHz, top);
+    const double highest = std::clamp(highRootHz * seriesRatio(series, lastSlot), kLowSkipHz, top);
+
+    if (qMode == QMode::constantWidth)
+    {
+        // Every band rings as long as the root would; slotQ() keeps Q above 0.25.
+        const double analog = std::max(bellRingSeconds(lowRootHz, q, gainDb), bellRingSeconds(lowest, 0.25, gainDb));
+        return analog * bellRingStretch(highest, sampleRate);
+    }
+    return std::max(bellRingSeconds(lowest, q, gainDb) * bellRingStretch(lowest, sampleRate),
+                    bellRingSeconds(highest, q, gainDb) * bellRingStretch(highest, sampleRate));
 }
 
 double decibelsToGain(double db) noexcept
@@ -218,10 +236,14 @@ void Engine::processChunk(float* left, float* right, int numSamples) noexcept
         }
         ringRamp.advance(numSamples);
     }
-    else if (!ringCleared)
+    else
     {
-        ring.reset();
-        ringCleared = true;
+        if (!ringCleared)
+        {
+            ring.silence();
+            ringCleared = true;
+        }
+        ring.listen(left, right, numSamples);
     }
 
     for (int i = 0; i < numSamples; ++i)
@@ -239,9 +261,11 @@ void Engine::processChunk(float* left, float* right, int numSamples) noexcept
         double ll = yl;
         double lr = yr;
         limiter.tick(ll, lr);
+        // Blended as a weighted sum: "y + (limited - y) * limit" would lose
+        // the limited signal to rounding when y is huge.
         const double limit = limiterRamp.next();
-        yl += (ll - yl) * limit;
-        yr += (lr - yr) * limit;
+        yl = (1.0 - limit) * yl + limit * ll;
+        yr = (1.0 - limit) * yr + limit * lr;
 
         // Linear, not equal-power: dry and processed are the same signal apart
         // from the EQ, so an equal-power fade would bump the level by up to 3 dB.
@@ -256,44 +280,63 @@ void Engine::processChunk(float* left, float* right, int numSamples) noexcept
 
 double Engine::tailSeconds(const EngineParams& p, double sampleRate) noexcept
 {
+    // MIDI can put a bank on any note, whatever the knob says, and the audio
+    // thread's notes are not known here: with MIDI on, assume the whole range.
+    const auto rootRange = [&p](double knobNote, bool midi, double& lowHz, double& highHz) {
+        lowHz = noteToHz(midi ? kMinNote : knobNote, p.a4);
+        highHz = noteToHz(midi ? kMaxNote : knobNote, p.a4);
+    };
+
     double longest = 0.0;
+    double lowHz = 0.0, highHz = 0.0;
 
     if (p.boostGainDb > 0.0)
     {
-        const BandBank::Settings s = boostSettings(p);
-        BoostShape shape;
-        shape.series = s.series;
-        shape.bands = s.bands;
-        shape.blend = s.blend;
-        shape.focusLink = s.focusLink;
-        shape.focusHz = s.focusHz;
-        shape.rangeOct = s.rangeOct;
-        shape.tiltDbPerOct = s.tiltDbPerOct;
-
-        const double rootHz = noteToHz(p.boostNote + p.boostFineCents / 100.0, p.a4);
-        const int count = seriesSlotCount(s.series);
-        for (int slot = 0; slot < count; ++slot)
-        {
-            const double gainDb = boostSlotGainDb(shape, s.gainDb, slot, rootHz, sampleRate);
-            if (gainDb < 0.05)
-                continue;
-            const double ratio = seriesRatio(s.series, slot);
-            longest = std::max(longest, bellRingSeconds(rootHz * ratio, slotQ(s.qMode, s.q, ratio), gainDb));
-        }
+        // A band's gain is the Boost value times its weight. Only a tilt can push the weight above 1.
+        const bool weightAboveOne = p.tiltDbPerOct > 0.0 || (p.series == SeriesType::octaves && p.tiltDbPerOct < 0.0);
+        const double gainDb = weightAboveOne ? kMaxBandGainDb : std::min(p.boostGainDb, kMaxBandGainDb);
+        rootRange(p.boostNote + p.boostFineCents / 100.0, p.midiMode != MidiMode::off, lowHz, highHz);
+        longest = bankRingBound(p.series, p.bands, p.qMode, p.boostQ, gainDb, lowHz, highHz, sampleRate);
     }
 
     if (p.cutOn && p.cutDepthDb < 0.0)
     {
-        const double rootHz = noteToHz(p.cutNote, p.a4);
-        const int root = seriesRootSlot(p.series);
-        const double lowest = p.series == SeriesType::octaves ? std::max(kLowFullHz, rootHz / 64.0) : rootHz;
-        longest = std::max(longest, bellRingSeconds(lowest, slotQ(p.qMode, p.cutQ, seriesRatio(p.series, root)), 0.0));
+        // A cut rings shorter than a bell at 0 dB with the same Q.
+        rootRange(p.cutNote, p.midiMode == MidiMode::channels12, lowHz, highHz);
+        longest = std::max(longest, bankRingBound(p.series, p.cutBands, p.qMode, p.cutQ, 0.0, lowHz, highHz, sampleRate));
     }
 
     if (p.ring > 0.0)
         longest = std::max(longest, p.ringDecaySeconds);
 
     // Limiter release and the level ramps.
-    return std::min(kMaxTailSeconds, longest + 0.1);
+    return longest + 0.1;
+}
+
+int Engine::boostBands(const EngineParams& p, double rootHz, double sampleRate, BandView* out) noexcept
+{
+    const BandBank::Settings s = boostSettings(p);
+    const BoostShape shape = s.shape();
+    int count = 0;
+    for (int slot = 0; slot < seriesSlotCount(s.series); ++slot)
+    {
+        const double gainDb = boostSlotGainDb(shape, s.gainDb, slot, rootHz, sampleRate);
+        if (gainDb != 0.0)
+            out[count++] = { rootHz * seriesRatio(s.series, slot), gainDb };
+    }
+    return count;
+}
+
+int Engine::cutBands(const EngineParams& p, double rootHz, double sampleRate, BandView* out) noexcept
+{
+    const BandBank::Settings s = cutSettings(p);
+    int count = 0;
+    for (int slot = 0; slot < seriesSlotCount(s.series); ++slot)
+    {
+        const double gainDb = cutSlotGainDb(s.series, s.bands, s.gainDb, s.overtones, slot, rootHz, sampleRate);
+        if (gainDb != 0.0)
+            out[count++] = { rootHz * seriesRatio(s.series, slot), gainDb };
+    }
+    return count;
 }
 } // namespace rootnote

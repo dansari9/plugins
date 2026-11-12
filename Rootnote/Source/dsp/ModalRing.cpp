@@ -33,6 +33,13 @@ void ModalRing::prepare(double sampleRate) noexcept
 
 void ModalRing::reset() noexcept
 {
+    silence();
+    gate.reset();
+    lastGate = 0.0;
+}
+
+void ModalRing::silence() noexcept
+{
     for (auto& mode : modes)
     {
         mode.re[0] = mode.re[1] = 0.0;
@@ -41,10 +48,8 @@ void ModalRing::reset() noexcept
         mode.weight.snap(0.0);
         mode.active = false;
     }
-    gate.reset();
     pitch.snap(pitch.target);
     dropNow = 0.0;
-    lastGate = 0.0;
     samplesToTick = 0;
     pendingHit = false;
     snapPending = true;
@@ -104,16 +109,19 @@ void ModalRing::controlTick() noexcept
             dropNow = 0.0;
     }
 
+    // The edge fade uses the pitch that sounds, drop included, so a mode
+    // that the drop pushes past the top of the band fades out instead of
+    // piling up at the guard frequency.
     const SeriesType series = settings.shape.series;
-    double raw[kMaxModes];
-    double ratio[kMaxModes];
+    const int count = modeCount(series);
+    double raw[kMaxModes] {};
+    double ratio[kMaxModes] {};
     double sumOfSquares = 0.0;
-    for (int m = 0; m < kMaxModes; ++m)
+    for (int m = 0; m < count; ++m)
     {
-        const int slot = slotForMode(series, m);
-        ratio[m] = seriesRatio(series, slot);
-        const double hz = rootHz * ratio[m];
-        raw[m] = std::clamp(boostShapeWeight(settings.shape, slot, rootHz) * edgeWeight(hz, fs), 0.0, kMaxModeWeight);
+        ratio[m] = seriesRatio(series, m);
+        const double hz = rootHz * ratio[m] * dropFactor;
+        raw[m] = std::clamp(boostShapeWeight(settings.shape, m, rootHz) * edgeWeight(hz, fs), 0.0, kMaxModeWeight);
         sumOfSquares += raw[m] * raw[m];
     }
     const double normalise = 1.0 / std::sqrt(std::max(1.0, sumOfSquares));
@@ -180,6 +188,17 @@ void ModalRing::controlTick() noexcept
     moving = stillMoving;
 }
 
+void ModalRing::listen(const float* inLeft, const float* inRight, int numSamples) noexcept
+{
+    for (int i = 0; i < numSamples; ++i)
+    {
+        const float l = std::abs(inLeft[i]);
+        gate.tick(static_cast<double>(inRight != nullptr ? std::max(l, std::abs(inRight[i])) : l));
+    }
+    gate.takeTrigger();
+    lastGate = gate.isOpen() ? 1.0 : 0.0;
+}
+
 void ModalRing::process(const float* inLeft, const float* inRight, double* outLeft, double* outRight, int numSamples) noexcept
 {
     double excitation[2][kMaxChunk];
@@ -202,7 +221,8 @@ void ModalRing::process(const float* inLeft, const float* inRight, double* outLe
         {
             const double l = static_cast<double>(inLeft[position + i]);
             const double r = channels == 2 ? static_cast<double>(inRight[position + i]) : l;
-            const double g = gate.tick(0.5 * (l + r)) * inputGain;
+            // The larger channel, not the sum: a hit with opposite polarity left and right is still a hit.
+            const double g = gate.tick(std::max(std::abs(l), std::abs(r))) * inputGain;
             excitation[0][i] = g * l;
             excitation[1][i] = g * r;
             outLeft[position + i] = 0.0;

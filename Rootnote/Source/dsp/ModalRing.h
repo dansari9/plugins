@@ -8,7 +8,7 @@
 namespace rootnote
 {
 /**
-    The Ring engine: a bank of up to 16 modal resonators that only the start
+    The Ring engine: a bank of modal resonators that only the start
     of each hit can excite, so the tail length is set in milliseconds and does
     not depend on the bell Q.
 
@@ -19,13 +19,19 @@ namespace rootnote
     the amplitude steady while the pitch glides (Drop, MIDI glide), where the
     direct recursion jumps.
 
-    Modes sit on the boost series and take the boost weights (range, blend,
-    tilt). Audio-thread safe after prepare().
+    Mode m sits on slot m of the boost series and takes the boost weights
+    (range, blend, tilt). Audio-thread safe after prepare().
 */
 class ModalRing
 {
 public:
-    static constexpr int kMaxModes = 16;
+    /** Harmonic and drum series ring on their first 16 bands, the octave series on every octave the EQ has. */
+    static constexpr int kSeriesModes = 16;
+    static constexpr int kMaxModes = kOctaveSlots;
+    static constexpr int modeCount(SeriesType series) noexcept
+    {
+        return series == SeriesType::octaves ? kOctaveSlots : kSeriesModes;
+    }
     /** Higher modes decay faster: T60_k = T60 / ratio^kDamping. */
     static constexpr double kDamping = 0.7;
 
@@ -37,15 +43,17 @@ public:
 
         bool operator==(const Settings& o) const noexcept
         {
-            return shape.series == o.shape.series && shape.bands == o.shape.bands && shape.blend == o.shape.blend
-                && shape.focusLink == o.shape.focusLink && shape.focusHz == o.shape.focusHz
-                && shape.rangeOct == o.shape.rangeOct && shape.tiltDbPerOct == o.shape.tiltDbPerOct
-                && decaySeconds == o.decaySeconds && dropSemitones == o.dropSemitones;
+            return shape == o.shape && decaySeconds == o.decaySeconds && dropSemitones == o.dropSemitones;
         }
     };
 
     void prepare(double sampleRate) noexcept;
+
+    /** Silences everything and forgets the input seen so far. */
     void reset() noexcept;
+
+    /** Silences the resonators but keeps listening for hits. */
+    void silence() noexcept;
     void setSettings(const Settings& newSettings) noexcept;
     void setTargetFrequency(double hz, double rampSeconds) noexcept;
 
@@ -55,13 +63,12 @@ public:
     */
     void process(const float* inLeft, const float* inRight, double* outLeft, double* outRight, int numSamples) noexcept;
 
-    /** Slot of the boost series that mode m follows. */
-    static int slotForMode(SeriesType series, int mode) noexcept
-    {
-        // Octaves: modes cover 2^-4 .. 2^11, which reaches below 18 Hz and
-        // above the audible range for every root.
-        return series == SeriesType::octaves ? mode + kOctaveRootSlot - 4 : mode;
-    }
+    /**
+        Listens to the input without ringing, while Ring is at zero. The hit
+        detector then knows what came before when Ring is turned up in the
+        middle of a sound, and does not take that sound for a new hit.
+    */
+    void listen(const float* inLeft, const float* inRight, int numSamples) noexcept;
 
     /** Time the pitch drop takes to settle, tied to the decay: 20 ms .. 300 ms. */
     static double dropSeconds(double decaySeconds) noexcept

@@ -77,6 +77,12 @@ struct BoostShape
     double focusHz = 65.0;
     double rangeOct = 1.5;
     double tiltDbPerOct = -3.0;
+
+    bool operator==(const BoostShape& o) const noexcept
+    {
+        return series == o.series && bands == o.bands && blend == o.blend && focusLink == o.focusLink
+            && focusHz == o.focusHz && rangeOct == o.rangeOct && tiltDbPerOct == o.tiltDbPerOct;
+    }
 };
 
 /**

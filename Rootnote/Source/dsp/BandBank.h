@@ -53,6 +53,12 @@ public:
                 && rangeOct == o.rangeOct && tiltDbPerOct == o.tiltDbPerOct && overtones == o.overtones;
         }
         bool operator!=(const Settings& o) const noexcept { return !(*this == o); }
+
+        /** The boost weighting these settings describe. */
+        BoostShape shape() const noexcept
+        {
+            return { series, bands, blend, focusLink, focusHz, rangeOct, tiltDbPerOct };
+        }
     };
 
     void prepare(double sampleRate, Kind bankKind) noexcept;

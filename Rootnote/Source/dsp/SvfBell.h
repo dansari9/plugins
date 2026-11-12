@@ -70,12 +70,24 @@ inline double bellResponseDb(double hz, double centreHz, double q, double gainDb
     return 10.0 * std::log10(numerator / denominator);
 }
 
-/** Time for the bell's resonance to fall by 60 dB after the input stops. */
+/** Time for the resonance of the analog bell to fall by 60 dB after the input stops. */
 inline double bellRingSeconds(double centreHz, double q, double gainDb) noexcept
 {
     // Poles of the prototype have Q_pole = Q * A; the envelope is exp(-w0 t / (2 Q_pole)).
     const double A = std::exp(gainDb * (kLn10 / 40.0));
     return 6.907755 * 2.0 * q * A / (2.0 * kPi * centreHz);
+}
+
+/**
+    How much longer the digital bell rings than the analog one. The bilinear
+    transform narrows the resonance, so the poles decay with sin(theta) where
+    the analog ones decay with theta = 2 pi hz / fs. 1 at low frequencies,
+    about 9 at 0.45 fs.
+*/
+inline double bellRingStretch(double centreHz, double sampleRate) noexcept
+{
+    const double theta = 2.0 * kPi * centreHz / sampleRate;
+    return theta < 1.0e-6 ? 1.0 : theta / std::sin(theta);
 }
 
 /** One mono bell with fixed settings. Used by tests and as the reference implementation. */

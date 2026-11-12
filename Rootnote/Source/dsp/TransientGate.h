@@ -12,6 +12,10 @@ namespace rootnote
     the slow one, a hit has started: the gate rises from 0 to 1 in 1 ms, holds
     for 30 ms and fades out over 20 ms. A steady tone or a decaying tail never
     opens it. Used as the excitation window of the ring engine.
+
+    The followers start from silence, so a hit on the very first sample
+    counts. Keep the gate running while its output is not needed: a gate that
+    is reset in the middle of a sound takes that sound for a hit.
 */
 class TransientGate
 {
@@ -40,7 +44,6 @@ public:
     void reset() noexcept
     {
         fast = slow = 0.0;
-        primed = false;
         phase = Phase::idle;
         counter = 0;
         level = 0.0;
@@ -48,17 +51,10 @@ public:
         triggered = false;
     }
 
-    /** Feeds one detector sample and returns the gate value 0..1. */
+    /** Feeds one detector sample (any sign) and returns the gate value 0..1. */
     double tick(double detector) noexcept
     {
         const double magnitude = std::abs(detector);
-        if (!primed)
-        {
-            // Start both followers at the level that is already there, so
-            // switching the gate on in the middle of a sound is not a "hit".
-            fast = slow = magnitude;
-            primed = true;
-        }
         fast += (magnitude - fast) * (magnitude > fast ? fastAttack : fastRelease);
         slow += (fast - slow) * (fast > slow ? slowAttack : slowRelease);
 
@@ -136,7 +132,6 @@ private:
 
     double fastAttack = 0.1, fastRelease = 0.003, slowAttack = 0.001, slowRelease = 0.0001;
     double fast = 0.0, slow = 0.0;
-    bool primed = false;
     Phase phase = Phase::idle;
     int counter = 0;
     int attackSamples = 48, holdSamples = 1440, releaseSamples = 960, lockoutSamples = 2160;

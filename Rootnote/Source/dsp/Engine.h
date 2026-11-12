@@ -51,6 +51,13 @@ struct EngineParams
     bool bypass = false;
 };
 
+/** One band of a bank as a display draws it. */
+struct BandView
+{
+    double hz = 0.0;
+    double gainDb = 0.0;
+};
+
 /**
     The whole signal path, without any JUCE dependency:
 
@@ -74,7 +81,6 @@ public:
     static constexpr double kLevelRampSeconds = 0.020;
     /** Level of the ring signal at Ring = 100 %. */
     static constexpr double kRingMakeup = 2.0;
-    static constexpr double kMaxTailSeconds = 20.0;
 
     void prepare(double sampleRate, int maxBlockSize);
     bool isPrepared() const noexcept { return prepared; }
@@ -84,6 +90,9 @@ public:
 
     void setParams(const EngineParams& newParams) noexcept;
     void handleMidi(const MidiEvent& event) noexcept;
+
+    /** Forgets every MIDI note, so both banks play their knob notes again. */
+    void releaseMidi() noexcept { control.reset(); }
 
     /** In place, one or two channels. */
     void process(float* const* channels, int numChannels, int numSamples) noexcept;
@@ -102,10 +111,19 @@ public:
     const BandBank& cutBank() const noexcept { return cut; }
 
     /**
-        Longest time any part of the processor keeps sounding after the input
-        stops: the slowest bell resonance or the ring decay. Any thread.
+        Upper bound for the time the processor keeps sounding after the input
+        stops: the slowest bell resonance or the ring decay. With MIDI on it
+        covers every note MIDI could play. Any thread.
     */
     static double tailSeconds(const EngineParams& params, double sampleRate) noexcept;
+
+    /**
+        The bands of a bank at the given root, for a display: every band with a
+        gain, lowest slot first. out holds kMaxSlots entries; returns the
+        count. Pure functions of their arguments; any thread.
+    */
+    static int boostBands(const EngineParams& params, double rootHz, double sampleRate, BandView* out) noexcept;
+    static int cutBands(const EngineParams& params, double rootHz, double sampleRate, BandView* out) noexcept;
 
 private:
     void applyPitch(unsigned targets, double rampSeconds) noexcept;

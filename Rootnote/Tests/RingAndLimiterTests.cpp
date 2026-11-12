@@ -126,6 +126,22 @@ TEST_CASE("Limiter: output never exceeds the ceiling")
     }
 }
 
+TEST_CASE("Limiter: recovers within half a second of an absurd spike")
+{
+    const double fs = 48000.0;
+    Limiter limiter;
+    limiter.prepare(fs);
+    double l = 1.0e30, r = -1.0e30;
+    limiter.tick(l, r);
+    CHECK(std::abs(l) <= Limiter::kCeiling && std::abs(r) <= Limiter::kCeiling);
+    for (int i = 0; i < 24000; ++i)
+    {
+        l = r = 0.0;
+        limiter.tick(l, r);
+    }
+    CHECK(limiter.gainReduction() == 1.0);
+}
+
 TEST_CASE("Limiter: a loud steady tone settles at the threshold and recovers after it")
 {
     const double fs = 48000.0;
@@ -255,19 +271,10 @@ TEST_CASE("TransientGate: sustained tones and decaying tails do not retrigger")
         CHECK_MSG(triggers == 1, std::to_string(hz) + " Hz gave " + std::to_string(triggers));
     }
 
-    // Switched on in the middle of a sound: no hit.
+    // Silence and low noise: nothing.
     TransientGate gate;
     gate.prepare(fs);
     int triggers = 0;
-    for (int i = 0; i < 48000; ++i)
-    {
-        gate.tick(0.6 * std::sin(kTwoPi * 60.0 * (i + 5000) / fs));
-        triggers += gate.takeTrigger() ? 1 : 0;
-    }
-    CHECK(triggers == 0);
-
-    // Silence and low noise: nothing.
-    gate.reset();
     Random random(8);
     for (int i = 0; i < 48000; ++i)
     {
@@ -479,8 +486,107 @@ TEST_CASE("ModalRing: follows the boost series and weights, stereo keeps its sid
     CHECK(atThird > 0.2 * atRoot);
     CHECK(atHarmonic < 0.05 * atRoot); // 2.0 is not a membrane mode
     CHECK(atFourth < 0.12 * atRoot);   // Bands = 3 switches the fourth mode off (2.296 leaks from 2.136)
+}
 
-    CHECK(ModalRing::slotForMode(SeriesType::harmonic, 5) == 5);
-    CHECK(seriesRatio(SeriesType::octaves, ModalRing::slotForMode(SeriesType::octaves, 0)) == 1.0 / 16.0);
-    CHECK(seriesRatio(SeriesType::octaves, ModalRing::slotForMode(SeriesType::octaves, 4)) == 1.0);
+TEST_CASE("TransientGate: a hit on the very first sample opens the gate")
+{
+    const double fs = 48000.0;
+    for (int offset : { 0, 1, 100 })
+    {
+        TransientGate gate;
+        gate.prepare(fs);
+        int triggers = 0;
+        for (int i = 0; i < 48000; ++i)
+        {
+            const int n = i - offset;
+            gate.tick(n < 0 ? 0.0 : 0.8 * std::exp(-n / (0.1 * fs)) * std::cos(kTwoPi * 55.0 * n / fs));
+            triggers += gate.takeTrigger() ? 1 : 0;
+        }
+        CHECK_MSG(triggers == 1, "offset " + std::to_string(offset));
+    }
+}
+
+TEST_CASE("ModalRing: a hit with opposite polarity left and right rings on both sides")
+{
+    const double fs = 48000.0;
+    ModalRing ring;
+    ring.prepare(fs);
+    ring.setSettings(singleMode(0.6));
+    ring.setTargetFrequency(55.0, 0.0);
+
+    std::vector<float> left(48000, 0.0f), right(48000, 0.0f);
+    Random random(3);
+    KickSpec kick;
+    kick.hz = 55.0;
+    addKick(left, 1000, kick, fs, random);
+    for (size_t i = 0; i < left.size(); ++i)
+        right[i] = -left[i];
+
+    std::vector<double> outL(left.size()), outR(left.size());
+    ring.process(left.data(), right.data(), outL.data(), outR.data(), static_cast<int>(left.size()));
+    CHECK(ring.hitCount() == 1);
+    CHECK(peakIn(outL, 6000, 12000) > 0.01);
+    bool mirrored = true;
+    for (size_t i = 0; i < outL.size(); ++i)
+        mirrored = mirrored && outR[i] == -outL[i];
+    CHECK(mirrored);
+}
+
+TEST_CASE("ModalRing: the octave series rings on every octave the EQ has")
+{
+    CHECK(ModalRing::modeCount(SeriesType::harmonic) == 16);
+    CHECK(ModalRing::modeCount(SeriesType::octaves) == kOctaveSlots);
+
+    // Root C7, focus five octaves down on C2 with a narrow range: only the 65 Hz octave is left.
+    const double fs = 48000.0;
+    const double root = 2093.005;
+    ModalRing ring;
+    ring.prepare(fs);
+    ModalRing::Settings s;
+    s.shape.series = SeriesType::octaves;
+    s.shape.focusLink = false;
+    s.shape.focusHz = root / 32.0;
+    s.shape.rangeOct = 0.3;
+    s.shape.tiltDbPerOct = 0.0;
+    s.decaySeconds = 1.0;
+    ring.setSettings(s);
+    ring.setTargetFrequency(root, 0.0);
+
+    std::vector<float> in(48000, 0.0f);
+    Random random(4);
+    KickSpec kick;
+    kick.hz = root / 32.0;
+    addKick(in, 1000, kick, fs, random);
+    const std::vector<double> out = runRing(ring, in);
+    CHECK(toneAmplitude(out, 6000, 30000, root / 32.0, fs) > 0.01);
+}
+
+TEST_CASE("ModalRing: a mode that Drop pushes past the top of the band fades out instead of piling up there")
+{
+    // Root C7 at 48 kHz: harmonics 6 to 10 start an octave up, above 0.45 fs,
+    // and once all sat on the guard frequency at full level.
+    const double fs = 48000.0;
+    const double root = 2093.005;
+    const auto guardLevel = [&](int bands) {
+        ModalRing ring;
+        ring.prepare(fs);
+        ModalRing::Settings s;
+        s.shape.bands = bands;
+        s.shape.rangeOct = 6.0;
+        s.shape.tiltDbPerOct = 0.0;
+        s.decaySeconds = 2.0;
+        s.dropSemitones = 12.0;
+        ring.setSettings(s);
+        ring.setTargetFrequency(root, 0.0);
+
+        std::vector<float> in(24000, 0.0f);
+        Random random(5);
+        for (size_t i = 4800; i < 4800 + 2400; ++i)
+            in[i] = static_cast<float>(0.5 * random.bipolar());
+        const std::vector<double> out = runRing(ring, in);
+        // 25 ms .. 40 ms after the hit the drop still holds those harmonics above the guard.
+        return toneAmplitude(out, 4800 + 1200, 4800 + 1920, kNyquistGuard * fs, fs);
+    };
+    const double reference = guardLevel(5); // nothing reaches the guard
+    CHECK(guardLevel(10) < 2.0 * reference + 1.0e-4);
 }

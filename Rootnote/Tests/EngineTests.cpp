@@ -491,3 +491,158 @@ TEST_CASE("Engine: reported tail covers the ringing and follows Ring decay and Q
         CHECK_MSG(peak(out, burst + tailSamples, out.size()) < loud * 1.0e-3, "tail " + std::to_string(tail));
     }
 }
+
+TEST_CASE("Engine: the limiter holds the ceiling and keeps the signal when the EQ output is astronomically loud")
+{
+    // 32 wide bands at +24 dB stack up to hundreds of dB. Blending the limited
+    // signal in as "y + (limited - y)" once cancelled it to zeros and ones.
+    const double fs = 48000.0;
+    EngineParams p;
+    p.bands = 32;
+    p.boostQ = 0.5;
+    p.boostGainDb = 24.0;
+    p.rangeOct = 6.0;
+    p.tiltDbPerOct = 6.0;
+
+    const Signal out = processed(p, sine(196.0, fs, 48000, 0.5), fs);
+    CHECK(allFinite(out));
+    CHECK(peak(out, 0, out.size()) <= Limiter::kCeiling);
+
+    // What comes out is the limited signal at full level, not silence with spikes.
+    size_t zeros = 0;
+    double sumOfSquares = 0.0;
+    for (size_t i = 24000; i < out.size(); ++i)
+    {
+        zeros += out[i] == 0.0f ? 1u : 0u;
+        sumOfSquares += static_cast<double>(out[i]) * static_cast<double>(out[i]);
+    }
+    CHECK(zeros < 10);
+    CHECK(std::sqrt(sumOfSquares / 24000.0) > 0.2);
+}
+
+TEST_CASE("Engine: the reported tail covers slow low bells, notes played by MIDI and bells near Nyquist")
+{
+    const auto decayAtTail = [](const EngineParams& params, double fs, int midiNote) {
+        EngineParams p = params;
+        p.limiter = false;
+        Engine engine;
+        engine.prepare(fs, 512);
+        engine.setParams(p);
+        if (midiNote >= 0)
+            engine.handleMidi({ MidiEvent::Type::noteOn, 1, midiNote });
+
+        const size_t burst = static_cast<size_t>(fs);
+        const size_t tail = static_cast<size_t>(Engine::tailSeconds(p, fs) * fs);
+        Signal signal = noise(burst + tail + 4800, 0.25, 77);
+        std::fill(signal.begin() + static_cast<std::ptrdiff_t>(burst), signal.end(), 0.0f);
+        run(engine, signal, nullptr, 0, signal.size());
+        return gainToDb(peak(signal, burst + tail, signal.size()) / peak(signal, burst - 4800, burst));
+    };
+
+    // E0 at Q 200 and +24 dB rings for well over a minute.
+    EngineParams low;
+    low.midiMode = MidiMode::off;
+    low.boostNote = 16.0;
+    low.boostQ = 200.0;
+    low.boostGainDb = 24.0;
+    low.bands = 1;
+    CHECK(Engine::tailSeconds(low, 48000.0) > 80.0);
+    CHECK(decayAtTail(low, 48000.0, -1) < -60.0);
+
+    // The knob says C6, MIDI plays C1: the tail has to cover the note that sounds.
+    EngineParams played;
+    played.boostNote = 84.0;
+    played.boostQ = 200.0;
+    played.boostGainDb = 24.0;
+    played.bands = 1;
+    CHECK(decayAtTail(played, 48000.0, 24) < -60.0);
+    EngineParams knobOnly = played;
+    knobOnly.midiMode = MidiMode::off;
+    CHECK(Engine::tailSeconds(knobOnly, 48000.0) < 0.1 * Engine::tailSeconds(played, 48000.0));
+
+    // Close to Nyquist the digital bell rings several times longer than the analog one.
+    for (QMode mode : { QMode::constantQ, QMode::constantWidth })
+    {
+        EngineParams high;
+        high.midiMode = MidiMode::off;
+        high.boostNote = 96.0;
+        high.boostQ = 200.0;
+        high.boostGainDb = 24.0;
+        high.bands = 9; // the ninth harmonic of C7 is 18.8 kHz
+        high.rangeOct = 6.0;
+        high.tiltDbPerOct = 0.0;
+        high.qMode = mode;
+        CHECK(decayAtTail(high, 44100.0, -1) < -60.0);
+    }
+
+    // The cut bank follows MIDI on channel 2.
+    EngineParams cutting;
+    cutting.boostGainDb = 0.0;
+    cutting.cutOn = true;
+    cutting.cutNote = 84.0;
+    cutting.cutQ = 60.0;
+    CHECK(Engine::tailSeconds(cutting, 48000.0) > bellRingSeconds(kLowSkipHz, 60.0, 0.0));
+    cutting.midiMode = MidiMode::omniBoost;
+    CHECK(Engine::tailSeconds(cutting, 48000.0) < 0.3);
+}
+
+TEST_CASE("Engine: turning Ring up in the middle of a sound is not a hit, a hit on the first sample is")
+{
+    const double fs = 48000.0;
+    EngineParams p = neutral();
+    Engine engine;
+    engine.prepare(fs, 512);
+    engine.setParams(p);
+
+    // A steady tone that started while Ring was at zero.
+    Signal tone = sine(60.0, fs, 96000, 0.5);
+    run(engine, tone, nullptr, 0, 48000);
+    p.ring = 1.0;
+    engine.setParams(p);
+    run(engine, tone, nullptr, 48000, 96000);
+    CHECK(engine.ringHitCount() == 0);
+
+    // Playback that starts right on a hit.
+    Engine fresh;
+    fresh.prepare(fs, 512);
+    fresh.setParams(p);
+    Signal hit(48000);
+    for (size_t i = 0; i < hit.size(); ++i)
+        hit[i] = static_cast<float>(0.8 * std::exp(-static_cast<double>(i) / (0.1 * fs)) * std::cos(kTwoPi * 55.0 * static_cast<double>(i) / fs));
+    run(fresh, hit, nullptr, 0, hit.size());
+    CHECK(fresh.ringHitCount() == 1);
+}
+
+TEST_CASE("Engine: band lists for a display match the banks")
+{
+    const double fs = 48000.0;
+    EngineParams p;
+    p.cutOn = true;
+    p.cutNote = 26.0;
+    BandView bands[kMaxSlots];
+
+    const double root = noteToHz(30.0);
+    const int boosts = Engine::boostBands(p, root, fs, bands);
+    CHECK(boosts == 8);
+    CHECK_NEAR(bands[0].hz, root, 1.0e-9);
+    CHECK_NEAR(bands[0].gainDb, 9.0, 1.0e-9);
+    CHECK_NEAR(bands[7].hz, 8.0 * root, 1.0e-9);
+    CHECK(bands[7].gainDb > 0.0 && bands[7].gainDb < bands[0].gainDb);
+
+    const int cuts = Engine::cutBands(p, noteToHz(26.0), fs, bands);
+    CHECK(cuts == 6);
+    CHECK_NEAR(bands[0].gainDb, -12.0, 1.0e-9);
+    CHECK_NEAR(bands[1].gainDb, -6.0, 1.0e-9);
+
+    p.cutOn = false;
+    p.boostGainDb = 0.0;
+    CHECK(Engine::boostBands(p, root, fs, bands) == 0);
+    CHECK(Engine::cutBands(p, root, fs, bands) == 0);
+
+    // Octaves: only the octaves inside the usable band.
+    p.boostGainDb = 9.0;
+    p.series = SeriesType::octaves;
+    const int octaves = Engine::boostBands(p, noteToHz(36.0), fs, bands);
+    CHECK(octaves >= 9 && octaves <= 11);
+    CHECK(bands[0].hz > kLowSkipHz);
+}

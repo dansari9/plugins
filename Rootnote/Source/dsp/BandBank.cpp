@@ -83,13 +83,7 @@ void BandBank::setSettings(const Settings& newSettings) noexcept
     settings.rangeOct = std::max(0.01, settings.rangeOct);
     settings.focusHz = std::max(1.0, settings.focusHz);
 
-    shape.series = settings.series;
-    shape.bands = settings.bands;
-    shape.blend = settings.blend;
-    shape.focusLink = settings.focusLink;
-    shape.focusHz = settings.focusHz;
-    shape.rangeOct = settings.rangeOct;
-    shape.tiltDbPerOct = settings.tiltDbPerOct;
+    shape = settings.shape();
 
     const double q = std::log2(settings.q);
     if (snapPending)
