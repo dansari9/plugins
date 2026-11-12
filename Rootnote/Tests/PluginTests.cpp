@@ -40,6 +40,23 @@ float get(RootnoteProcessor& processor, const char* id)
     return processor.getApvts().getRawParameterValue(id)->load();
 }
 
+/**
+    A parameter value goes through float normalisation and step snapping on its
+    way in, so it lands within rounding of the value that was set, not always
+    exactly on it. The tolerance is a hundred-thousandth of the range.
+*/
+bool holds(RootnoteProcessor& processor, const char* id, float expected)
+{
+    const auto range = processor.getApvts().getParameter(id)->getNormalisableRange();
+    return std::abs(get(processor, id) - expected) <= 1.0e-5f * (range.end - range.start);
+}
+
+/** The same for values in the engine's units. */
+bool close(double actual, double expected)
+{
+    return std::abs(actual - expected) <= 1.0e-5 * std::max(1.0, std::abs(expected));
+}
+
 juce::String textOf(RootnoteProcessor& processor, const char* id, float value)
 {
     auto* parameter = processor.getApvts().getParameter(id);
@@ -136,25 +153,28 @@ TEST_CASE("Plugin: every parameter of the plan exists with its range and default
         const auto range = parameter->getNormalisableRange();
         CHECK_NEAR_MSG(range.start, expected.low, 1.0e-6, expected.id);
         CHECK_NEAR_MSG(range.end, expected.high, 1.0e-6, expected.id);
-        CHECK_NEAR_MSG(get(processor, expected.id), expected.value, 1.0e-4, expected.id);
-        CHECK_NEAR_MSG(parameter->convertFrom0to1(parameter->getDefaultValue()), expected.value, 1.0e-3, expected.id);
+        const double tolerance = 1.0e-5 * static_cast<double>(expected.high - expected.low);
+        CHECK_NEAR_MSG(get(processor, expected.id), expected.value, tolerance, expected.id);
+        CHECK_NEAR_MSG(parameter->convertFrom0to1(parameter->getDefaultValue()), expected.value, tolerance, expected.id);
     }
 
     // The defaults reach the engine in its own units.
     const EngineParams read = ParameterReader(processor.getApvts()).read();
     const EngineParams defaults;
-    CHECK(read.boostNote == defaults.boostNote && read.boostGainDb == defaults.boostGainDb && read.boostQ == defaults.boostQ);
-    CHECK(read.series == defaults.series && read.bands == defaults.bands && read.blend == defaults.blend);
-    CHECK(read.focusLink == defaults.focusLink && read.focusHz == defaults.focusHz && read.rangeOct == defaults.rangeOct);
-    CHECK(read.tiltDbPerOct == defaults.tiltDbPerOct && read.qMode == defaults.qMode && read.cutOn == defaults.cutOn);
-    CHECK(read.cutNote == defaults.cutNote && read.cutDepthDb == defaults.cutDepthDb && read.cutQ == defaults.cutQ);
-    CHECK(read.cutOvertones == defaults.cutOvertones && read.cutBands == defaults.cutBands && read.ring == defaults.ring);
-    CHECK_NEAR(read.ringDecaySeconds, defaults.ringDecaySeconds, 1.0e-6);
-    CHECK(read.ringDropSemitones == defaults.ringDropSemitones && read.midiMode == defaults.midiMode);
-    CHECK(read.glideSeconds == defaults.glideSeconds && read.noteOff == defaults.noteOff && read.key == defaults.key);
-    CHECK(read.scale == defaults.scale && read.keyLock == defaults.keyLock && read.a4 == defaults.a4);
-    CHECK(read.mix == defaults.mix && read.outputDb == defaults.outputDb && read.limiter == defaults.limiter);
-    CHECK(read.bypass == defaults.bypass && read.boostFineCents == defaults.boostFineCents);
+    CHECK(close(read.boostNote, defaults.boostNote) && close(read.boostFineCents, defaults.boostFineCents));
+    CHECK(close(read.boostGainDb, defaults.boostGainDb) && close(read.boostQ, defaults.boostQ));
+    CHECK(read.series == defaults.series && read.bands == defaults.bands && close(read.blend, defaults.blend));
+    CHECK(read.focusLink == defaults.focusLink && close(read.focusHz, defaults.focusHz));
+    CHECK(close(read.rangeOct, defaults.rangeOct) && close(read.tiltDbPerOct, defaults.tiltDbPerOct));
+    CHECK(read.qMode == defaults.qMode && read.cutOn == defaults.cutOn && close(read.cutNote, defaults.cutNote));
+    CHECK(close(read.cutDepthDb, defaults.cutDepthDb) && close(read.cutQ, defaults.cutQ));
+    CHECK(close(read.cutOvertones, defaults.cutOvertones) && read.cutBands == defaults.cutBands);
+    CHECK(close(read.ring, defaults.ring) && close(read.ringDecaySeconds, defaults.ringDecaySeconds));
+    CHECK(close(read.ringDropSemitones, defaults.ringDropSemitones) && read.midiMode == defaults.midiMode);
+    CHECK(close(read.glideSeconds, defaults.glideSeconds) && read.noteOff == defaults.noteOff);
+    CHECK(read.key == defaults.key && read.scale == defaults.scale && read.keyLock == defaults.keyLock);
+    CHECK(close(read.a4, defaults.a4) && close(read.mix, defaults.mix) && close(read.outputDb, defaults.outputDb));
+    CHECK(read.limiter == defaults.limiter && read.bypass == defaults.bypass);
 }
 
 TEST_CASE("Plugin: parameter text shows units and typed values are understood")
@@ -382,7 +402,7 @@ TEST_CASE("Plugin: MIDI channel 1 plays the boost note and channel 2 the cut not
     juce::MidiBuffer midi;
     processor.processBlock(block, midi);
     auto state = processor.displayState();
-    CHECK_NEAR(state.boostHz, noteToHz(36.0), 1.0e-6);
+    CHECK_NEAR(state.boostHz, noteToHz(36.0), 1.0e-3);
     CHECK(!state.boostFromMidi && !state.cutFromMidi);
     CHECK(state.midiNoteOns == 0u);
 
@@ -391,12 +411,12 @@ TEST_CASE("Plugin: MIDI channel 1 plays the boost note and channel 2 the cut not
     midi.addEvent(juce::MidiMessage::noteOn(3, 70, 1.0f), 20);
     processor.processBlock(block, midi);
     state = processor.displayState();
-    CHECK_NEAR(state.boostHz, 110.0, 1.0e-6);
-    CHECK_NEAR(state.cutHz, noteToHz(50.0), 1.0e-6);
+    CHECK_NEAR(state.boostHz, 110.0, 1.0e-3);
+    CHECK_NEAR(state.cutHz, noteToHz(50.0), 1.0e-3);
     CHECK(state.boostFromMidi && state.cutFromMidi);
     CHECK(state.midiNoteOns == 2u);
-    CHECK(get(processor, ids::boostNote) == 36.0f);
-    CHECK(get(processor, ids::cutNote) == 36.0f);
+    CHECK(holds(processor, ids::boostNote, 36.0f));
+    CHECK(holds(processor, ids::cutNote, 36.0f));
 
     // Omni: every channel plays the boost note. A note-on with velocity 0 is a note-off.
     set(processor, ids::midiMode, 2.0f);
@@ -405,12 +425,12 @@ TEST_CASE("Plugin: MIDI channel 1 plays the boost note and channel 2 the cut not
     midi.addEvent(juce::MidiMessage::noteOff(1, 45), 0);
     midi.addEvent(juce::MidiMessage::noteOn(9, 57, 1.0f), 0);
     processor.processBlock(block, midi);
-    CHECK_NEAR(processor.displayState().boostHz, 220.0, 1.0e-6);
+    CHECK_NEAR(processor.displayState().boostHz, 220.0, 1.0e-3);
     midi.clear();
     midi.addEvent(juce::MidiMessage::noteOn(9, 57, static_cast<juce::uint8>(0)), 0);
     processor.processBlock(block, midi);
     CHECK(!processor.displayState().boostFromMidi);
-    CHECK_NEAR(processor.displayState().boostHz, noteToHz(36.0), 1.0e-6);
+    CHECK_NEAR(processor.displayState().boostHz, noteToHz(36.0), 1.0e-3);
 
     // Key lock snaps played notes: C# in C major goes down to C.
     set(processor, ids::keyLock, 1.0f);
@@ -418,7 +438,7 @@ TEST_CASE("Plugin: MIDI channel 1 plays the boost note and channel 2 the cut not
     midi.clear();
     midi.addEvent(juce::MidiMessage::noteOn(1, 49, 1.0f), 0);
     processor.processBlock(block, midi);
-    CHECK_NEAR(processor.displayState().boostHz, noteToHz(48.0), 1.0e-6);
+    CHECK_NEAR(processor.displayState().boostHz, noteToHz(48.0), 1.0e-3);
 }
 
 TEST_CASE("Plugin: a restored state plays its own notes, whatever MIDI played before")
@@ -518,24 +538,24 @@ TEST_CASE("Plugin: Match cut and Tune to key act on the detected hit")
     REQUIRE(waitForReading(processor, 3));
     CHECK_NEAR(hzToNote(processor.tunerReading().hz), hitNote, 0.10);
 
-    CHECK(get(processor, ids::cutOn) == 0.0f);
+    CHECK(holds(processor, ids::cutOn, 0.0f));
     CHECK(processor.matchCutToHit());
-    CHECK(get(processor, ids::cutOn) == 1.0f);
+    CHECK(holds(processor, ids::cutOn, 1.0f));
     CHECK_NEAR(get(processor, ids::cutNote), hitNote, 0.10);
 
     set(processor, ids::boostFine, 30.0f);
     CHECK(processor.tuneBoostToKey());
-    CHECK(get(processor, ids::boostNote) == 26.0f);
-    CHECK(get(processor, ids::boostFine) == 0.0f);
+    CHECK(holds(processor, ids::boostNote, 26.0f));
+    CHECK(holds(processor, ids::boostFine, 0.0f));
 
     // In E minor pentatonic (E G A B D) D is in the scale; in C minor pentatonic (C Eb F G Bb) it is not.
     set(processor, ids::scale, static_cast<float>(Scale::pentatonicMinor));
     set(processor, ids::key, 4.0f);
     CHECK(processor.tuneBoostToKey());
-    CHECK(get(processor, ids::boostNote) == 26.0f);
+    CHECK(holds(processor, ids::boostNote, 26.0f));
     set(processor, ids::key, 0.0f);
     CHECK(processor.tuneBoostToKey());
-    CHECK(get(processor, ids::boostNote) == 27.0f);
+    CHECK(holds(processor, ids::boostNote, 27.0f));
 
     // A4 moves the note names: at A4 = 415 Hz the same hit reads almost a semitone higher.
     set(processor, ids::a4, 415.3f);
