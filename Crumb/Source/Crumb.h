@@ -22,7 +22,9 @@ struct Scope
     static constexpr int size = 1 << 14; // 85 ms at 192 kHz: a 20 ms window plus room to find a trigger
     std::array<std::atomic<float>, size> in {}, out {};
     std::atomic<uint32_t> write { 0 };
-    std::atomic<float> peak[2] {}; // output meter, taken (exchanged with 0) by the editor
+    // Output meter feed, taken (exchanged with 0) by the editor: peak, sum of squares and the frames it covers.
+    std::atomic<float> peak[2] {}, energy[2] {};
+    std::atomic<uint32_t> frames { 0 };
     void push(uint32_t at, float i, float o) { in[(size_t) (at & (size - 1))].store(i, std::memory_order_relaxed), out[(size_t) (at & (size - 1))].store(o, std::memory_order_relaxed); }
     void read(float* i, float* o, int n) const // the newest n <= size pairs, oldest first
     {
@@ -55,7 +57,7 @@ public:
 
     juce::AudioProcessorEditor* createEditor() override;
     bool hasEditor() const override { return true; }
-    const juce::String getName() const override { return "Crumb"; }
+    const juce::String getName() const override { return JucePlugin_Name; }
     bool acceptsMidi() const override { return false; }
     bool producesMidi() const override { return false; }
     double getTailLengthSeconds() const override { return 0.0; }

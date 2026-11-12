@@ -6,7 +6,6 @@ if(APPLE)
 endif()
 
 # Bump on every build that is handed out: Logic caches Audio Units by version.
-# Display name may become lower-case "crumb" in the UI; PLUGIN_NAME/PRODUCT_NAME stay "Crumb".
 project(Crumb VERSION 0.1.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
@@ -28,15 +27,16 @@ endif()
 
 # FROZEN IDENTIFIERS - never change them, or hosts lose the plug-in and saved sessions:
 # AU aufx / PLUGIN_CODE Crmb / PLUGIN_MANUFACTURER_CODE Dwks / BUNDLE_ID com.dripworks.crumb.
-# PLUGIN_NAME / PRODUCT_NAME "Crumb" are frozen too (bundle file names). COMPANY_NAME is display-only (Logic menu group, VST3 vendor) and may change; the codes above may not.
+# PLUGIN_NAME / PRODUCT_NAME ("crumb", also the bundle file names) and COMPANY_NAME (Logic menu group, VST3 vendor) are
+# display-only and may change before release; the codes above may not.
 juce_add_plugin(Crumb
     COMPANY_NAME "daveydidit"
     COMPANY_COPYRIGHT "daveydidit"
     BUNDLE_ID com.dripworks.crumb
     PLUGIN_MANUFACTURER_CODE Dwks
     PLUGIN_CODE Crmb
-    PLUGIN_NAME "Crumb"
-    PRODUCT_NAME "Crumb"
+    PLUGIN_NAME "crumb"
+    PRODUCT_NAME "crumb"
     DESCRIPTION "Vintage-sampler bit crusher"
     IS_SYNTH FALSE
     NEEDS_MIDI_INPUT FALSE

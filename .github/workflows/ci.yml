@@ -119,7 +119,7 @@ jobs:
           curl -sL -o pluginval.zip https://github.com/Tracktion/pluginval/releases/latest/download/pluginval_Linux.zip
           unzip -q pluginval.zip
           xvfb-run -a ./pluginval --strictness-level 10 --validate-in-process \
-            --validate Crumb/build/Crumb_artefacts/Release/VST3/Crumb.vst3
+            --validate Crumb/build/Crumb_artefacts/Release/VST3/crumb.vst3
 
       - name: Package (tar keeps the executable bit)
         run: tar -C Crumb/build/Crumb_artefacts/Release -czf crumb-linux.tar.gz VST3 Standalone
@@ -146,10 +146,10 @@ jobs:
 
       - name: Ad-hoc sign and verify AU and VST3
         run: |
-          codesign --force --sign - --timestamp=none Crumb/build/Crumb_artefacts/Release/AU/Crumb.component
-          codesign --verify --deep --strict --verbose=2 Crumb/build/Crumb_artefacts/Release/AU/Crumb.component
-          codesign --force --sign - --timestamp=none Crumb/build/Crumb_artefacts/Release/VST3/Crumb.vst3
-          codesign --verify --deep --strict --verbose=2 Crumb/build/Crumb_artefacts/Release/VST3/Crumb.vst3
+          codesign --force --sign - --timestamp=none Crumb/build/Crumb_artefacts/Release/AU/crumb.component
+          codesign --verify --deep --strict --verbose=2 Crumb/build/Crumb_artefacts/Release/AU/crumb.component
+          codesign --force --sign - --timestamp=none Crumb/build/Crumb_artefacts/Release/VST3/crumb.vst3
+          codesign --verify --deep --strict --verbose=2 Crumb/build/Crumb_artefacts/Release/VST3/crumb.vst3
 
       - name: Unit tests
         run: |
@@ -159,20 +159,20 @@ jobs:
 
       - name: Universal binary check
         run: |
-          lipo -archs Crumb/build/Crumb_artefacts/Release/AU/Crumb.component/Contents/MacOS/Crumb | tee /dev/stderr | grep -q "x86_64 arm64"
-          lipo -archs Crumb/build/Crumb_artefacts/Release/VST3/Crumb.vst3/Contents/MacOS/Crumb | grep -q "x86_64 arm64"
+          lipo -archs Crumb/build/Crumb_artefacts/Release/AU/crumb.component/Contents/MacOS/crumb | tee /dev/stderr | grep -q "x86_64 arm64"
+          lipo -archs Crumb/build/Crumb_artefacts/Release/VST3/crumb.vst3/Contents/MacOS/crumb | grep -q "x86_64 arm64"
 
       - name: auval
         run: |
           mkdir -p ~/Library/Audio/Plug-Ins/Components
-          cp -R Crumb/build/Crumb_artefacts/Release/AU/Crumb.component ~/Library/Audio/Plug-Ins/Components/
+          cp -R Crumb/build/Crumb_artefacts/Release/AU/crumb.component ~/Library/Audio/Plug-Ins/Components/
           killall -9 AudioComponentRegistrar 2>/dev/null || true
           sleep 3
           auval -a | grep -i Dwks || true
           auval -v aufx Crmb Dwks
 
       - name: Package (zip keeps bundle permissions)
-        run: cd Crumb/build/Crumb_artefacts/Release && ditto -c -k --keepParent AU/Crumb.component "$GITHUB_WORKSPACE/Crumb-AU-macos.zip" && ditto -c -k --keepParent VST3/Crumb.vst3 "$GITHUB_WORKSPACE/Crumb-VST3-macos.zip"
+        run: cd Crumb/build/Crumb_artefacts/Release && ditto -c -k --keepParent AU/crumb.component "$GITHUB_WORKSPACE/Crumb-AU-macos.zip" && ditto -c -k --keepParent VST3/crumb.vst3 "$GITHUB_WORKSPACE/Crumb-VST3-macos.zip"
 
       - name: Upload AU + VST3
         uses: actions/upload-artifact@v4

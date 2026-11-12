@@ -1,7 +1,6 @@
-// crumb editor: design option 5 (crusher-design/option_5.html is the spec). One 960 x 540 plate in mockup pixels,
-// scaled as a whole (50-200 %, fixed aspect). Theme and widget drawing follow Rootnote's Faceplate (ui/Theme, ui/Widgets),
-// interaction follows Snap: double-click a knob = default, click the value under it to type. Every key is bound to its
-// parameter through an attachment, so host automation, presets, A/B and state loads always show on the keys.
+// crumb editor: design option 7b (crusher-design/v3/option_7b.html is the spec, coordinates in its 1024 x 576 px).
+// One plate, scaled as a whole (50-200 %, fixed aspect). Knobs: drag, double-click = default, click the value to type.
+// Every key shows its parameter (attachments), so automation, presets, A/B and state loads always show on the keys.
 #include "BinaryData.h"
 #include "Crumb.h"
 
@@ -9,14 +8,15 @@ using namespace juce;
 
 namespace
 {
-const Colour face { 0xffd9d8d2 }, key { 0xffecebe6 }, darkKey { 0xff2a2a27 }, ink { 0xff1a1a18 }, sub { 0xff6e6d68 },
-    orange { 0xffff5a1f }, blue { 0xff2f6bff }, grey { 0xff9a9993 }, white { 0xfff6f5f0 }, screen { 0xff0f100f },
-    screenText { 0xffa5a59e }, legend { 0xff7a7a74 }, axis { 0xff6b6b66 }, lcd { 0xffc9c8c1 }, panel { 0xffcdccc5 },
-    ledOff { 0xffb9b8b1 }, trace { 0xff5a5a55 };
-const String dot = String::fromUTF8(" \xc2\xb7 "), arrow = String::fromUTF8(" \xe2\x86\x92 ");
+const Colour face { 0xffd9d8d2 }, key { 0xffecebe6 }, darkKey { 0xff2a2a27 }, ink { 0xff1a1a18 }, muted { 0xff7a7a74 },
+    muted2 { 0xff9a9993 }, orange { 0xffff5a1f }, blue { 0xff2f6bff }, white { 0xfff6f5f0 }, screen { 0xff0f100f },
+    screenText { 0xffa5a59e }, axis { 0xff6b6b66 }, pill { 0xffc9c8c1 }, panel { 0xffcdccc5 }, filterPanel { 0xffc5c4bd },
+    line { 0xffb0afa8 }, railDot { 0xff5a5a56 }, trace { 0xff5a5a55 }, tick { 0xffc8c7c0 }, numeral { 0xff8a8a84 }, ledOff { 0xff6a6a64 };
+const String dot = String::fromUTF8(" \xc2\xb7 ");
+String minus(const String& s) { return s.replace("-", String::fromUTF8("\xe2\x88\x92")); } // typographic minus, as the spec
 
-// Geist Mono at a CSS font size in px with CSS letter-spacing in em (as Rootnote's ui::mono).
-Font mono(float px, int weight = 0, float trackingEm = 0.02f)
+// Geist Mono at a CSS font size in px with CSS letter-spacing in em. Weights: 0 regular, 1 medium (500), 2 semibold (600).
+Font mono(float px, float trackingEm = 0.0f, int weight = 0)
 {
     static const Typeface::Ptr faces[] = {
         Typeface::createSystemTypefaceFor(BinaryData::GeistMonoRegular_ttf, BinaryData::GeistMonoRegular_ttfSize),
@@ -27,67 +27,82 @@ Font mono(float px, int weight = 0, float trackingEm = 0.02f)
     font.setExtraKerningFactor(trackingEm * font.getHeightToPointsFactor());
     return font;
 }
-Font label() { return mono(9, 0, 0.08f); } // the small uppercase labels
-
-// Text on a baseline; returns the x after it. Right-aligned when right is set (x is then the right edge).
-float text(Graphics& g, const String& s, const Font& f, Colour c, float x, float baseline, bool right = false)
+Font label() { return mono(9, 0.08f); }
+// Where the spec's renderer (Chrome) puts the baseline of a px-size Geist Mono line: in a line box of the given height,
+// or (centred) a block of normal line height centred in a box. Fitted to Chrome: rounded ascent .862 em, descent .24 em.
+float baseline(float top, float lineHeight, float px, bool centred = false)
 {
-    const float w = GlyphArrangement::getStringWidth(f, s);
-    g.setFont(f), g.setColour(c), g.drawSingleLineText(s, roundToInt(right ? x - w : x), roundToInt(baseline));
-    return x + w;
+    const float a = std::round(0.862f * px), d = std::round(0.24f * px), lead = (lineHeight - a - d) / 2;
+    return top + (centred ? std::ceil(lead) : std::floor(lead)) + a;
 }
 
-// A key cap as in Rootnote: drop line, darker bottom edge. dark/orange keys fill when on, led keys light their LED.
+// Text on a float baseline at x; align -1 left, 0 centred on x, 1 right-aligned at x. Returns its width.
+float print(Graphics& g, const String& s, const Font& f, Colour c, float x, float base, int align = -1)
+{
+    const float w = GlyphArrangement::getStringWidth(f, s);
+    GlyphArrangement a;
+    a.addLineOfText(f, s, x - w * (float) (align + 1) / 2, base);
+    g.setColour(c), a.draw(g);
+    return w;
+}
+
+// Key cap: 1 px drop line, darker 2 px bottom edge, radius 8. Dark / orange keys fill when on, an LED key lights its LED.
 struct Key : Button
 {
-    enum Kind { plain, dark, orangeFill, led } kind;
-    int arrowDir = 0; // -1 / +1: a step triangle instead of text
-    Key(const String& t, Kind k, const String& id = {}) : Button(t), kind(k) { setComponentID(id.isEmpty() ? t : id); }
+    enum Kind { dark, orangeFill, led } kind;
+    Key(const String& t, Kind k = dark, const String& id = {}) : Button(t), kind(k) { setComponentID(id.isEmpty() ? t : id); }
     void paintButton(Graphics& g, bool over, bool down) override
     {
-        const auto box = getLocalBounds().toFloat().withTrimmedBottom(1);
-        const bool on = getToggleState() && kind != plain && kind != led;
-        Colour fill = on ? (kind == dark ? darkKey : orange) : key, textColour = on ? white : ink;
+        const auto box = getLocalBounds().toFloat().withTrimmedBottom(1); // the component is one px taller: the drop line
+        const bool on = getToggleState() && kind != led;
+        Colour fill = on ? (kind == dark ? darkKey : orange) : key;
         fill = down ? fill.interpolatedWith(Colours::black, 0.08f) : over ? fill.interpolatedWith(on ? Colours::white : Colours::black, 0.03f) : fill;
         g.setColour(Colours::black.withAlpha(0.18f)), g.fillRoundedRectangle(box.translated(0, 1), 8);
         g.setColour(fill.interpolatedWith(Colours::black, 0.06f)), g.fillRoundedRectangle(box, 8);
         g.setColour(fill), g.fillRoundedRectangle(box.withTrimmedBottom(2), 8);
-        g.setColour(textColour);
-        if (arrowDir != 0)
-        {
-            const auto c = box.getCentre();
-            const float s = (float) arrowDir;
-            Path p;
-            p.addTriangle(c.x - 2.5f * s, c.y - 3, c.x - 2.5f * s, c.y + 3, c.x + 2.5f * s, c.y);
-            g.fillPath(p);
-        }
-        g.setFont(mono(10, 0, 0.06f)), g.drawText(getButtonText(), box.withTrimmedBottom(1), Justification::centred, false);
-        if (kind == led)
-            g.setColour(getToggleState() ? orange : ledOff), g.fillEllipse(box.getRight() - 11, box.getY() + 3, 5, 5);
+        print(g, getButtonText(), mono(10, 0.08f), on ? (kind == dark ? white : Colours::white) : ink, box.getCentreX(), baseline(0, box.getHeight(), 10, true), 0);
+        if (kind == led && getToggleState())
+            g.setColour(orange), g.fillEllipse(box.getRight() - 11, 5, 5, 5);
     }
 };
 
-// Encoder: light ring with a soft shadow, coloured cap, ink dot (Snap/Rootnote); the slider's own text box is the value.
+// Knob: 56 px light ring with a soft shadow, 32 px coloured cap, ink dot; the slider's text box is the value.
 struct Look : LookAndFeel_V4
 {
-    Font getLabelFont(Label&) override { return mono(12); }
+    Font getLabelFont(Label&) override { return mono(11, 0.02f); }
+    void drawLabel(Graphics& g, Label& l) override // the value under a knob, on the spec's baseline in its 16 px row
+    {
+        if (!l.isBeingEdited())
+            print(g, l.getText(), getLabelFont(l), l.findColour(Label::textColourId), (float) l.getWidth() / 2, baseline(0, 16, 11), 0);
+    }
     void drawRotarySlider(Graphics& g, int x, int y, int w, int, float pos, float a0, float a1, Slider& s) override
     {
-        const auto r = Rectangle<float>((float) x + (float) w * 0.5f - 26, (float) y + 2, 52, 52);
-        g.setColour(Colours::black.withAlpha(0.06f)), g.fillEllipse(r.translated(0, 4).expanded(1.5f));
+        const auto r = Rectangle<float>(56, 56).withCentre({ (float) x + (float) w * 0.5f, (float) y + 28 });
+        Path ring;
+        ring.addEllipse(r);
+        DropShadow(Colours::black.withAlpha(0.08f), 10, { 0, 6 }).drawForPath(g, ring);
         g.setColour(Colours::black.withAlpha(0.12f)), g.fillEllipse(r.translated(0, 3));
-        g.setColour(key), g.fillEllipse(r);
-        g.setColour(s.findColour(Slider::thumbColourId)), g.fillEllipse(r.reduced(10.4f));
-        g.setColour(ink), g.fillEllipse(Rectangle<float>(8, 8).withCentre(r.getCentre().getPointOnCircumference(18.7f, a0 + pos * (a1 - a0))));
+        g.setColour(key), g.fillPath(ring);
+        g.setColour(s.findColour(Slider::thumbColourId)), g.fillEllipse(r.reduced(12));
+        g.setColour(ink), g.fillEllipse(Rectangle<float>(8, 8).withCentre(r.getCentre().getPointOnCircumference(20.16f, a0 + pos * (a1 - a0))));
     }
 };
+
+// The module row. Post order: in | pre dock | quantize | approx | resample | images | filter | mix. Filter order pre swaps
+// the filter and the empty dock. Children sit at offsets from their module's left edge; rows are the spec's centrelines.
+enum { In, Dock, Quant, Approx, Resample, Images, Filter, Mix };
+constexpr float MY = 296, top = MY + 68, bottom = MY + 180;
+constexpr float widths[] = { 96, 40, 152, 96, 128, 96, 208, 104 };
+struct KnobSpec { const char* id; const char* name; int module; float dx, cy, labelWidth; Colour cap; };
+const KnobSpec knobSpecs[] = { { "preamp", "preamp", In, 48, top, 88, muted2 },        { "dither", "dither", In, 48, bottom, 88, muted2 },
+                               { "approxDev", "deviate", Approx, 48, bottom, 88, blue }, { "rate", "freq", Resample, 64, top, 120, orange },
+                               { "jitter", "jitter", Resample, 64, bottom, 120, blue },  { "imagesShift", "shift", Images, 48, bottom, 88, blue },
+                               { "cutoff", "cutoff", Filter, 60, bottom, 80, muted2 },   { "reso", "reso", Filter, 148, bottom, 80, muted2 },
+                               { "mix", "fx", Mix, 52, top, 96, white },                  { "output", "output", Mix, 52, bottom, 96, white } };
 
 struct Editor : AudioProcessorEditor, Timer
 {
-    static constexpr int W = 960, H = 540;
-    static constexpr const char* knobIds[] = { "rate", "jitter", "approxDev", "imagesShift", "preamp", "dither", "cutoff", "reso", "mix", "output" };
-    static constexpr const char* knobNames[] = { "FREQ", "JITTER", "DEVIATE", "SHIFT", "PREAMP", "DITHER", "CUTOFF", "RESO", "FX", "OUTPUT" };
-
+    static constexpr int W = 1024, H = 576;
     struct Plate : Component
     {
         Editor& e;
@@ -99,17 +114,18 @@ struct Editor : AudioProcessorEditor, Timer
     Look look;
     Plate plate { *this };
     Slider knobs[10];
-    Key prev { "", Key::plain, "prev" }, next { "", Key::plain, "next" }, save { "save", Key::plain }, slotA { "A", Key::dark }, slotB { "B", Key::dark };
-    Key minus { String::fromUTF8("\xe2\x88\x92"), Key::plain, "minus" }, plus { "+", Key::plain, "plus" };
-    Key dcShift { "dc shift", Key::led, "dcShift" }, approx { "approx filter", Key::orangeFill, "approxOn" }, images { "images filter", Key::led, "imagesOn" };
-    Key types[5] { { "off", Key::dark }, { "lp", Key::dark }, { "bp", Key::dark }, { "hp", Key::dark }, { "br", Key::dark } };
-    Key pre { "pre", Key::dark }, post { "post", Key::dark };
+    Key prev { String::fromUTF8("\xe2\x97\x80"), Key::dark, "prev" }, next { String::fromUTF8("\xe2\x96\xb6"), Key::dark, "next" }, save { "save" },
+        slotA { "A" }, slotB { "B" };
+    Key minusKey { String::fromUTF8("\xe2\x88\x92"), Key::dark, "minus" }, plus { "+", Key::dark, "plus" }, dcShift { "dc shift", Key::dark, "dcShift" },
+        approx { "approx", Key::orangeFill, "approxOn" }, images { "images", Key::led, "imagesOn" };
+    Key pre { "pre" }, post { "post" }, types[5] { { "off" }, { "lp" }, { "bp" }, { "hp" }, { "br" } };
     // Attachments after the components they drive, so they are destroyed first.
     std::unique_ptr<AudioProcessorValueTreeState::SliderAttachment> knobAtt[10];
-    std::unique_ptr<AudioProcessorValueTreeState::ButtonAttachment> toggleAtt[3];
-    std::unique_ptr<ParameterAttachment> typeAtt, orderAtt, bitsAtt;
+    std::vector<std::unique_ptr<ParameterAttachment>> keyAtt;
+    ParameterAttachment* bitsAtt = nullptr;
     std::vector<float> in = std::vector<float>(crumb::Scope::size), out = std::vector<float>(crumb::Scope::size);
-    float meter[2] {}, scopePeak = 0.1f;
+    float scopePeak = 0.1f, needle[2] {}, speed[2] {};
+    double clipUntil[2] {};
     String shown; // the parameter text on the plate: repaint all when it changes
 
     explicit Editor(CrumbProcessor& p) : AudioProcessorEditor(p), proc(p)
@@ -117,54 +133,46 @@ struct Editor : AudioProcessorEditor, Timer
         setLookAndFeel(&look);
         addAndMakeVisible(plate);
         plate.setBounds(0, 0, W, H);
-        const Colour caps[] = { orange, blue, blue, blue, grey, grey, grey, grey, white, white };
         for (int i = 0; i < 10; ++i)
         {
             auto& k = knobs[i];
-            k.setSliderStyle(Slider::RotaryVerticalDrag), k.setTextBoxStyle(Slider::TextBoxBelow, false, 86, 18);
+            const auto& s = knobSpecs[i];
+            k.setSliderStyle(Slider::RotaryVerticalDrag), k.setTextBoxStyle(Slider::TextBoxBelow, false, (int) s.labelWidth, 16);
             k.setRotaryParameters(MathConstants<float>::pi * 1.25f, MathConstants<float>::pi * 2.75f, true);
-            k.setColour(Slider::thumbColourId, caps[i]), k.setColour(Slider::textBoxTextColourId, ink);
+            k.setColour(Slider::thumbColourId, s.cap), k.setColour(Slider::textBoxTextColourId, ink), k.setColour(Slider::textBoxBackgroundColourId, {});
             k.setColour(Slider::textBoxOutlineColourId, {}), k.setColour(Slider::textBoxHighlightColourId, orange.withAlpha(0.3f));
-            k.setColour(TextEditor::focusedOutlineColourId, {}), k.setTitle(knobNames[i]), k.setComponentID(knobIds[i]);
-            knobAtt[i] = std::make_unique<AudioProcessorValueTreeState::SliderAttachment>(p.apvts, knobIds[i], k);
-            auto* param = p.apvts.getParameter(knobIds[i]);
+            k.setColour(TextEditor::focusedOutlineColourId, {}), k.setTitle(s.name), k.setComponentID(s.id);
+            knobAtt[i] = std::make_unique<AudioProcessorValueTreeState::SliderAttachment>(p.apvts, s.id, k);
+            k.textFromValueFunction = [f = k.textFromValueFunction](double v) { return minus(f(v)); };
+            k.updateText();
+            auto* param = p.apvts.getParameter(s.id);
             k.setDoubleClickReturnValue(true, param->convertFrom0to1(param->getDefaultValue()));
-            place(k, 609.0f + 86.0f * (float) (i % 4), 64.0f + 126.0f * (float) (i / 4), 86, 80);
+            plate.addAndMakeVisible(k);
         }
-        prev.arrowDir = -1, next.arrowDir = 1;
-        place(prev, 556, 9, 26, 26), place(next, 586, 9, 26, 26), place(save, 620, 9, 44, 26), place(slotA, 670, 9, 26, 26), place(slotB, 700, 9, 26, 26);
         prev.onClick = [this] { proc.stepPreset(-1); };
         next.onClick = [this] { proc.stepPreset(1); };
         save.onClick = [this] { proc.saveUserPreset(); };
         slotA.onClick = [this] { proc.selectAb(0); };
         slotB.onClick = [this] { proc.selectAb(1); };
-        place(minus, 24, 328, 26, 40), place(plus, 148, 328, 26, 40);
-        place(dcShift, 180, 328, 100, 40), place(approx, 300, 328, 138, 40), place(images, 446, 328, 138, 40);
-        Key* toggles[] = { &dcShift, &approx, &images };
-        for (int i = 0; i < 3; ++i)
-        {
-            toggles[i]->setClickingTogglesState(true);
-            toggleAtt[i] = std::make_unique<AudioProcessorValueTreeState::ButtonAttachment>(p.apvts, toggles[i]->getComponentID(), *toggles[i]);
-        }
-        // Radio keys: the attachment sets every key from the parameter; a click only asks for the value (no local toggling).
-        auto radio = [&](const char* id, std::vector<Key*> keys) {
+        place(prev, 552, 24, 24, 24), place(next, 584, 24, 24, 24), place(save, 616, 24, 48, 24), place(slotA, 672, 24, 24, 24), place(slotB, 704, 24, 24, 24);
+        // Keys never toggle themselves: the attachment sets them from the parameter, a click only asks for a value.
+        auto bind = [&](const char* id, std::vector<Key*> keys) {
             auto att = std::make_unique<ParameterAttachment>(*p.apvts.getParameter(id), [keys](float v) {
                 for (size_t k = 0; k < keys.size(); ++k)
-                    keys[k]->setToggleState((int) k == roundToInt(v), dontSendNotification);
+                    keys[k]->setToggleState(keys.size() == 1 ? v > 0.5f : (int) k == roundToInt(v), dontSendNotification);
             });
             for (size_t k = 0; k < keys.size(); ++k)
-                keys[k]->onClick = [a = att.get(), k] { a->setValueAsCompleteGesture((float) k); };
+                keys[k]->onClick = [a = att.get(), k, single = keys.size() == 1, key = keys[k]] { a->setValueAsCompleteGesture(single ? (key->getToggleState() ? 0.0f : 1.0f) : (float) k); };
             att->sendInitialUpdate();
-            return att;
+            keyAtt.push_back(std::move(att));
         };
-        for (int k = 0; k < 5; ++k)
-            place(types[k], 24 + 60.8f * (float) k, 400, 56.8f, 36);
-        place(pre, 334, 400, 120, 36), place(post, 464, 400, 120, 36);
-        typeAtt = radio("fType", { &types[0], &types[1], &types[2], &types[3], &types[4] });
-        orderAtt = radio("fOrder", { &pre, &post });
-        bitsAtt = std::make_unique<ParameterAttachment>(*p.apvts.getParameter("bits"), [this](float) { plate.repaint(); });
-        minus.onClick = [this] { bitsAtt->setValueAsCompleteGesture((float) jmax(0, bits() - 1)); };
+        bind("dcShift", { &dcShift }), bind("approxOn", { &approx }), bind("imagesOn", { &images });
+        bind("fType", { &types[0], &types[1], &types[2], &types[3], &types[4] }), bind("fOrder", { &pre, &post });
+        keyAtt.push_back(std::make_unique<ParameterAttachment>(*p.apvts.getParameter("bits"), [this](float) { plate.repaint(); }));
+        bitsAtt = keyAtt.back().get();
+        minusKey.onClick = [this] { bitsAtt->setValueAsCompleteGesture((float) jmax(0, bits() - 1)); };
         plus.onClick = [this] { bitsAtt->setValueAsCompleteGesture((float) jmin(24, bits() + 1)); };
+        layoutModules();
 
         const int stored = proc.editorWidth; // read first: setting the limits already resizes
         setResizable(true, false);
@@ -182,116 +190,188 @@ struct Editor : AudioProcessorEditor, Timer
         plate.addAndMakeVisible(c);
         c.setBounds(Rectangle<float>(x, y, w, h + (dynamic_cast<Key*>(&c) ? 1.0f : 0.0f)).toNearestInt()); // keys: + drop line
     }
+    bool preOrder() const { return value("fOrder") < 0.5f; }
+    std::array<int, 8> order() const { return { In, preOrder() ? Filter : Dock, Quant, Approx, Resample, Images, preOrder() ? Dock : Filter, Mix }; }
+    std::array<float, 8> moduleX() const // left edge of each module; 8 px gutters from the 24 px margin
+    {
+        std::array<float, 8> x {};
+        float at = 24;
+        for (auto m : order())
+            x[(size_t) m] = at, at += widths[m] + 8;
+        return x;
+    }
+    void layoutModules()
+    {
+        const auto x = moduleX();
+        for (int i = 0; i < 10; ++i)
+        {
+            const auto& s = knobSpecs[i];
+            knobs[i].setBounds(Rectangle<float>(x[(size_t) s.module] + s.dx - s.labelWidth / 2, s.cy - 28, s.labelWidth, 80).toNearestInt());
+        }
+        const float q = x[Quant], f = x[Filter];
+        place(minusKey, q + 8, MY + 40, 24, 96), place(plus, q + 120, MY + 40, 24, 96), place(dcShift, q + 8, MY + 168, 136, 32);
+        place(approx, x[Approx] + 8, MY + 40, 80, 40), place(images, x[Images] + 8, MY + 40, 80, 40);
+        place(pre, f + 8, MY + 40, 92, 40), place(post, f + 108, MY + 40, 92, 40);
+        for (int k = 0; k < 5; ++k)
+            place(types[k], f + 8 + 40 * (float) k, MY + 88, 32, 32);
+    }
     void resized() override
     {
         plate.setTransform(AffineTransform::scale((float) getWidth() / W, (float) getHeight() / H));
         proc.editorWidth = getWidth();
     }
     float value(const char* id) const { return proc.apvts.getRawParameterValue(id)->load(); }
-    String display(const char* id) const { auto* p = proc.apvts.getParameter(id); return p->getText(p->getValue(), 0); }
+    String display(const char* id) const { auto* p = proc.apvts.getParameter(id); return minus(p->getText(p->getValue(), 0)); }
     int bits() const { return roundToInt(value("bits")); }
+    // Stages that currently do nothing are dimmed: their knobs, their rail dots.
+    bool active(int module) const
+    {
+        return module == Quant ? bits() > 0 : module == Approx ? value("approxOn") > 0.5f : module == Images ? value("imagesOn") > 0.5f
+             : module == Filter ? value("fType") > 0.5f : module != Dock;
+    }
+    bool knobActive(const KnobSpec& s) const
+    {
+        const String id = s.id;
+        return active(s.module) && !(id == "dither" && (value("dither") <= 0 || bits() == 0)) && !(id == "jitter" && value("jitter") <= 0);
+    }
 
     void timerCallback() override
     {
         const int slot = proc.abSlot();
         slotA.setToggleState(slot == 0, dontSendNotification), slotB.setToggleState(slot == 1, dontSendNotification);
         String now = proc.presetName() + String(proc.preset.load());
-        for (auto* id : { "preamp", "bits", "dcShift", "dither", "rate", "jitter", "approxOn", "approxDev", "imagesOn", "imagesShift", "fType", "fOrder", "cutoff", "reso" })
+        for (auto* id : { "preamp", "bits", "dcShift", "dither", "rate", "jitter", "approxOn", "approxDev", "imagesOn", "imagesShift", "fType", "fOrder", "cutoff", "reso", "output" })
             now << display(id) << "|";
         if (now != shown)
-            shown = now, plate.repaint();
-        for (int c = 0; c < 2; ++c) // peak hold with ~20 dB/s fall
-            meter[c] = jmax(proc.scope.peak[c].exchange(0.0f), meter[c] * 0.93f);
-        plate.repaint(24, 52, 560, 250), plate.repaint(830, 316, 106, 104);
+        {
+            shown = now, layoutModules(), plate.repaint();
+            for (int i = 0; i < 10; ++i)
+                knobs[i].setAlpha(knobActive(knobSpecs[i]) ? 1.0f : 0.4f);
+            dcShift.setAlpha(bits() > 0 ? 1.0f : 0.4f);
+        }
+        // VU: mean square since the last frame drives a 2nd-order needle (99 % in 300 ms, 1.5 % overshoot) on the
+        // rectified level; 0 VU = -12 dBFS RMS (K-12). The clip LED lights on a sample over 0 dBFS and holds for 1 s.
+        const auto frames = proc.scope.frames.exchange(0);
+        const double t = Time::getMillisecondCounterHiRes();
+        for (int c = 0; c < 2; ++c)
+        {
+            const float level = frames > 0 ? std::sqrt(proc.scope.energy[c].exchange(0.0f) / (float) frames) * Decibels::decibelsToGain(12.0f) : 0.0f;
+            for (int k = 0; k < 8; ++k)
+                speed[c] += (169 * (level - needle[c]) - 20.8f * speed[c]) / 240, needle[c] += speed[c] / 240;
+            if (proc.scope.peak[c].exchange(0.0f) > 1.0f)
+                clipUntil[c] = t + 1000;
+        }
+        plate.repaint(24, 56, 976, 216);
     }
 
     void paintPlate(Graphics& g)
     {
         g.fillAll(face);
-        // Header: wordmark, preset LCD, maker and version.
-        text(g, "crumb", mono(13, 2), ink, 24, 28);
-        text(g, String::fromUTF8("CR-1 \xc2\xb7 SAMPLER CRUSHER"), label(), sub, 80, 26);
-        text(g, "DAVEYDIDIT" + dot + "V" JucePlugin_VersionString, label(), sub, 936, 26, true);
-        g.setColour(lcd), g.fillRoundedRectangle(330, 9, 220, 26, 6);
-        text(g, proc.preset >= 0 ? String(proc.preset.load()).paddedLeft('0', 2) : String("--"), mono(11), sub, 340, 26);
-        g.setFont(mono(11)), g.setColour(ink), g.drawText(proc.presetName(), Rectangle<float>(366, 9, 158, 26), Justification::centred, true);
+        // Header: wordmark, centred preset pill (number + name) with its keys, maker and version.
+        const float hb = baseline(24, 24, 15);
+        print(g, "crumb", mono(15, 0.01f, 2), ink, 24, hb);
+        print(g, "daveydidit" + dot + "v" JucePlugin_VersionString, label(), muted, 1000, hb, 1);
+        g.setColour(pill), g.fillRoundedRectangle(296, 24, 248, 24, 8);
+        print(g, proc.preset >= 0 ? String(proc.preset.load()).paddedLeft('0', 2) : String("--"), mono(11, 0.02f), muted, 304, baseline(24, 24, 11));
+        g.setFont(mono(11, 0.02f)), g.setColour(ink), g.drawText(proc.presetName(), Rectangle<float>(328, 23, 184, 24), Justification::centred, true); // on the spec baseline
 
-        // Screen: rate and resolution, status lines, live scope.
-        g.setColour(screen), g.fillRoundedRectangle(24, 52, 560, 250, 12);
-        const float rate = value("rate");
-        const String big = rate >= 1000 ? String(rate / 1000, 1) : String(roundToInt(rate)), b = bits() > 0 ? String(bits()) + " bit" : "off";
-        text(g, (rate >= 1000 ? " khz" : " hz") + dot + b, mono(16), screenText, text(g, big, mono(34, 1), white, 44, 100), 100);
-        const String status[] = {
-            String(value("dcShift") > 0.5f ? "mid-tread" : "mid-riser") + dot + "dither " + display("dither"),
-            (value("approxOn") > 0.5f ? "approx " + display("approxDev").trimCharactersAtEnd("%") : String("approx off")) + dot
-                + (value("imagesOn") > 0.5f ? "images +" + display("imagesShift") : String("images off")),
-            filterText() + dot + "jitter " + display("jitter"),
-        };
-        for (int l = 0; l < 3; ++l)
-            text(g, status[l], mono(10), screenText, 564, 82 + 16.0f * (float) l, true);
-        text(g, String::fromUTF8("\xe2\x97\x8f"), mono(10), bits() > 0 ? orange : axis, 557 - GlyphArrangement::getStringWidth(mono(10), status[0]) - 6, 82, true);
         paintScope(g);
-        text(g, "IN", mono(9, 0, 0.11f), legend, 44, 287), text(g, "OUT", mono(9, 0, 0.11f), orange, 68, 287);
-        text(g, "20 MS", mono(9), axis, 564, 287, true);
+        paintVu(g);
 
-        // Quantizer bits display, section labels, knob names, meter.
-        for (auto [s, x, y] : { std::tuple { "QUANTIZER", 24, 320 }, { "RESAMPLER", 300, 320 }, { "FILTER", 24, 392 } })
-            text(g, s, label(), sub, (float) x, (float) y);
-        g.setColour(screen), g.fillRoundedRectangle(54, 328, 90, 40, 6);
-        const auto f = mono(24, 1);
-        const String n = bits() > 0 ? String(bits()) : String("off"), unit = bits() > 0 ? "BIT" : "";
-        const float wn = GlyphArrangement::getStringWidth(f, n), wu = unit.isEmpty() ? 0 : 6 + GlyphArrangement::getStringWidth(label(), unit);
-        text(g, unit, label(), legend, text(g, n, f, orange, 99 - (wn + wu) / 2, 357) + 6, 351);
-        for (int i = 0; i < 10; ++i)
+        // Signal rail: a dot at each module's centre; the filter (orange) where it sits, the empty dock hollow.
+        const auto x = moduleX();
+        g.setColour(line), g.drawLine(24, 280, 1000, 280, 2);
+        for (int m = 0; m < 8; ++m)
         {
-            g.setFont(label()), g.setColour(sub);
-            g.drawText(knobNames[i], Rectangle<float>(602.0f + 86.0f * (float) (i % 4), 146.0f + 126.0f * (float) (i / 4), 100, 11), Justification::centred);
+            const Point<float> c { x[(size_t) m] + widths[m] / 2, 280 };
+            if (m == Dock)
+                g.setColour(face), g.fillEllipse(Rectangle<float>(16, 16).withCentre(c)), g.setColour(line), g.drawEllipse(Rectangle<float>(14, 14).withCentre(c), 2);
+            else if (m == Filter && active(m))
+                g.setColour(orange.withAlpha(0.22f)), g.fillEllipse(Rectangle<float>(24, 24).withCentre(c)), g.setColour(orange), g.fillEllipse(Rectangle<float>(16, 16).withCentre(c));
+            else
+                g.setColour(active(m) ? railDot : line), g.fillEllipse(Rectangle<float>(8, 8).withCentre(c));
         }
-        g.setColour(panel), g.fillRoundedRectangle(830, 316, 106, 104, 8);
-        text(g, "OUT", label(), sub, 842, 334);
-        for (int c = 0; c < 2; ++c)
-            for (int s = 0; s < 14; ++s) // 14 segments, -48..0 dBFS
+
+        // Modules: panels with their names, knob names, the dock, the bits display, the flow arrows in the gutters.
+        const char* names[] = { "in", "", "quantize", "approx", "resample", "images", "filter", "mix" };
+        for (int m = 0; m < 8; ++m)
+        {
+            const Rectangle<float> r { x[(size_t) m], MY, widths[m], 256 };
+            if (m == Dock)
             {
-                const bool lit = Decibels::gainToDecibels(meter[c], -100.0f) > -48.0f + 48.0f * (float) s / 14.0f;
-                g.setColour(lit ? ink : ledOff), g.fillRoundedRectangle(880.0f + 10.0f * (float) c, 406.857f - 5.142857f * (float) s, 6, 3.1f, 1);
+                // CSS 2 px dashed border: solid corners, 6 / 4 dashes centred on each side
+                g.setColour(line);
+                for (int k = 0; k < 4; ++k)
+                {
+                    const float c = (float) k * MathConstants<float>::halfPi;
+                    Path corner;
+                    corner.addCentredArc(k == 1 || k == 2 ? r.getRight() - 8 : r.getX() + 8, k < 2 ? MY + 8 : MY + 248, 7, 7, 0, c - MathConstants<float>::halfPi, c, true);
+                    g.strokePath(corner, PathStrokeType(2));
+                    const auto a = Point<float>(k == 1 ? r.getRight() - 1 : r.getX() + (k == 3 ? 1 : 6), k == 2 ? MY + 255 : MY + (k == 0 ? 1 : 6));
+                    const auto b = k == 0 ? Point<float>(r.getRight() - 6, MY + 1) : k == 2 ? Point<float>(r.getRight() - 6, MY + 255) : Point<float>(a.x, MY + 250);
+                    const float len = a.getDistanceFrom(b), n = std::floor((len + 4) / 10), off = (len - (n * 10 - 4)) / 2;
+                    for (float d = off; d < len; d += 10)
+                        g.drawLine(Line<float>(a + (b - a) * d / len, a + (b - a) * (d + 6) / len), 2);
+                }
+                const Point<float> c { r.getCentreX(), MY + 60 };
+                g.setColour(line), g.drawEllipse(Rectangle<float>(14, 14).withCentre(c), 2);
+                print(g, preOrder() ? "post" : "pre", label(), muted2, c.x, baseline(MY + 76, 16, 9), 0);
+                continue;
             }
-
-        // Signal path: the chain as it runs now. Stages that do nothing are grey, the filter is bold at its position.
-        g.setColour(panel), g.fillRoundedRectangle(24, 450, 912, 48, 8);
-        text(g, "SIGNAL PATH", label(), sub, 36, 469);
-        const bool filterOn = value("fType") > 0.5f, preFilter = value("fOrder") < 0.5f;
-        const String filter = "filter (" + String(preFilter ? "pre" : "post") + ")";
-        std::vector<std::pair<String, bool>> path { { "preamp", value("preamp") > 0 } };
-        if (preFilter)
-            path.push_back({ filter, filterOn });
-        path.insert(path.end(), { { "dither", value("dither") > 0 && bits() > 0 }, { "quantize " + b, bits() > 0 }, { "approx lp", value("approxOn") > 0.5f },
-                                  { "resample " + String(rate / 1000, rate >= 1000 ? 1 : 2) + " khz" + (value("jitter") > 0 ? String::fromUTF8(" \xc2\xb1 jitter") : ""), true },
-                                  { "images lp", value("imagesOn") > 0.5f }, { "dac", bits() > 0 } });
-        if (!preFilter)
-            path.push_back({ filter, filterOn });
-        path.insert(path.end(), { { "fx", true }, { "out", true } });
-        float x = 36;
-        for (auto& [s, on] : path)
-        {
-            x = text(g, s, mono(11, s == filter && on ? 2 : 0), on ? ink : sub, x, 488);
-            if (&s != &path.back().first)
-                x = text(g, arrow, mono(11), ink, x, 488);
+            // inset 0 1px 0 white .35 (top edge), inset 0 -1px 0 black .05 (bottom edge): crescents of the shifted shape
+            const auto fill = m == Filter ? filterPanel : panel;
+            Path shape, down, up;
+            shape.addRoundedRectangle(r, 8), down.addRoundedRectangle(r.translated(0, 1), 8), up.addRoundedRectangle(r.translated(0, -1), 8);
+            Graphics::ScopedSaveState state(g);
+            g.reduceClipRegion(shape);
+            g.setColour(fill.interpolatedWith(Colours::white, 0.35f)), g.fillPath(shape);
+            g.setColour(fill.interpolatedWith(Colours::black, 0.05f)), g.fillPath(down);
+            g.reduceClipRegion(down);
+            g.setColour(fill), g.fillPath(up);
+            print(g, names[m], label(), muted, r.getX() + 8, baseline(MY + 8, 16, 9));
         }
-        text(g, "daveydidit", mono(9), sub, 24, 522);
-        text(g, "DOUBLE-CLICK = RESET" + dot + "CLICK VALUE TO TYPE", label(), sub, 936, 522, true);
+        for (const auto& s : knobSpecs)
+            print(g, String(s.name).toUpperCase(), label(), muted.withMultipliedAlpha(knobActive(s) ? 1.0f : 0.4f), x[(size_t) s.module] + s.dx, baseline(s.cy + 52, 16, 9), 0);
+        const Rectangle<float> lcd { x[Quant] + 40, MY + 40, 72, 96 };
+        g.setColour(screen), g.fillRoundedRectangle(lcd, 8);
+        const auto big = mono(22, 0, 1);
+        const String n = bits() > 0 ? String(bits()) : String("off");
+        const float wn = GlyphArrangement::getStringWidth(big, n), wu = bits() > 0 ? 6 + GlyphArrangement::getStringWidth(label(), "BIT") - 0.72f : 0;
+        const float x0 = lcd.getCentreX() - (wn + wu) / 2;
+        print(g, n, big, bits() > 0 ? orange : axis, x0, baseline(MY + 77, 24, 22));
+        if (bits() > 0)
+            print(g, "BIT", label(), muted, x0 + wn + 6, baseline(MY + 81, 16, 9));
+        for (int i = 0; i < 7; ++i)
+        {
+            const int m = order()[(size_t) i];
+            const float gx = x[(size_t) m] + widths[m];
+            Path p;
+            p.addTriangle(gx + 1, MY + 141, gx + 7, MY + 144, gx + 1, MY + 147);
+            g.setColour(line), g.fillPath(p);
+        }
     }
 
-    String filterText() const
-    {
-        const int type = roundToInt(value("fType"));
-        if (type == 0)
-            return "filter off";
-        return String(StringArray { "", "lp", "bp", "hp", "br" }[type]) + " " + display("cutoff") + dot + (value("fOrder") < 0.5f ? "pre" : "post");
-    }
-
-    // 20 ms of input (grey) and output (orange), started on a rising zero crossing of the input so the picture stands still.
+    // Scope screen: rate and resolution, three status lines, 20 ms of input (grey) and output (orange) started on a rising
+    // zero crossing of the input so the picture stands still.
     void paintScope(Graphics& g)
     {
+        g.setColour(screen), g.fillRoundedRectangle(24, 56, 632, 216, 12);
+        const float rate = value("rate"), b = baseline(72, 32, 32);
+        const String unit = (rate >= 1000 ? "khz" : "hz") + dot + (bits() > 0 ? String(bits()) + " bit" : "off");
+        print(g, unit, mono(15, 0.08f), screenText, 48 + print(g, rate >= 1000 ? String(rate / 1000, 1) : String(roundToInt(rate)), mono(32, 0.02f, 1), white, 40, b), b);
+        const String status[] = {
+            String(value("dcShift") > 0.5f ? " mid-tread" : " mid-riser") + dot + "dither " + display("dither"),
+            (value("approxOn") > 0.5f ? "approx " + display("approxDev") : String("approx off")) + dot
+                + (value("imagesOn") > 0.5f ? "images +" + display("imagesShift") : String("images off")),
+            (value("fType") > 0.5f ? String(StringArray { "", "lp", "bp", "hp", "br" }[roundToInt(value("fType"))]) + " " + display("cutoff") + dot + (preOrder() ? "pre" : "post")
+                                   : String("filter off")) + dot + "jitter " + display("jitter"),
+        };
+        for (int l = 0; l < 3; ++l)
+        {
+            const float w = print(g, status[l], mono(10), screenText, 640, baseline(72 + 16 * (float) l, 16, 10), 1);
+            if (l == 0)
+                print(g, String::fromUTF8("\xe2\x97\x8f"), mono(10), bits() > 0 ? orange : axis, 640 - w, baseline(72, 16, 10), 1);
+        }
         const int n = jlimit(16, crumb::Scope::size / 2, roundToInt(proc.sampleRate.load() * 0.02)), m = jmin(crumb::Scope::size, 2 * n);
         proc.scope.read(in.data(), out.data(), m);
         int start = m - n;
@@ -310,10 +390,61 @@ struct Editor : AudioProcessorEditor, Timer
             Path p;
             for (int i = 0; i < n; ++i)
             {
-                const float px = 44 + 520 * (float) i / (float) (n - 1), py = 185 - 64 * jlimit(-1.1f, 1.1f, data[start + i] / scopePeak);
+                const float px = 40 + 600 * (float) i / (float) (n - 1), py = 188 - 54 * jlimit(-1.1f, 1.1f, data[start + i] / scopePeak);
                 i == 0 ? p.startNewSubPath(px, py) : p.lineTo(px, py);
             }
-            g.setColour(colour), g.strokePath(p, PathStrokeType(width, PathStrokeType::mitered, PathStrokeType::square));
+            g.setColour(colour), g.strokePath(p, PathStrokeType(width, PathStrokeType::mitered, PathStrokeType::butt));
+        }
+        print(g, "IN", label(), muted, 40, 256), print(g, "OUT", label(), orange, 64, 256);
+        print(g, "20 MS", label(), axis, 640, 256, 1);
+    }
+
+    // VU screen: two needles on a 20 / 10 / 0 / +3 scale (red from 0), clip LEDs L / R, the output setting.
+    void paintVu(Graphics& g)
+    {
+        g.setColour(screen), g.fillRoundedRectangle(664, 56, 336, 216, 12);
+        print(g, "out", label(), muted, 680, baseline(72, 32, 9));
+        print(g, display("output"), label(), muted, 984, baseline(72, 32, 9), 1);
+        const double now = Time::getMillisecondCounterHiRes();
+        for (int c = 0; c < 2; ++c)
+        {
+            const Point<float> led { 824 + 16 * (float) c, 88 }, pivot { 754 + 156 * (float) c, 232 };
+            if (clipUntil[c] > now)
+                g.setColour(orange.withAlpha(0.25f)), g.fillEllipse(Rectangle<float>(10, 10).withCentre(led));
+            g.setColour(clipUntil[c] > now ? orange : ledOff), g.fillEllipse(Rectangle<float>(6, 6).withCentre(led));
+            // Scale position 0..1 from dB (the spec's stops), angle -140..-40 degrees from the x axis.
+            auto at = [&](float t, float radius) { const float a = degreesToRadians(-140 + 100 * t); return pivot + Point<float>(std::cos(a), std::sin(a)) * radius; };
+            auto pos = [](float db) {
+                const float stops[][2] = { { -20, 0 }, { -10, 0.38f }, { -7, 0.52f }, { -5, 0.64f }, { -3, 0.75f }, { 0, 0.88f }, { 3, 1 } };
+                int k = 0;
+                while (k < 5 && db > stops[k + 1][0])
+                    ++k;
+                return stops[k][1] + (stops[k + 1][1] - stops[k][1]) * (db - stops[k][0]) / (stops[k + 1][0] - stops[k][0]);
+            };
+            const float r = 71.04f;
+            for (auto [t0, t1, colour, width] : { std::tuple { 0.0f, 0.88f, tick, 2.0f }, { 0.88f, 1.0f, orange, 2.4f } })
+            {
+                Path arc;
+                arc.addCentredArc(pivot.x, pivot.y, r - 1, r - 1, 0, degreesToRadians(-50 + 100 * t0), degreesToRadians(-50 + 100 * t1), true);
+                g.setColour(colour), g.strokePath(arc, PathStrokeType(width, PathStrokeType::curved, PathStrokeType::rounded));
+            }
+            for (auto [db, name] : { std::pair { -20.0f, "20" }, { -10.0f, "10" }, { -7.0f, "" }, { -5.0f, "" }, { -3.0f, "" }, { 0.0f, "0" }, { 3.0f, "+3" } })
+            {
+                const Colour colour = db >= 0 ? orange : tick;
+                g.setColour(colour), g.drawLine(Line<float>(at(pos(db), r - 1), at(pos(db), r - 8)), 1.6f);
+                const auto p = at(pos(db), r + 16);
+                print(g, name, mono(9, 0.02f), db >= 0 ? orange : numeral, p.x, p.y + 2.4f, 0);
+            }
+            const float t = jlimit(-0.04f, 1.03f, pos(Decibels::gainToDecibels(needle[c], -40.0f)));
+            const auto tip = at(t, r - 14), d = (tip - pivot) / pivot.getDistanceFrom(tip), n = Point<float>(-d.y, d.x);
+            Path shadow, hand;
+            shadow.addTriangle(pivot + Point<float>(1, 1.6f) + n * 1.2f, pivot + Point<float>(1, 1.6f) - n * 1.2f, tip + Point<float>(1, 1.6f));
+            hand.addTriangle(pivot + n * 2.1f, pivot - n * 2.1f, tip);
+            g.setColour(Colours::black.withAlpha(0.3f)), g.fillPath(shadow);
+            g.setColour(orange), g.fillPath(hand);
+            g.setColour(key), g.fillEllipse(Rectangle<float>(11, 11).withCentre(pivot));
+            g.setColour(ink), g.fillEllipse(Rectangle<float>(5.2f, 5.2f).withCentre(pivot));
+            print(g, c == 0 ? "L" : "R", label(), muted, pivot.x + 0.36f, 253.3f, 0);
         }
     }
 };

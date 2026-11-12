@@ -363,7 +363,7 @@ void CrumbProcessor::processBlock(AudioBuffer<float>& buffer, MidiBuffer&)
     f.jitCoef = 1 - std::exp(-2 * pi * 30 / d.fs), f.jitNorm = 0.5 / std::sqrt(f.jitCoef / (3 * (2 - f.jitCoef))); // ~5 ms walk, +-2 sigma
     float* x[2] = { buffer.getWritePointer(0), buffer.getWritePointer(channels - 1) };
     const auto w = scope.write.load(std::memory_order_relaxed);
-    float peak[2] {};
+    float peak[2] {}, energy[2] {};
     for (int i = 0; i < n && channels > 0; ++i)
     {
         // Clip engagement, per sample (independent of the host's block size): preamp up, or the input passed the knee
@@ -380,13 +380,18 @@ void CrumbProcessor::processBlock(AudioBuffer<float>& buffer, MidiBuffer&)
         {
             const double dry = std::isfinite(x[c][i]) ? jlimit(-1000.0f, 1000.0f, x[c][i]) : 0.0f;
             x[c][i] = (float) ((dry + mix * (d.ch[(size_t) c].process(dry, f) - dry)) * gain);
-            in += (float) dry / (float) channels, out += x[c][i] / (float) channels, peak[c] = jmax(peak[c], std::abs(x[c][i]));
+            in += (float) dry / (float) channels, out += x[c][i] / (float) channels, peak[c] = jmax(peak[c], std::abs(x[c][i])), energy[c] += x[c][i] * x[c][i];
         }
         scope.push(w + (uint32_t) i, in, out);
     }
     scope.write.store(w + (uint32_t) n, std::memory_order_release);
-    for (int c = 0; c < 2; ++c) // the editor takes the peak (exchange with 0); a race only loses one block's peak
-        scope.peak[c].store(jmax(scope.peak[c].load(std::memory_order_relaxed), peak[jmin(c, channels - 1)]), std::memory_order_relaxed);
+    for (int c = 0; c < 2; ++c) // the editor takes these (exchange with 0); a race only loses one block's worth
+    {
+        const int from = jmax(0, jmin(c, channels - 1));
+        scope.peak[c].store(jmax(scope.peak[c].load(std::memory_order_relaxed), peak[from]), std::memory_order_relaxed);
+        scope.energy[c].store(scope.energy[c].load(std::memory_order_relaxed) + energy[from], std::memory_order_relaxed);
+    }
+    scope.frames.fetch_add((uint32_t) n, std::memory_order_relaxed);
 }
 
 // Writers (presets, A/B, restore) serialize on txLock, which nothing else takes. While one publishes, `busy` makes

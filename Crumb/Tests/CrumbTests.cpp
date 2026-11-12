@@ -1,5 +1,5 @@
 // CrumbTests: drives the real processor and editor without a host. Exit code 1 on failure.
-//   CrumbTests --screenshot a.png   render the editor (100 %, 2x pixels) after feeding it a drum + bass loop
+//   CrumbTests --screenshot a.png [pre]   render the editor (100 %, 2x pixels) after a drum + bass loop (pre: filter pre)
 #include "Crumb.h"
 #define SCREENSHOT_PRESET 14 // "drums · break dust": 12 bit, 26 kHz, images on, lp post
 #include <cstdlib>
@@ -133,7 +133,7 @@ static void testIdentity()
     CHECK(JucePlugin_ManufacturerCode == 0x44776b73); // 'Dwks'
     CHECK(juce::String(JUCE_STRINGIFY(JucePlugin_AUMainType)) == "'aufx'");
     CHECK(juce::String(JUCE_STRINGIFY(JucePlugin_CFBundleIdentifier)) == "com.dripworks.crumb");
-    CHECK(juce::String(JucePlugin_Name) == "Crumb" && juce::String(JucePlugin_Manufacturer) == "daveydidit");
+    CHECK(juce::String(JucePlugin_Name) == "crumb" && juce::String(JucePlugin_Manufacturer) == "daveydidit");
     static_assert(JUCE_VST3_CAN_REPLACE_VST2 == 0 && JUCE_FORCE_USE_LEGACY_PARAM_IDS == 0, "frozen host-facing IDs");
     CHECK(!JucePlugin_IsSynth && !JucePlugin_WantsMidiInput);
     Proc p;
@@ -144,7 +144,7 @@ static void testIdentity()
         CHECK(withId != nullptr && withId->getVersionHint() == 1);
         found.add(withId->paramID);
     }
-    CHECK(found == ids && found.size() == 17);
+    CHECK(found == ids && found.size() == 17 && p.getName() == "crumb");
     CHECK(p.getBypassParameter() == p.apvts.getParameter("bypass"));
     // Plan v2 defaults.
     CHECK(get(p, "preamp") == 0 && get(p, "bits") == 12 && get(p, "dcShift") == 0 && get(p, "dither") == 0 && get(p, "rate") == 26040
@@ -810,16 +810,16 @@ static void testEditorState()
     Proc p;
     prepare(p, 48000, 128, 2);
     std::unique_ptr<juce::AudioProcessorEditor> e(p.createEditor());
-    CHECK(e->getWidth() == 960 && e->getHeight() == 540 && e->isResizable());
+    CHECK(e->getWidth() == 1024 && e->getHeight() == 576 && e->isResizable());
     for (int pct : { 50, 200, 100 }) // scaled 50-200 %, aspect kept; the size is stored for the next editor
     {
-        e->setSize(960 * pct / 100, 540 * pct / 100);
-        CHECK(e->getWidth() == 960 * pct / 100 && e->getHeight() == 540 * pct / 100 && p.editorWidth == e->getWidth());
+        e->setSize(1024 * pct / 100, 576 * pct / 100);
+        CHECK(e->getWidth() == 1024 * pct / 100 && e->getHeight() == 576 * pct / 100 && p.editorWidth == e->getWidth());
         CHECK(e->createComponentSnapshot(e->getLocalBounds()).isValid());
     }
-    e->setSize(1440, 810);
+    e->setSize(1536, 864);
     e.reset(p.createEditor());
-    CHECK(e->getWidth() == 1440 && e->getHeight() == 810);
+    CHECK(e->getWidth() == 1536 && e->getHeight() == 864);
 
     // Keys follow the parameters both ways: host changes (message thread and other threads), presets, A/B, state loads.
     auto& ed = *e;
@@ -900,13 +900,20 @@ static float groove(int i)
     return (float) (0.4 * kick + 0.45 * snare + 0.25 * std::sin(2 * pi * 55 * t) + 0.08 * std::sin(2 * pi * 110 * t + 0.5));
 }
 
-static int screenshot(const juce::File& file)
+static int screenshot(const juce::File& file, bool preFilter)
 {
     Proc p;
     p.setCurrentProgram(SCREENSHOT_PRESET);
+    if (preFilter)
+        set(p, "fOrder", 0);
     prepare(p, 48000, 512, 2);
-    run(p, 512, 2, 48000 + 6000 + 2400, groove); // ends 50 ms after a snare hit
+    run(p, 512, 2, 8400, groove);
     std::unique_ptr<juce::AudioProcessorEditor> e(p.createEditor());
+    for (int frame = 0; frame < 30; ++frame) // one second of 30 fps editor frames: the VU needles settle
+    {
+        run(p, 512, 2, 1600, [frame](int i) { return groove(8400 + frame * 1600 + i); }); // ends 50 ms after a snare hit
+        dynamic_cast<juce::Timer&>(*e).timerCallback();
+    }
     const auto image = e->createComponentSnapshot(e->getLocalBounds(), true, 2.0f);
     file.deleteFile();
     juce::FileOutputStream out(file);
@@ -916,8 +923,8 @@ static int screenshot(const juce::File& file)
 int main(int argc, char** argv)
 {
     const juce::ScopedJuceInitialiser_GUI gui;
-    if (argc == 3 && juce::String(argv[1]) == "--screenshot")
-        return screenshot(juce::File::getCurrentWorkingDirectory().getChildFile(argv[2]));
+    if ((argc == 3 || argc == 4) && juce::String(argv[1]) == "--screenshot") // optional 3rd argument "pre": filter order pre
+        return screenshot(juce::File::getCurrentWorkingDirectory().getChildFile(argv[2]), argc == 4 && juce::String(argv[3]) == "pre");
     testIdentity();
     testState();
     testTransactions();

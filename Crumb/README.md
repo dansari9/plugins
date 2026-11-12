@@ -1,7 +1,7 @@
-# Crumb
+# crumb
 
 A vintage-sampler bit crusher by daveydidit. Version 0.1.0. Zero latency, mono or stereo, both channels share the
-settings. One screen, no menus: 25 factory presets, user presets, A/B, a live scope and an output meter.
+settings. One screen, no menus: 25 factory presets, user presets, A/B, a live scope and a stereo VU meter.
 
 Signal path: preamp (0 … +48 dB) into a soft ADC clip (tanh shoulder above 0.5, antiderivative antialiasing) →
 filter (pre) → dither, quantizer and DAC with fixed vintage ladder errors on the four MSBs → approx (anti-alias)
@@ -38,17 +38,18 @@ At rate = host rate (no jitter) the sample & hold is the identity.
 
 ## Editor
 
-- **Header:** preset number and name, ◀ ▶ step through the factory presets and then your saved ones, **save** writes the
+- **Top bar:** preset number and name, ◀ ▶ step through the factory presets and then your saved ones, **save** writes the
   current sound as a new user preset, **A / B** keep two complete sounds and switch between them.
-- **Screen:** the rate and resolution in large type, the converter / resampler / filter status top right, and a live
-  scope: 20 ms of the input (grey) and the crushed output (orange), triggered on the input so it stands still.
-- **Quantizer:** − / + step the bits (0 = off), **dc shift** switches mid-riser / mid-tread.
-  **Resampler:** **approx filter** (anti-alias lowpass) and **images filter** (reconstruction lowpass).
-  **Filter:** off / lp / bp / hp / br and pre / post.
-- **Knobs:** FREQ (rate), JITTER, DEVIATE (approx cutoff), SHIFT (images cutoff); PREAMP, DITHER, CUTOFF, RESO;
-  FX (mix) and OUTPUT, next to the stereo OUT meter. Drag up/down, **double-click = default**, **click the value
-  under a knob to type** one (`9.2k`, `-3`, `35`).
-- **Signal path:** the chain as it runs now. Stages that do nothing are grey; the filter is bold where it sits (pre/post).
+- **Scope:** the rate and resolution in large type, the converter / resampler / filter status top right, and 20 ms of
+  the input (grey) and the crushed output (orange), triggered on the input so it stands still.
+- **VU:** two needles (L / R) with VU ballistics (99 % in 300 ms; 0 VU = −12 dBFS RMS, as K-12), a clip LED per channel that
+  lights above 0 dBFS and holds for 1 s, and the output setting.
+- **Rail and modules**, left to right in signal order: **in** (PREAMP, DITHER) · pre dock · **quantize** (− / + step the
+  bits, 0 = off; **dc shift** = mid-tread) · **approx** (anti-alias lowpass, DEVIATE) · **resample** (FREQ, JITTER) ·
+  **images** (reconstruction lowpass, SHIFT) · **filter** (pre / post, off / lp / bp / hp / br, CUTOFF, RESO) · **mix**
+  (FX, OUTPUT). With the filter set to **pre** the filter module docks in the pre slot and the rail dot moves with it.
+  Stages that do nothing are dimmed.
+- **Knobs:** drag up/down, **double-click = default**, **click the value under a knob to type** one (`9.2k`, `-3`, `35`).
 - The window scales from 50 % to 200 % (drag the corner; the aspect is fixed) and remembers its size per instance.
 
 ## Presets
@@ -66,9 +67,9 @@ User presets are plain XML files (`user 01.xml`, …) in the user's app-data fol
 
 ## Install
 
-Copy `Crumb.vst3` to `~/Library/Audio/Plug-Ins/VST3` (macOS), `%COMMONPROGRAMFILES%\VST3` (Windows) or `~/.vst3`
-(Linux), and on macOS `Crumb.component` to `~/Library/Audio/Plug-Ins/Components`. The builds are ad-hoc signed:
-if macOS blocks them, run `xattr -dr com.apple.quarantine` on the bundle. Logic lists Crumb under daveydidit.
+Copy `crumb.vst3` to `~/Library/Audio/Plug-Ins/VST3` (macOS), `%COMMONPROGRAMFILES%\VST3` (Windows) or `~/.vst3`
+(Linux), and on macOS `crumb.component` to `~/Library/Audio/Plug-Ins/Components`. The builds are ad-hoc signed:
+if macOS blocks them, run `xattr -dr com.apple.quarantine` on the bundle. Logic lists crumb under daveydidit.
 
 ## Build
 
@@ -89,7 +90,7 @@ On macOS, use `-G Xcode` and build `Crumb_AU` and `Crumb_VST3`. `auval -v aufx C
 | Manufacturer code | `Dwks` |
 | Plug-in code | `Crmb` |
 | Bundle ID | `com.dripworks.crumb` |
-| Product name | `Crumb` |
+| Product name | `crumb` (display only; bundle file names) |
 | Parameter IDs | the 17 IDs above, in that order (version hint 1) |
 
 ## State versioning
