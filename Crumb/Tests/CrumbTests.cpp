@@ -1,6 +1,9 @@
 // CrumbTests: drives the real processor and editor without a host. Exit code 1 on failure.
+//   CrumbTests --screenshot a.png   render the editor (100 %, 2x pixels) after feeding it a drum + bass loop
 #include "Crumb.h"
+#define SCREENSHOT_PRESET 14 // "drums · break dust": 12 bit, 26 kHz, images on, lp post
 #include <cstdlib>
+#include <cstring>
 #include <iostream>
 #include <new>
 #include <thread>
@@ -197,7 +200,7 @@ static void testState()
                && get(p, "reso") == 33.3f && get(p, "bypass") == 0;
     };
     load(v1, fixture);
-    CHECK(fixtureLoaded(v1));
+    CHECK(fixtureLoaded(v1) && v1.preset == -1 && v1.presetName() == "custom" && v1.abSlot() == 0 && v1.editorWidth == 0);
     // Unknown entries ignored (e.g. a future `link` / `rateR`), out-of-range clamped, missing and unparsable back to default.
     load(v1, blob(R"(<CRUMB stateVersion="7" future="x"><PARAM id="preamp" value="1e9"/><PARAM id="mix" value="abc"/>)"
                   R"(<PARAM id="output" value="nan"/><PARAM id="rateR" value="3"/><PARAM id="link" value="0"/><EXTRA/></CRUMB>)"));
@@ -492,9 +495,220 @@ static void testEditor()
     audio.join();
 }
 
-int main()
+static juce::Component* find(juce::Component& c, const juce::String& id) // by component ID, depth first
+{
+    if (c.getComponentID() == id)
+        return &c;
+    for (auto* child : c.getChildren())
+        if (auto* found = find(*child, id))
+            return found;
+    return nullptr;
+}
+static bool lit(juce::Component& e, const char* id) { auto* b = dynamic_cast<juce::Button*>(find(e, id)); return b != nullptr && b->getToggleState(); }
+static std::vector<float> params(Proc& p)
+{
+    std::vector<float> v;
+    for (auto* param : p.getParameters())
+        v.push_back(param->getValue());
+    return v;
+}
+
+static void testPresets()
+{
+    Proc p;
+    CHECK(p.getNumPrograms() == 25 && p.getCurrentProgram() == 0 && p.presetName() == "init" && defaults(p)); // init = defaults
+    juce::StringArray names;
+    for (int i = 0; i < p.getNumPrograms(); ++i)
+    {
+        names.addIfNotAlreadyThere(p.getProgramName(i));
+        p.setCurrentProgram(i);
+        CHECK(p.getCurrentProgram() == i && p.presetName() == p.getProgramName(i));
+        for (int k = 0; k < 16; ++k) // every value is on its parameter's grid, so it is stored exactly
+            CHECK(std::abs(get(p, ids[k]) - crumb::presets[i].v[k]) < 1e-3f * std::max(1.0f, std::abs(crumb::presets[i].v[k])));
+        prepare(p, 48000, 512, 2);
+        const auto y = run(p, 512, 2, 48000, [](int n) { return 1.5f * signal(n, 48000); });
+        float peak = 0;
+        for (float v : y)
+            CHECK(std::isfinite(v)), peak = std::max(peak, std::abs(v));
+        CHECK(peak > 1e-3f && peak < 4);
+    }
+    CHECK(names.size() == 25);
+
+    // A/B: switching copies the full parameter state and the preset each way.
+    Proc a;
+    a.setCurrentProgram(3);
+    const auto three = params(a);
+    a.selectAb(1); // B starts as a copy of A
+    CHECK(a.abSlot() == 1 && params(a) == three && a.getCurrentProgram() == 3);
+    a.setCurrentProgram(7);
+    set(a, "jitter", 33);
+    const auto b = params(a);
+    a.selectAb(0);
+    CHECK(a.abSlot() == 0 && params(a) == three && a.getCurrentProgram() == 3);
+    a.selectAb(1);
+    CHECK(params(a) == b && a.getCurrentProgram() == 7);
+    // A/B, the preset and the editor size survive save -> reload into a fresh instance; A/B still works there.
+    a.editorWidth = 1440;
+    juce::MemoryBlock m;
+    a.getStateInformation(m);
+    Proc c;
+    load(c, m);
+    CHECK(c.abSlot() == 1 && params(c) == b && c.getCurrentProgram() == 7 && c.editorWidth == 1440);
+    c.selectAb(0);
+    CHECK(params(c) == three && c.getCurrentProgram() == 3);
+    juce::MemoryBlock m2;
+    load(c, m), c.getStateInformation(m2);
+    CHECK(m == m2);
+
+    // User presets: "save" writes an XML file, prev/next reach it after the factory list.
+    const auto home = juce::File::createTempFile("crumbhome");
+    const juce::String realHome = std::getenv("HOME");
+    setenv("HOME", home.getFullPathName().toRawUTF8(), 1);
+    CHECK(Proc::presetFolder().isAChildOf(home));
+    Proc u;
+    u.setCurrentProgram(5);
+    set(u, "cutoff", 777);
+    const auto mine = params(u);
+    CHECK(u.saveUserPreset().existsAsFile() && u.presetName() == "user 01" && u.saveUserPreset().getFileName() == "user 02.xml");
+    u.setCurrentProgram(24);
+    u.stepPreset(1);
+    CHECK(u.presetName() == "user 01" && params(u) == mine && u.preset == -1);
+    u.stepPreset(1), u.stepPreset(1);
+    CHECK(u.presetName() == "init" && defaults(u));
+    u.stepPreset(-1);
+    CHECK(u.presetName() == "user 02");
+    home.deleteRecursively();
+    setenv("HOME", realHome.toRawUTF8(), 1);
+}
+
+static void testScopeFifo()
+{
+    // Concurrent writer (flagged as audio) and reader: no allocation, and every pair the reader sees belongs together.
+    auto scope = std::make_unique<crumb::Scope>();
+    std::atomic<bool> stop { false };
+    std::thread writer([&] {
+        onAudioThread = true;
+        for (int w = 0; !stop; w += 64)
+        {
+            for (int i = 0; i < 64; ++i)
+                scope->push(w + i, (float) ((w + i) % 1000), (float) -((w + i) % 1000));
+            scope->write.store(w + 64, std::memory_order_release);
+        }
+        onAudioThread = false;
+    });
+    std::vector<float> in(4096), out(4096);
+    int torn = 0;
+    for (int n = 0; n < 2000; ++n)
+    {
+        scope->read(in.data(), out.data(), 4096);
+        for (int i = 0; i < 4096; ++i)
+            torn += in[(size_t) i] != -out[(size_t) i] ? 1 : 0;
+    }
+    stop = true;
+    writer.join();
+    CHECK(audioAllocations.exchange(0) == 0);
+    CHECK(torn < 2000 * 8); // only the few slots overwritten during one read may mix
+}
+
+#if JUCE_LINUX || JUCE_WINDOWS
+namespace juce::detail { bool dispatchNextMessageOnSystemQueue(bool returnIfNoPendingMessages); }
+static bool pumpMessages() { while (juce::detail::dispatchNextMessageOnSystemQueue(true)) {} return true; }
+#else
+static bool pumpMessages() { return false; } // macOS: no public single-step dispatch without modal loops
+#endif
+
+static void testEditorState()
+{
+    Proc p;
+    prepare(p, 48000, 128, 2);
+    std::unique_ptr<juce::AudioProcessorEditor> e(p.createEditor());
+    CHECK(e->getWidth() == 960 && e->getHeight() == 540 && e->isResizable());
+    for (int pct : { 50, 200, 100 }) // scaled 50-200 %, aspect kept; the size is stored for the next editor
+    {
+        e->setSize(960 * pct / 100, 540 * pct / 100);
+        CHECK(e->getWidth() == 960 * pct / 100 && e->getHeight() == 540 * pct / 100 && p.editorWidth == e->getWidth());
+        CHECK(e->createComponentSnapshot(e->getLocalBounds()).isValid());
+    }
+    e->setSize(1440, 810);
+    e.reset(p.createEditor());
+    CHECK(e->getWidth() == 1440 && e->getHeight() == 810);
+
+    // Keys follow the parameters both ways: host changes (message thread and other threads), presets, A/B, state loads.
+    auto& ed = *e;
+    auto keysMatch = [&] {
+        bool ok = lit(ed, "dcShift") == (get(p, "dcShift") > 0.5f) && lit(ed, "approxOn") == (get(p, "approxOn") > 0.5f)
+                  && lit(ed, "imagesOn") == (get(p, "imagesOn") > 0.5f) && lit(ed, "pre") == (get(p, "fOrder") < 0.5f) && lit(ed, "post") == (get(p, "fOrder") > 0.5f);
+        int n = 0;
+        for (auto* t : { "off", "lp", "bp", "hp", "br" })
+            ok = ok && lit(ed, t) == (n++ == (int) get(p, "fType"));
+        return ok;
+    };
+    CHECK(keysMatch());
+    juce::Random r(5);
+    for (int n = 0; n < 40; ++n)
+    {
+        for (auto* id : { "dcShift", "approxOn", "imagesOn", "fType", "fOrder" })
+        {
+            const float v = (float) r.nextInt(std::strcmp(id, "fType") == 0 ? 5 : 2);
+            if (n % 2 == 0 || !pumpMessages())
+                set(p, id, v);
+            else // an automation thread: the key updates asynchronously on the message thread
+                std::thread([&] { set(p, id, v); }).join();
+        }
+        pumpMessages();
+        CHECK(keysMatch());
+    }
+    for (int i = 0; i < 25; ++i)
+        p.setCurrentProgram(i), CHECK(keysMatch());
+    p.setCurrentProgram(20), p.selectAb(1), p.setCurrentProgram(18), CHECK(keysMatch());
+    p.selectAb(0), CHECK(keysMatch() && get(p, "fType") == 3);
+    // Clicking a lit radio key keeps it lit; clicks reach the parameter.
+    auto click = [&](const char* id) { dynamic_cast<juce::Button*>(find(ed, id))->onClick(); };
+    click("bp"), click("bp"), click("pre");
+    CHECK(get(p, "fType") == 2 && get(p, "fOrder") == 0 && keysMatch());
+    for (int k = 0; k < 30; ++k)
+        click("plus");
+    CHECK(get(p, "bits") == 24);
+    click("minus");
+    CHECK(get(p, "bits") == 23);
+    auto* knob = dynamic_cast<juce::Slider*>(find(ed, "rate"));
+    CHECK(knob != nullptr && knob->getTextFromValue(knob->getValue()) == p.apvts.getParameter("rate")->getCurrentValueAsText());
+    knob->setValue(knob->getValueFromText("9.2k"), juce::sendNotificationSync);
+    CHECK(get(p, "rate") == 9200);
+    knob->setValue(knob->getDoubleClickReturnValue(), juce::sendNotificationSync);
+    CHECK(get(p, "rate") == 26040);
+    e.reset();
+}
+
+// A drum + bass loop at 48 kHz: a kick (150 -> 50 Hz) on the beat, a snare (185 Hz body + noise) between, a 55 Hz bass.
+static float groove(int i)
+{
+    const double t = i / 48000.0, kickT = std::fmod(t, 0.25), snareT = std::fmod(t + 0.125, 0.25), pi = juce::MathConstants<double>::pi;
+    juce::uint32 h = (juce::uint32) i * 2654435761u;
+    h = (h ^ (h >> 15)) * 0x2c1b3c6du, h ^= h >> 12;
+    const double kick = std::sin(2 * pi * (50 * kickT + 2 * (1 - std::exp(-kickT / 0.02)))) * std::exp(-kickT / 0.12);
+    const double snare = std::sin(2 * pi * 185 * snareT) * std::exp(-snareT / 0.08) + ((h >> 8) * 0x1p-23 - 1) * 0.15 * std::exp(-snareT / 0.01);
+    return (float) (0.4 * kick + 0.45 * snare + 0.25 * std::sin(2 * pi * 55 * t) + 0.08 * std::sin(2 * pi * 110 * t + 0.5));
+}
+
+static int screenshot(const juce::File& file)
+{
+    Proc p;
+    p.setCurrentProgram(SCREENSHOT_PRESET);
+    prepare(p, 48000, 512, 2);
+    run(p, 512, 2, 48000 + 6000 + 2400, groove); // ends 50 ms after a snare hit
+    std::unique_ptr<juce::AudioProcessorEditor> e(p.createEditor());
+    const auto image = e->createComponentSnapshot(e->getLocalBounds(), true, 2.0f);
+    file.deleteFile();
+    juce::FileOutputStream out(file);
+    return out.openedOk() && juce::PNGImageFormat().writeImageToStream(image, out) ? 0 : 1;
+}
+
+int main(int argc, char** argv)
 {
     const juce::ScopedJuceInitialiser_GUI gui;
+    if (argc == 3 && juce::String(argv[1]) == "--screenshot")
+        return screenshot(juce::File::getCurrentWorkingDirectory().getChildFile(argv[2]));
     testIdentity();
     testState();
     testNull();
@@ -503,6 +717,9 @@ int main()
     testBounded();
     testAllocations();
     testEditor();
+    testPresets();
+    testScopeFifo();
+    testEditorState();
     std::cout << (failures == 0 ? "All Crumb tests passed\n" : "Crumb tests FAILED\n");
     return failures == 0 ? 0 : 1;
 }

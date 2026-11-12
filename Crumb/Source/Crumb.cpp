@@ -26,27 +26,42 @@ AudioProcessorValueTreeState::ParameterLayout layout()
 {
     // Every float snaps to 0.1 of its unit: save -> reload is then bit-exact on every platform (as in Snap).
     const auto snap = [](float s, float e, float v) { return jlimit(s, e, std::round(v * 10) / 10 + 0.0f); };
+    // Display text as on the panel ("26.0k", "+12 dB", "35%"); typed text may use k for kHz.
+    auto trim = [](float v) { return String(v, std::abs(v - std::round(v)) < 0.05f ? 0 : 1); };
+    auto text = [trim](const char* unit) {
+        return [unit = String(unit), trim](float v, int) {
+            if (unit == "Hz")
+                return v >= 1000 ? String(v / 1000, 1) + "k" : String(roundToInt(v)) + " Hz";
+            if (unit.endsWith("dB")) // preamp "+12 dB", output "-3.5 dB"
+                return (v > 0 ? "+" : "") + (unit == "dB" ? String(v, 1) : trim(v)) + " dB";
+            return (unit == "+%" && v > 0 ? "+" : "") + trim(v) + (unit == "+%" ? "" : "%");
+        };
+    };
+    auto parse = [](const String& t) { return (float) (t.replace(CharPointer_UTF8("\xe2\x88\x92"), "-").retainCharacters("+-.0123456789").getDoubleValue() * (t.containsIgnoreCase("k") ? 1000 : 1)); };
     auto num = [&](int i, const char* name, float lo, float hi, float def, const char* unit, bool log = false) {
         NormalisableRange<float> r(lo, hi, nullptr, nullptr, snap);
         if (log)
             r = NormalisableRange<float>(lo, hi, [](float s, float e, float v) { return s * std::pow(e / s, v); },
                                          [](float s, float e, float v) { return std::log(v / s) / std::log(e / s); }, snap);
         r.interval = log ? 0.0f : 0.1f;
-        return std::make_unique<AudioParameterFloat>(ParameterID { ids[i], 1 }, name, r, def, AudioParameterFloatAttributes().withLabel(unit));
+        return std::make_unique<AudioParameterFloat>(ParameterID { ids[i], 1 }, name, r, def, AudioParameterFloatAttributes()
+                                                                          .withLabel(String(unit).removeCharacters("+"))
+                                                                          .withStringFromValueFunction(text(unit))
+                                                                          .withValueFromStringFunction(parse));
     };
     auto onOff = [](int i, const char* name, bool def) { return std::make_unique<AudioParameterBool>(ParameterID { ids[i], 1 }, name, def); };
     auto choice = [](int i, const char* name, StringArray items, int def) {
         return std::make_unique<AudioParameterChoice>(ParameterID { ids[i], 1 }, name, items, def);
     };
     auto bitsText = AudioParameterIntAttributes().withStringFromValueFunction([](int v, int) { return v == 0 ? String("OFF") : String(v) + " bit"; });
-    return { num(Preamp, "Preamp", 0, 48, 0, "dB"),
+    return { num(Preamp, "Preamp", 0, 48, 0, "+dB"),
              std::make_unique<AudioParameterInt>(ParameterID { ids[Bits], 1 }, "Resolution", 0, 24, 12, bitsText),
              onOff(DcShift, "DC Shift", false),
              num(Dither, "Dither", 0, 100, 0, "%"),
              num(Rate, "Rate", 44, 44100, 26040, "Hz", true),
              num(Jitter, "Jitter", 0, 100, 0, "%"),
              onOff(ApproxOn, "Approx Filter", true),
-             num(ApproxDev, "Approx Deviation", -100, 100, 0, "%"),
+             num(ApproxDev, "Approx Deviation", -100, 100, 0, "+%"),
              onOff(ImagesOn, "Images Filter", false),
              num(ImagesShift, "Images Shift", 0, 100, 0, "%"),
              choice(FType, "Filter Type", { "OFF", "LP", "BP", "HP", "BR" }, 0),
@@ -309,6 +324,7 @@ void CrumbProcessor::prepareToPlay(double fs, int)
 {
     auto& d = *dsp;
     d.fs = fs > 0 && fs < 1.0e7 ? fs : 48000.0; // a nonsense rate (NaN, inf, <= 0) must not reach the DSP
+    sampleRate = d.fs;
     for (uint32 c = 0; c < 2; ++c) // fresh, reproducible state: an independent fixed seed per channel
     {
         d.ch[c] = Channel();
@@ -331,47 +347,76 @@ void CrumbProcessor::processBlock(AudioBuffer<float>& buffer, MidiBuffer&)
     f.bits = (int) d.raw[Bits]->load(), f.tread = d.raw[DcShift]->load() > 0.5f;
     f.jitCoef = 1 - std::exp(-2 * pi * 30 / d.fs), f.jitNorm = 0.5 / std::sqrt(f.jitCoef / (3 * (2 - f.jitCoef))); // ~5 ms walk, +-2 sigma
     float* x[2] = { buffer.getWritePointer(0), buffer.getWritePointer(channels - 1) };
+    const int w = scope.write.load(std::memory_order_relaxed);
+    float peak[2] {};
     for (int i = 0; i < n && channels > 0; ++i)
     {
         d.next(f);
         const double on = 1 - f.v[SBypass], mix = f.v[SMix] * on, gain = 1 + on * (f.v[SOut] - 1);
+        float in = 0, out = 0;
         for (int c = 0; c < channels; ++c) // non-finite input becomes silence; absurd levels are clipped
         {
             const double dry = std::isfinite(x[c][i]) ? jlimit(-1000.0f, 1000.0f, x[c][i]) : 0.0f;
             x[c][i] = (float) ((dry + mix * (d.ch[(size_t) c].process(dry, f) - dry)) * gain);
+            in += (float) dry / (float) channels, out += x[c][i] / (float) channels, peak[c] = jmax(peak[c], std::abs(x[c][i]));
         }
+        scope.push(w + i, in, out);
     }
+    scope.write.store(w + n, std::memory_order_release);
+    for (int c = 0; c < 2; ++c) // the editor takes the peak (exchange with 0); a race only loses one block's peak
+        scope.peak[c].store(jmax(scope.peak[c].load(std::memory_order_relaxed), peak[jmin(c, channels - 1)]), std::memory_order_relaxed);
 }
 
 void CrumbProcessor::getStateInformation(MemoryBlock& dest)
 {
     auto state = apvts.copyState();
     state.setProperty("stateVersion", stateVersion, nullptr);
+    // Additive since 0.1.0 milestone 3 (older readers ignore them): preset, A/B slots ("preset;v0,..,v15" normalised), editor size.
+    const ScopedLock sl(lock);
+    state.setProperty("preset", preset.load(), nullptr);
+    if (preset < 0 && userName.isNotEmpty())
+        state.setProperty("presetName", userName, nullptr);
+    state.setProperty("ab", ab, nullptr);
+    for (int k = 0; k < 2; ++k)
+        if (!slots[k].empty())
+        {
+            std::ostringstream t; // 9 significant digits: every float reads back exactly
+            t.imbue(std::locale::classic()), t.precision(9), t << slotPreset[k] << ';';
+            for (const float& v : slots[k])
+                t << v << (&v == &slots[k].back() ? "" : ",");
+            state.setProperty(k == 0 ? "slotA" : "slotB", String(t.str()), nullptr);
+        }
+    if (editorWidth > 0)
+        state.setProperty("editorWidth", editorWidth.load(), nullptr);
     if (auto xml = state.createXml())
         copyXmlToBinary(*xml, dest);
 }
 
-// Reads the flat <CRUMB><PARAM id=".." value=".."/>..</CRUMB> text inside JUCE's binary envelope with a single
+void CrumbProcessor::setStateInformation(const void* data, int size) { parse(data, size, false); }
+
+// Reads the flat <CRUMB a=".."><PARAM id=".." value=".."/>..</CRUMB> text inside JUCE's binary envelope with a single
 // non-recursive scan instead of JUCE's XML parser (which recurses per level, expands DTD entities and over-reads
 // truncated character references). JUCE's writer escapes '<', '>' and '"' inside values, so every state it writes
 // splits cleanly into tags and attributes. Unknown entries are ignored, values are clamped, missing or unparsable
 // ones reset to default; a blob that is not one complete <CRUMB> element (or holds "<!") leaves the state alone.
-void CrumbProcessor::setStateInformation(const void* data, int size)
+// paramsOnly (user preset files) skips the root's preset, A/B and editor attributes.
+bool CrumbProcessor::parse(const void* data, int size, bool paramsOnly)
 {
     const auto* bytes = static_cast<const char*>(data);
     if (bytes == nullptr || size < 8 || ByteOrder::littleEndianInt(bytes) != 0x21324356 || ByteOrder::littleEndianInt(bytes + 4) > (uint32) size - 8)
-        return;
+        return false;
     const std::string_view xml(bytes + 8, ByteOrder::littleEndianInt(bytes + 4)), space(" \t\r\n");
-    std::optional<std::string_view> found[numParams];
+    const char* const rootKeys[] = { "preset", "presetName", "ab", "slotA", "slotB", "editorWidth" };
+    std::optional<std::string_view> found[numParams], root[6];
     int depth = 0;
     bool complete = false;
     for (size_t open = xml.find('<'), close = 0; !complete && open != std::string_view::npos; open = xml.find('<', close))
     {
         if ((close = xml.find('>', open)) == std::string_view::npos)
-            return;
+            return false;
         auto tag = xml.substr(open + 1, close - open - 1);
         if (tag.empty() || tag[0] == '!' || (tag[0] == '/' && depth == 0))
-            return;
+            return false;
         if (tag[0] == '?' || tag[0] == '/') // the <?xml ?> declaration, or a closing tag
         {
             complete = tag[0] == '/' && --depth == 0;
@@ -381,9 +426,9 @@ void CrumbProcessor::setStateInformation(const void* data, int size)
         tag.remove_suffix(empty ? 1 : 0);
         const auto name = tag.substr(0, tag.find_first_of(space));
         if (depth == 0 && name != "CRUMB")
-            return;
+            return false;
         std::string_view id, value;
-        if (depth == 1 && name == "PARAM")
+        if ((depth == 1 && name == "PARAM") || depth == 0)
             for (auto rest = tag.substr(name.size());;) // attributes: name="text"
             {
                 const auto eq = rest.find("=\""), end = eq == std::string_view::npos ? eq : rest.find('"', eq + 2);
@@ -393,28 +438,166 @@ void CrumbProcessor::setStateInformation(const void* data, int size)
                 key.remove_prefix(std::min(key.size(), key.find_first_not_of(space)));
                 const auto text = rest.substr(eq + 2, end - eq - 2);
                 id = key == "id" ? text : id, value = key == "value" ? text : value;
+                for (int k = 0; k < 6 && depth == 0; ++k)
+                    if (key == rootKeys[k] && !root[k])
+                        root[k] = text;
                 rest.remove_prefix(end + 1);
             }
-        for (int i = 0; i < numParams; ++i)
+        for (int i = 0; i < numParams && depth == 1; ++i)
             if (id == ids[i] && !found[i]) // the first entry wins
                 found[i] = value;
         depth += empty ? 0 : 1;
         complete = depth == 0;
     }
     if (!complete)
-        return;
+        return false;
+    auto number = [](std::optional<std::string_view> t) -> std::optional<double> {
+        std::istringstream in(std::string(t.value_or(""))); // locale-independent, reports overflow
+        in.imbue(std::locale::classic());
+        double v = 0;
+        return t && in >> v && (in >> std::ws).eof() ? std::optional(jlimit(-1.0e6, 1.0e6, v)) : std::nullopt;
+    };
     // Migration hook: stateVersion 1 is the only format so far. When a later version changes the meaning of stored
     // data, read the root's stateVersion here and translate `found` before it is applied (append-only IDs need nothing).
     for (int i = 0; i < numParams; ++i)
     {
         auto* p = apvts.getParameter(ids[i]);
-        std::istringstream in(std::string(found[i].value_or(""))); // locale-independent, reports overflow
-        in.imbue(std::locale::classic());
-        double v = 0;
-        const bool ok = found[i] && in >> v && (in >> std::ws).eof();
-        p->setValueNotifyingHost(ok ? p->convertTo0to1(p->getNormalisableRange().snapToLegalValue((float) jlimit(-1.0e6, 1.0e6, v))) : p->getDefaultValue());
+        const auto v = number(found[i]);
+        if (!(paramsOnly && i == Bypass))
+            p->setValueNotifyingHost(v ? p->convertTo0to1(p->getNormalisableRange().snapToLegalValue((float) *v)) : p->getDefaultValue());
+    }
+    if (paramsOnly)
+        return true;
+    const ScopedLock sl(lock);
+    preset = (int) jlimit(-1.0, 24.0, number(root[0]).value_or(-1)); // a state from before presets: "custom"
+    userName = String(std::string(root[1].value_or(""))).retainCharacters("abcdefghijklmnopqrstuvwxyz0123456789 _-").substring(0, 40);
+    ab = number(root[2]).value_or(0) > 0.5 ? 1 : 0;
+    for (int k = 0; k < 2; ++k) // a slot counts only with a preset and 16 normalised values
+    {
+        const auto t = StringArray::fromTokens(String(std::string(root[3 + k].value_or(""))), ";,", "");
+        slots[k].clear(), slotName[k] = {};
+        slotPreset[k] = (int) jlimit(-1.0, 24.0, number(t[0].toStdString()).value_or(-1));
+        for (int i = 1; i < t.size() && t.size() == 17; ++i)
+            if (const auto v = number(t[i].toStdString()); v && *v >= 0 && *v <= 1)
+                slots[k].push_back((float) *v);
+        if (slots[k].size() != 16)
+            slots[k].clear();
+    }
+    editorWidth = (int) jlimit(0.0, 4096.0, number(root[5]).value_or(0));
+    return true;
+}
+
+// ================================ Factory presets (constexpr) ================================
+// Values: preamp dB, bits (0 off), dcShift, dither %, rate Hz, jitter %, approxOn, approxDev %, imagesOn, imagesShift %,
+// fType (0 off 1 lp 2 bp 3 hp 4 br), fOrder (0 pre 1 post), cutoff Hz, reso %, mix %, output dB.
+// 1-12: classic 8/12/16-bit sampler flavours (generic names), 13-24: by use. Names are "bits·rate flavour".
+constexpr crumb::Preset crumb::presets[25] = {
+    { "init", { 0, 12, 0, 0, 26040, 0, 1, 0, 0, 0, 0, 1, 20000, 0, 100, 0 } },
+    { "12\xc2\xb7" "26k dusty", { 4, 12, 0, 0, 26040, 4, 1, 0, 1, 10, 1, 1, 11000, 8, 100, -1 } },
+    { "12\xc2\xb7" "40k warm", { 6, 12, 0, 0, 39062.5f, 2, 1, 0, 1, 0, 1, 1, 15000, 5, 100, -2 } },
+    { "8\xc2\xb7" "22k grit", { 9, 8, 0, 0, 22050, 6, 1, 0, 0, 0, 0, 1, 20000, 0, 100, -4 } },
+    { "16\xc2\xb7" "40k clean", { 0, 16, 0, 30, 40000, 0, 1, 0, 1, 20, 0, 1, 20000, 0, 100, 0 } },
+    { "10\xc2\xb7" "dark", { 3, 10, 0, 0, 16000, 3, 1, -30, 1, 0, 1, 1, 5500, 10, 100, 0 } },
+    { "12\xc2\xb7" "32k punch", { 12, 12, 0, 0, 31250, 2, 1, 0, 1, 15, 0, 1, 20000, 0, 100, -6 } },
+    { "8\xc2\xb7" "11k crunch", { 6, 8, 0, 0, 11025, 5, 0, 0, 0, 0, 0, 1, 20000, 0, 100, -4 } },
+    { "12\xc2\xb7" "26k tread", { 2, 12, 1, 0, 26040, 3, 1, 0, 1, 10, 1, 1, 12000, 0, 100, -1 } },
+    { "8\xc2\xb7" "16k fold", { 4, 8, 0, 0, 16000, 4, 1, 40, 0, 0, 0, 1, 20000, 0, 100, -3 } },
+    { "6\xc2\xb7" "8k toy", { 6, 6, 0, 0, 8000, 8, 0, 0, 0, 0, 0, 1, 20000, 0, 100, -6 } },
+    { "14\xc2\xb7" "44k glue", { 5, 14, 0, 40, 44100, 1, 1, 0, 1, 30, 0, 1, 20000, 0, 100, -2 } },
+    { "12\xc2\xb7" "20k thick", { 8, 12, 0, 0, 20000, 5, 1, -10, 1, 0, 1, 1, 9000, 15, 100, -3 } },
+    { "drums \xc2\xb7 crunch bus", { 10, 10, 0, 0, 22050, 3, 1, 0, 1, 10, 0, 1, 20000, 0, 70, -3 } },
+    { "drums \xc2\xb7 break dust", { 6, 12, 0, 0, 26040, 6, 1, -10, 1, 0, 1, 1, 9500, 10, 100, -2 } },
+    { "bass \xc2\xb7 warm 12", { 8, 12, 0, 0, 26040, 0, 1, -20, 1, 0, 1, 1, 4000, 20, 100, -3 } },
+    { "bass \xc2\xb7 sub grit", { 14, 8, 0, 0, 12000, 2, 1, 0, 1, 0, 1, 0, 2500, 25, 60, -4 } },
+    { "keys \xc2\xb7 lo-fi", { 4, 10, 0, 30, 18000, 12, 1, -20, 1, 0, 1, 1, 6500, 5, 100, 0 } },
+    { "vocal \xc2\xb7 radio", { 10, 8, 0, 20, 11025, 0, 1, 0, 1, 0, 2, 1, 1800, 40, 100, -2 } },
+    { "vocal \xc2\xb7 phone", { 6, 8, 1, 0, 8000, 0, 1, 0, 1, 0, 2, 1, 1200, 55, 100, -1 } },
+    { "hats \xc2\xb7 sizzle", { 0, 6, 0, 0, 30000, 0, 0, 0, 0, 0, 3, 1, 5000, 0, 50, -2 } },
+    { "pad \xc2\xb7 drift", { 2, 12, 0, 20, 22050, 60, 1, -10, 1, 20, 1, 1, 8000, 0, 100, 0 } },
+    { "fx \xc2\xb7 alias sweep", { 0, 16, 0, 0, 6000, 0, 1, 100, 0, 0, 0, 1, 20000, 0, 100, -3 } },
+    { "fx \xc2\xb7 700 hz wreck", { 12, 4, 0, 0, 700, 30, 0, 0, 0, 0, 1, 1, 3000, 30, 100, -8 } },
+    { "mix \xc2\xb7 parallel crush", { 12, 8, 0, 0, 16000, 4, 1, 0, 1, 0, 0, 1, 20000, 0, 35, 0 } },
+};
+
+void CrumbProcessor::setAll(const float* normalised)
+{
+    for (int i = 0; i < Bypass; ++i)
+        if (auto* p = apvts.getParameter(ids[i]); std::abs(p->getValue() - normalised[i]) > 1e-7f)
+            p->beginChangeGesture(), p->setValueNotifyingHost(normalised[i]), p->endChangeGesture();
+}
+
+void CrumbProcessor::setCurrentProgram(int index)
+{
+    if (!isPositiveAndBelow(index, 25))
+        return;
+    float n[16];
+    for (int i = 0; i < Bypass; ++i)
+        n[i] = apvts.getParameter(ids[i])->convertTo0to1(crumb::presets[index].v[i]);
+    setAll(n);
+    preset = index;
+    updateHostDisplay(ChangeDetails().withProgramChanged(true));
+}
+
+const String CrumbProcessor::getProgramName(int index) { return isPositiveAndBelow(index, 25) ? String::fromUTF8(crumb::presets[index].name) : String(); }
+
+File CrumbProcessor::presetFolder() { return File::getSpecialLocation(File::userApplicationDataDirectory).getChildFile("daveydidit/crumb/Presets"); }
+
+String CrumbProcessor::presetName()
+{
+    const ScopedLock sl(lock);
+    return preset >= 0 ? getProgramName(preset) : userName.isEmpty() ? String("custom") : userName;
+}
+
+void CrumbProcessor::stepPreset(int delta)
+{
+    auto files = presetFolder().findChildFiles(File::findFiles, false, "*.xml");
+    files.sort();
+    int at = preset;
+    for (int k = 0; k < files.size() && at < 0; ++k)
+        at = files[k].getFileNameWithoutExtension() == presetName() ? 25 + k : at;
+    at = (jmax(0, at) + delta + 25 + files.size()) % (25 + files.size()); // an unknown position steps from "init"
+    if (at < 25)
+        return setCurrentProgram(at);
+    MemoryOutputStream m; // the file is plain XML: give it the state envelope and read it like a state
+    const auto text = files[at - 25].loadFileAsString();
+    m.writeInt(0x21324356), m.writeInt((int) text.getNumBytesAsUTF8()), m << text;
+    if (parse(m.getData(), (int) m.getDataSize(), true))
+    {
+        const ScopedLock sl(lock);
+        preset = -1, userName = files[at - 25].getFileNameWithoutExtension();
     }
 }
 
-AudioProcessorEditor* CrumbProcessor::createEditor() { return new GenericAudioProcessorEditor(*this); } // placeholder UI
+File CrumbProcessor::saveUserPreset()
+{
+    const auto folder = presetFolder();
+    folder.createDirectory();
+    File file;
+    for (int k = 1; k < 1000 && (file == File() || file.exists()); ++k)
+        file = folder.getChildFile("user " + String(k).paddedLeft('0', 2) + ".xml");
+    auto xml = apvts.copyState().createXml();
+    if (xml == nullptr || !xml->writeTo(file))
+        return {};
+    const ScopedLock sl(lock);
+    preset = -1, userName = file.getFileNameWithoutExtension();
+    return file;
+}
+
+void CrumbProcessor::selectAb(int slot)
+{
+    const ScopedLock sl(lock);
+    if (slot == ab || !isPositiveAndBelow(slot, 2))
+        return;
+    auto& leaving = slots[ab];
+    leaving.resize(16);
+    for (int i = 0; i < Bypass; ++i)
+        leaving[(size_t) i] = apvts.getParameter(ids[i])->getValue();
+    slotPreset[ab] = preset, slotName[ab] = userName, ab = slot;
+    if (slots[slot].empty()) // never visited: it starts as a copy of the other slot
+        return;
+    const auto entering = slots[slot]; // a copy: a listener may save, which writes the slots
+    setAll(entering.data());
+    preset = slotPreset[slot], userName = slotName[slot];
+}
+
 AudioProcessor* JUCE_CALLTYPE createPluginFilter() { return new CrumbProcessor(); }

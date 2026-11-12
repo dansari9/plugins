@@ -48,7 +48,12 @@ juce_add_plugin(Crumb
     VST3_CATEGORIES Fx Distortion
 )
 
-target_sources(Crumb PRIVATE Source/Crumb.cpp)
+target_sources(Crumb PRIVATE Source/Crumb.cpp Source/CrumbEditor.cpp)
+
+# Geist Mono (SIL OFL 1.1, Assets/Fonts/OFL.txt), the same faces as Rootnote.
+juce_add_binary_data(CrumbFonts SOURCES
+    Assets/Fonts/GeistMono-Regular.ttf Assets/Fonts/GeistMono-Medium.ttf Assets/Fonts/GeistMono-SemiBold.ttf)
+set_target_properties(CrumbFonts PROPERTIES POSITION_INDEPENDENT_CODE TRUE)
 
 target_compile_definitions(Crumb
     PUBLIC
@@ -61,6 +66,7 @@ target_compile_definitions(Crumb
 
 target_link_libraries(Crumb
     PRIVATE
+        CrumbFonts
         juce::juce_audio_utils
         juce::juce_recommended_config_flags
         juce::juce_recommended_warning_flags
