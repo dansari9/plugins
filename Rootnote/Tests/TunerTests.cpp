@@ -6,6 +6,7 @@
 #include "dsp/NoteMath.h"
 
 #include <chrono>
+#include <limits>
 #include <string>
 #include <thread>
 #include <vector>
@@ -49,12 +50,13 @@ std::vector<float> kickRow(const std::vector<double>& pitches, double fs, Random
 }
 
 /** Feeds the worker the way an audio callback does: 512-sample blocks at about real-time speed x 8. */
-void play(AnalysisWorker& worker, const std::vector<float>& signal, double fs)
+void play(AnalysisWorker& worker, const std::vector<float>& signal, double fs, bool stereo = false)
 {
     const auto blockTime = std::chrono::duration<double>(512.0 / fs / 8.0);
     for (size_t position = 0; position < signal.size(); position += 512)
     {
-        worker.push(signal.data() + position, nullptr, static_cast<int>(std::min<size_t>(512, signal.size() - position)));
+        const float* left = signal.data() + position;
+        worker.push(left, stereo ? left : nullptr, static_cast<int>(std::min<size_t>(512, signal.size() - position)));
         std::this_thread::sleep_for(blockTime);
     }
 }
@@ -262,6 +264,29 @@ TEST_CASE("AnalysisWorker: reads the pitch on its own thread, only while enabled
     worker.enable(false);
     CHECK(!worker.isEnabled());
     CHECK(worker.reading().valid);
+}
+
+TEST_CASE("AnalysisWorker: non-finite input does not stop subsequent pitch readings")
+{
+    const double fs = 48000.0;
+    for (bool stereo : { false, true })
+    {
+        AnalysisWorker worker;
+        worker.setSampleRate(fs);
+        worker.enable(true);
+        std::this_thread::sleep_for(std::chrono::milliseconds(150));
+
+        Random random(12);
+        auto kicks = kickRow({ 55.0, 55.0, 55.0, 55.0 }, fs, random);
+        kicks[128] = std::numeric_limits<float>::quiet_NaN();
+        kicks[129] = std::numeric_limits<float>::infinity();
+        kicks[130] = -std::numeric_limits<float>::infinity();
+        play(worker, kicks, fs, stereo);
+        CHECK(waitFor(worker, 3));
+        CHECK(worker.reading().valid);
+        CHECK_NEAR(centsBetween(worker.reading().hz, 55.0), 0.0, 10.0);
+        worker.enable(false);
+    }
 }
 
 TEST_CASE("AnalysisWorker: recovers from a flooded FIFO and starts afresh on a new sample rate")

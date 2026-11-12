@@ -37,7 +37,7 @@ struct EngineParams
     double ringDecaySeconds = 0.6;
     double ringDropSemitones = 0.0;
 
-    MidiMode midiMode = MidiMode::channels12;
+    MidiMode midiMode = MidiMode::off;
     double glideSeconds = 0.0;
     NoteOffMode noteOff = NoteOffMode::hold;
     int key = 0;

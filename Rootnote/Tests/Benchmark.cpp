@@ -63,6 +63,7 @@ double measure(Input input, bool glide)
     Engine engine;
     engine.prepare(kSampleRate, kBlockSize);
     EngineParams params = worstCase();
+    params.midiMode = MidiMode::channels12;
     params.glideSeconds = glide ? 0.2 : 0.0;
     engine.setParams(params);
 

@@ -288,6 +288,7 @@ TEST_CASE("MIDI in the engine: the change starts on the exact sample of the even
 {
     const double fs = 48000.0;
     EngineParams params;
+    params.midiMode = MidiMode::channels12;
     params.boostGainDb = 12.0;
     params.boostQ = 20.0;
     params.limiter = false;
@@ -338,6 +339,7 @@ TEST_CASE("MIDI in the engine: glide is linear in pitch and takes the Glide time
     Engine engine;
     engine.prepare(fs, 512);
     EngineParams params;
+    params.midiMode = MidiMode::channels12;
     params.glideSeconds = 0.100;
     engine.setParams(params);
     advance(engine, 512);
@@ -376,6 +378,7 @@ TEST_CASE("MIDI in the engine: Glide 0 still moves over 5 ms, never as a jump")
     Engine engine;
     engine.prepare(fs, 512);
     EngineParams params;
+    params.midiMode = MidiMode::channels12;
     params.glideSeconds = 0.0;
     engine.setParams(params);
     advance(engine, 512);
@@ -393,6 +396,7 @@ TEST_CASE("MIDI in the engine: note-off Return glides back to the knob, fine tun
     Engine engine;
     engine.prepare(fs, 512);
     EngineParams params;
+    params.midiMode = MidiMode::channels12;
     params.noteOff = NoteOffMode::returnToKnob;
     params.glideSeconds = 0.050;
     params.boostFineCents = 25.0;
@@ -427,6 +431,7 @@ TEST_CASE("MIDI in the engine: key lock and MIDI mode from the parameters")
     Engine engine;
     engine.prepare(fs, 512);
     EngineParams params;
+    params.midiMode = MidiMode::channels12;
     params.keyLock = true;
     params.key = 6;              // F#
     params.scale = Scale::minor; // F# G# A B C# D E
@@ -479,6 +484,7 @@ TEST_CASE("MIDI: the knob can take a bank back without moving")
     Engine engine;
     engine.prepare(48000.0, 512);
     EngineParams params;
+    params.midiMode = MidiMode::channels12;
     params.boostNote = 36.0;
     engine.setParams(params);
     engine.handleMidi(on(1, 60));

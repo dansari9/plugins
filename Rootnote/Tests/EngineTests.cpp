@@ -329,6 +329,7 @@ TEST_CASE("Engine: a two-octave MIDI jump every 10 ms does not click")
     const Signal input = sine(110.0, fs, length, 0.1);
 
     EngineParams p;
+    p.midiMode = MidiMode::channels12;
     p.boostGainDb = 12.0;
     p.boostQ = 12.0;
     p.limiter = false;
@@ -375,6 +376,7 @@ TEST_CASE("Engine: output does not depend on the host block size")
         addKick(input, start, KickSpec {}, fs, random);
 
     EngineParams p = extreme();
+    p.midiMode = MidiMode::channels12;
     p.boostQ = 30.0;
     p.ringDecaySeconds = 0.4;
 
@@ -606,6 +608,7 @@ TEST_CASE("Engine: the reported tail covers slow low bells, notes played by MIDI
 
     // The knob says C6, MIDI plays C1: the tail has to cover the note that sounds.
     EngineParams played;
+    played.midiMode = MidiMode::channels12;
     played.boostNote = 84.0;
     played.boostQ = 200.0;
     played.boostGainDb = 24.0;
@@ -632,6 +635,7 @@ TEST_CASE("Engine: the reported tail covers slow low bells, notes played by MIDI
 
     // The cut bank follows MIDI on channel 2.
     EngineParams cutting;
+    cutting.midiMode = MidiMode::channels12;
     cutting.boostGainDb = 0.0;
     cutting.cutOn = true;
     cutting.cutNote = 84.0;

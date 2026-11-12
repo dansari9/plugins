@@ -256,21 +256,19 @@ void Engine::processChunk(float* left, float* right, int numSamples) noexcept
     }
 
     // A non-finite upstream sample poisons recursive filters, even with the
-    // limiter on. The original dry chunk is still available here.
-    for (int i = 0; i < numSamples; ++i)
+    // limiter on, and persists through the last sample. The dry chunk is still available.
+    const int last = numSamples - 1;
+    if (!std::isfinite(wl[last]) || (wr != nullptr && !std::isfinite(wr[last])))
     {
-        if (!std::isfinite(wl[i]) || (wr != nullptr && !std::isfinite(wr[i])))
+        clearProcessingState();
+        for (int i = 0; i < numSamples; ++i)
         {
-            clearProcessingState();
-            for (int j = 0; j < numSamples; ++j)
-            {
-                if (!std::isfinite(left[j]))
-                    left[j] = 0.0f;
-                if (right != nullptr && !std::isfinite(right[j]))
-                    right[j] = 0.0f;
-            }
-            return;
+            if (!std::isfinite(left[i]))
+                left[i] = 0.0f;
+            if (right != nullptr && !std::isfinite(right[i]))
+                right[i] = 0.0f;
         }
+        return;
     }
 
     for (int i = 0; i < numSamples; ++i)

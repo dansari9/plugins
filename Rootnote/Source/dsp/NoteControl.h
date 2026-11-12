@@ -45,7 +45,7 @@ public:
 
     struct Config
     {
-        MidiMode mode = MidiMode::channels12;
+        MidiMode mode = MidiMode::off;
         NoteOffMode noteOff = NoteOffMode::hold;
         bool keyLock = false;
         int key = 0;

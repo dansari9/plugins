@@ -67,10 +67,6 @@ Close your DAW, copy the complete bundle, then rescan plugins:
 | Linux VST3 | `~/.vst3/Rootnote.vst3` |
 | Windows VST3 | `%LOCALAPPDATA%\Programs\Common\VST3\Rootnote.vst3` (or the host's configured VST3 folder) |
 
-On Mac, quit Logic/Live and copy `Rootnote.component` into
-`~/Library/Audio/Plug-Ins/Components/`. For Ableton Live, copy `Rootnote.vst3`
-into `~/Library/Audio/Plug-Ins/VST3/`.
-
 CI builds are ad-hoc signed and signature-verified, but are not notarized.
 For a downloaded build you trust, remove quarantine from the installed bundle:
 
@@ -98,7 +94,8 @@ insert to show the editor; if Logic shows its generic controls, select
 
 The AU is now a plain Audio FX so normal drum inserts use the track's audio
 without MIDI-controlled-effect instrument/side-chain routing. Optional MIDI
-control remains available in VST3 and Standalone; use the note controls in Logic.
+control remains available in VST3 and Standalone and defaults to **Off**; use
+the note controls in Logic. Saved sessions retain their stored MIDI mode.
 
 The AU identity is `aufx RtNt Dwks`; validate with `auval -v aufx RtNt Dwks`.
 The type changed from the pre-0.4.2 MIDI-controlled AU. Existing sessions using
@@ -107,7 +104,8 @@ this is not an automatic replacement of the old instrument-slot instance.
 
 ## Ableton Live
 
-Use the **VST3** on the drum audio track. Create a separate MIDI track with no
+Use the **VST3** on the drum audio track and enable **Ch 1+2** in Rootnote's MIDI
+page for MIDI control (the default is **Off**). Create a separate MIDI track with no
 instrument, show I/O, set its **MIDI To** upper chooser to the drum track and
 the lower chooser to **Rootnote**. Play a MIDI clip, or arm the MIDI track with
 Monitor Auto / use Monitor In for a keyboard. Keep drum audio playing: MIDI
@@ -182,7 +180,8 @@ The checked-in image is [artifacts/rootnote_editor.png](artifacts/rootnote_edito
 Linux core/plugin tests and VST3 pluginval are automated. The tests include
 all factory preset values and state restoration, A/B, headless editor lifetime
 and resizing; [comparison rules and review regressions](Tests/README.md) are
-documented separately. AU validation, universal binary checks and listening/
-MIDI routing in Logic and Live still require those hosts on macOS/Windows.
+documented separately. macOS CI validates the AU and universal binaries.
+Listening in Logic and Live, and MIDI routing in Live (VST3), still require
+those hosts on macOS/Windows.
 This release keeps the minimal editor; it does not implement the visual design
 proposed in the original M4 plan.

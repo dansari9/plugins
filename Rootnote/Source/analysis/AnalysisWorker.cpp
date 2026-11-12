@@ -1,6 +1,7 @@
 #include "AnalysisWorker.h"
 
 #include <chrono>
+#include <cmath>
 #include <vector>
 
 namespace rootnote
@@ -47,8 +48,14 @@ void AnalysisWorker::push(const float* left, const float* right, int numSamples)
         return;
 
     const bool written = right != nullptr
-        ? fifo.write(static_cast<size_t>(numSamples), [=](size_t i) { return 0.5f * (left[i] + right[i]); })
-        : fifo.write(static_cast<size_t>(numSamples), [=](size_t i) { return left[i]; });
+        ? fifo.write(static_cast<size_t>(numSamples), [=](size_t i) {
+              const float v = 0.5f * (left[i] + right[i]);
+              return std::isfinite(v) ? v : 0.0f;
+          })
+        : fifo.write(static_cast<size_t>(numSamples), [=](size_t i) {
+              const float v = left[i];
+              return std::isfinite(v) ? v : 0.0f;
+          });
 
     if (!written)
         overflowed.store(true, std::memory_order_relaxed);

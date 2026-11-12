@@ -150,7 +150,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout()
     addFloat(ids::ringDecay, "Decay", logRange(50.0f, 4000.0f), 600.0f, milliseconds());
     addFloat(ids::ringDrop, "Drop", { 0.0f, 12.0f, 0.01f }, 0.0f, withUnit("st", 2));
 
-    addChoice(ids::midiMode, "MIDI", { "Off", "Ch 1+2", "Omni > Boost" }, 1);
+    addChoice(ids::midiMode, "MIDI", { "Off", "Ch 1+2", "Omni > Boost" }, 0);
     addFloat(ids::glide, "Glide", { 0.0f, 500.0f, 1.0f }, 0.0f, milliseconds());
     addChoice(ids::noteOff, "Note-off", { "Hold", "Return" });
     addChoice(ids::key, "Key", keys);
