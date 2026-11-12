@@ -1,6 +1,6 @@
 # Snap
 
-A tiny drum transient shaper by Dripworks. Version 0.1.0. Zero latency, mono or stereo.
+A tiny drum transient shaper by daveydidit. Version 0.1.1. Zero latency, mono or stereo.
 
 Snap follows the level of the drum with a fast and a slow envelope. While a hit starts, the fast
 envelope is above the slow one, and **Attack** turns that part up or down. While the hit rings out,
@@ -41,14 +41,18 @@ On macOS, use `-G Xcode` and build `Snap_AU` and `Snap_VST3`.
    ```bash
    xattr -dr com.apple.quarantine ~/Library/Audio/Plug-Ins/Components/Snap.component
    ```
-4. Restart Logic. Snap is under **Audio FX > Dripworks > Snap**. If it is missing, open
+4. Restart Logic. Snap is under **Audio FX > daveydidit > Snap**. If it is missing, open
    Logic > Settings > Plug-in Manager and choose **Reset & Rescan Selection**.
+
+Updating from 0.1.0: the brand changed from Dripworks to daveydidit, so after **Reset & Rescan Selection**
+Logic lists Snap under **Audio Units > daveydidit** instead of Dripworks. Existing sessions still load,
+because the manufacturer code, plug-in code, bundle ID and parameter IDs are unchanged.
 
 For the VST3, copy `Snap.vst3` to `~/Library/Audio/Plug-Ins/VST3/` and run the same `xattr` command on it.
 
 ## Frozen identifiers
 
-Never change these. Hosts find the plug-in and its saved settings through them.
+Never change these (the company name `daveydidit` is display-only and not one of them). Hosts find the plug-in and its saved settings through them.
 
 | What | Value |
 | --- | --- |
@@ -56,7 +60,7 @@ Never change these. Hosts find the plug-in and its saved settings through them.
 | Manufacturer code | `Dwks` |
 | Plug-in code | `Snap` |
 | Bundle ID | `com.dripworks.snap` |
-| Company / product | `Dripworks` / `Snap` |
+| Product name | `Snap` |
 | Parameter IDs | `attack`, `sustain`, `mix`, `output` (version hint 1) |
 
 `auval -v aufx Snap Dwks` validates the AU.

@@ -181,7 +181,7 @@ static void testIdentity() // (4)
     CHECK(JucePlugin_ManufacturerCode == 0x44776b73); // 'Dwks'
     CHECK(juce::String(JUCE_STRINGIFY(JucePlugin_AUMainType)) == "'aufx'");
     CHECK(juce::String(JUCE_STRINGIFY(JucePlugin_CFBundleIdentifier)) == "com.dripworks.snap");
-    CHECK(juce::String(JucePlugin_Name) == "Snap" && juce::String(JucePlugin_Manufacturer) == "Dripworks");
+    CHECK(juce::String(JucePlugin_Name) == "Snap" && juce::String(JucePlugin_Manufacturer) == "daveydidit");
     CHECK(!JucePlugin_IsSynth && !JucePlugin_WantsMidiInput);
     Proc p;
     juce::StringArray found;

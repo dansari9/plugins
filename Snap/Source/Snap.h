@@ -2,7 +2,7 @@
 #include <juce_audio_utils/juce_audio_utils.h>
 #include <array>
 
-// Snap: drum transient shaper by Dripworks.
+// Snap: drum transient shaper by daveydidit.
 // FROZEN: parameter IDs "attack", "sustain", "mix", "output" (ParameterID version 1) and the
 // state format (APVTS XML with stateVersion = 1). Never rename or remove; only add.
 class SnapProcessor : public juce::AudioProcessor
