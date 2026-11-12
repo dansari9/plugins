@@ -215,7 +215,7 @@ TEST_CASE("TransientGate: one window per hit")
     double area = 0.0;
     for (float x : loop)
     {
-        area += static_cast<double>(gate.tick(x));
+        area += gate.tick(static_cast<double>(x));
         triggers += gate.takeTrigger() ? 1 : 0;
     }
     CHECK(triggers == 8);
