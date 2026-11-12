@@ -106,6 +106,14 @@ jobs:
       - name: Unit tests
         run: xvfb-run -a Snap/build/SnapTests
 
+      - name: Unit tests under ASan + UBSan
+        run: |
+          S="-fsanitize=address,undefined,float-cast-overflow -fno-sanitize-recover=all -fno-omit-frame-pointer"
+          cmake -S Snap -B Snap/build-asan -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            "-DCMAKE_C_FLAGS=$S" "-DCMAKE_CXX_FLAGS=$S" "-DCMAKE_EXE_LINKER_FLAGS=-fsanitize=address,undefined"
+          cmake --build Snap/build-asan --parallel 2 --target SnapTests
+          xvfb-run -a Snap/build-asan/SnapTests
+
       - name: pluginval (strictness 10)
         run: |
           curl -sL -o pluginval.zip https://github.com/Tracktion/pluginval/releases/latest/download/pluginval_Linux.zip
