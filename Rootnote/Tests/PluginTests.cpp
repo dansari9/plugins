@@ -1370,7 +1370,11 @@ public:
         root.setVisible(true);
         dispatchMessages();
 #if JUCE_LINUX
-        for (int attempt = 0; attempt < 200 && !x11::focus(root.getPeer()->getNativeHandle()); ++attempt)
+        // Until JUCE itself has seen the FocusIn: before that it thinks another application is active,
+        // and a popup menu dismisses itself on the very mouse-up that opens it.
+        for (int attempt = 0; attempt < 200
+                              && !(x11::focus(root.getPeer()->getNativeHandle()) && juce::Process::isForegroundProcess());
+             ++attempt)
         {
             juce::Thread::sleep(5);
             dispatchMessages();
