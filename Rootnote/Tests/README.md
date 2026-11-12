@@ -31,3 +31,22 @@ behaviour; weakening them would hide data loss or unwanted audio processing.
 Plugin tests also cover editor-gated spectrum/peaks, reopening without stale
 samples, live smoothed band gains and concurrent complete UI snapshots.
 Finding 10 is intentionally outside this change.
+
+# Review 2 regressions
+
+The editor tests send real mouse and key events through a desktop window's
+peer (`Desk`), not direct callback calls. Under `xvfb-run` there is no window
+manager, so `main()` first defines the X atoms JUCE expects and `Desk` hands
+its window the keyboard focus.
+
+| Finding | Regression coverage |
+| --- | --- |
+| 1 | Preset and settings menu results delivered after the editor closed are dropped |
+| 2 | Preset/size kept out of `apvts.state`; concurrent restores while reading; 0.4.0 states |
+| 3 | Gesture counts for a drag across a page remap, a same-page reselect and closing the editor |
+| 4 | Clicking/Alt-clicking the unchanged knob note after MIDI took the bank (also core `takeBack`) |
+| 5 | Program count, names, values equal to `loadPreset()`, no gestures, call from another thread |
+| 6 | Legacy 400×320 size opens at 720×405; oversize clamps to 1920×1080 |
+| 7 | Alt/Cmd/right-click and legend-click text entry with the parameter's parser, Escape, arrow keys, focus order |
+| 8 | Blend's encoder rebound as Fine formats and parses cents; choices use their own text |
+| 9 | Hold past `kPagePeekMs` peeks and restores; a short click selects |

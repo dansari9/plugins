@@ -15,8 +15,14 @@ multiple activity users, but only one consumer of the display/spectrum/peaks.
 | `tunerReading()` | Input pitch, hit counts, clarity and glide. Worker/UI share one short mutex; the audio producer never takes it. Invalid readings disable Match/Tune. |
 | `readSpectrumSamples(dest, count)` | Bounded SPSC FIFO of mono output samples at the display sample rate. One reader. FFT and windowing belong to the editor. A full FIFO drops an entire incoming block. |
 | `takeOutputPeak(channel)` | Atomic peak since the last read, linear amplitude, channel 0 or 1. UI applies meter decay. |
-| `matchCutToHit()` / `tuneBoostToKey()` | Apply the detected pitch via host-notified APVTS gestures. Match also enables Cut; Tune snaps to the selected scale and clears Fine. |
+| `setKnobNote(bank, note)` | Sets the boost or cut note as a gesture and takes that bank back from a held MIDI note, even if the value is unchanged (an atomic request the next audio block consumes). Use it for every explicit note choice. |
+| `matchCutToHit()` / `tuneBoostToKey()` | Apply the detected pitch via host-notified APVTS gestures and `setKnobNote()`. Match also enables Cut; Tune snaps to the selected scale and clears Fine. |
 | `loadPreset()`, `selectAbSlot()` | Message-thread operations; all sound values go through APVTS. Host state restoration invalidates A/B using an atomic request consumed on the message thread. |
+| `currentPreset()`, `storedEditorSize()` / `storeEditorSize()` | Atomics, never `apvts.state`: a host may replace that tree on another thread. They are added to the saved state and read back from it. |
+
+The factory presets are also the host's programs. `setCurrentProgram()` may
+come from any thread: it sets precomputed normalised values with no gestures,
+allocations or state-tree changes.
 
 Limiter reduction in dB is `-20 * log10(limiterGain)`. MIDI activity is a
 change in the unsigned note-on counter (wraparound is harmless).

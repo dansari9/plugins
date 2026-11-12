@@ -1,4 +1,4 @@
-# Rootnote 0.4.0
+# Rootnote 0.4.1
 
 Dripworks note-based resonant drum-tuning EQ. Cut unwanted resonances, boost a
 note and its harmonic, octave or membrane series, and add a transient-excited
@@ -17,8 +17,12 @@ pages and eight colour-coded encoders.
   Boost: Gain, Q, Bands, Focus, Range, Blend, Tilt, Fine. Cut: Depth, Q,
   Overtones, Bands, Note (whole semitones), Fine (its cents), Cut on/off.
   Ring: Amount, Decay, Drop. Out: Mix, Output, Glide, A4, Q mode. MIDI: Mode,
-  Note-off, Key, Scale.
+  Note-off, Key, Scale. Hold a page key to peek at its values on the screen;
+  a click selects it.
 - **Encoders:** drag up/down, Shift for fine control, double-click to reset.
+  Alt-, Cmd- or right-click an encoder, or click its value on the screen, to
+  type a value ("55 Hz", "F#1", "-6 dB"). With the keyboard focus (click or
+  Tab), the arrow keys step it, Shift finer, and Return opens the text field.
 - **Series keys** harm/oct/drum, **link** (Focus follows the note), **limit**.
 - **Header:** preset (click the name for the list, arrows to step), A/B,
   settings (UI size, Q mode, note-off) and the orange ON switch (bypass).
@@ -129,6 +133,7 @@ preservation rule.
 | Noise Lattice | Harmonic; 24 bands; Q 120; Boost +18 dB; Mix 70% |
 
 For Snare Core/Tom Shift, use Match cut to remove the detected original note.
+The presets are also the host's programs, for host preset browsers.
 Preset names are retained after edits. **A/B** stores the settings and preset
 name of the slot you leave; B initially copies A. Bypass is shared. Only the
 active settings are saved in the host session; restoring starts a fresh A/B
