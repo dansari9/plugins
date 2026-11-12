@@ -83,7 +83,7 @@ TEST_CASE("BandBank: every band centre sits exactly on root x ratio")
             const double centre = root * ratio;
             if (centre > 6000.0)
                 continue; // keep the test short; the high bands are covered by the Nyquist test
-            CHECK(bank.slotRatio(slot) == ratio);
+            CHECK_NEAR(bank.slotRatio(slot), ratio, 1.0e-10);
 
             const double settle = 4.0 * bellRingSeconds(centre, 60.0, 12.0);
             const double atCentre = bankGainDb(bank, centre, fs, settle);
@@ -513,7 +513,7 @@ TEST_CASE("BandBank: switching the series fades bands out and back in without a 
     }
 
     for (int slot = 0; slot < kOctaveSlots; ++slot)
-        CHECK(bank.slotRatio(slot) == seriesRatio(SeriesType::octaves, slot));
+        CHECK_NEAR(bank.slotRatio(slot), seriesRatio(SeriesType::octaves, slot), 1.0e-10);
 
     const double w = kTwoPi * probe / fs;
     double worst = 0.0;

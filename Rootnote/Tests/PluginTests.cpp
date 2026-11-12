@@ -7,6 +7,8 @@
 #include "PluginEditor.h"
 #include "PluginProcessor.h"
 
+#include <limits>
+
 using namespace rootnote;
 using namespace testsignals;
 
@@ -40,15 +42,19 @@ float get(RootnoteProcessor& processor, const char* id)
     return processor.getApvts().getRawParameterValue(id)->load();
 }
 
-/**
-    A parameter value goes through float normalisation and step snapping on its
-    way in, so it lands within rounding of the value that was set, not always
-    exactly on it. The tolerance is a hundred-thousandth of the range.
-*/
+/** Allow float round-off and 1% of a quantisation step, never a whole step. */
+double parameterTolerance(const juce::RangedAudioParameter& parameter, double expected)
+{
+    const double step = static_cast<double>(parameter.getNormalisableRange().interval);
+    return std::max(0.01 * step, 8.0 * static_cast<double>(std::numeric_limits<float>::epsilon())
+                                      * std::max(1.0, std::abs(expected)));
+}
+
 bool holds(RootnoteProcessor& processor, const char* id, float expected)
 {
-    const auto range = processor.getApvts().getParameter(id)->getNormalisableRange();
-    return std::abs(get(processor, id) - expected) <= 1.0e-5f * (range.end - range.start);
+    const auto* parameter = processor.getApvts().getParameter(id);
+    return std::abs(static_cast<double>(get(processor, id)) - static_cast<double>(expected))
+        <= parameterTolerance(*parameter, static_cast<double>(expected));
 }
 
 /** The same for values in the engine's units. */
@@ -153,7 +159,7 @@ TEST_CASE("Plugin: every parameter of the plan exists with its range and default
         const auto range = parameter->getNormalisableRange();
         CHECK_NEAR_MSG(range.start, expected.low, 1.0e-6, expected.id);
         CHECK_NEAR_MSG(range.end, expected.high, 1.0e-6, expected.id);
-        const double tolerance = 1.0e-5 * static_cast<double>(expected.high - expected.low);
+        const double tolerance = parameterTolerance(*parameter, static_cast<double>(expected.value));
         CHECK_NEAR_MSG(get(processor, expected.id), expected.value, tolerance, expected.id);
         CHECK_NEAR_MSG(parameter->convertFrom0to1(parameter->getDefaultValue()), expected.value, tolerance, expected.id);
     }
@@ -175,6 +181,29 @@ TEST_CASE("Plugin: every parameter of the plan exists with its range and default
     CHECK(read.key == defaults.key && read.scale == defaults.scale && read.keyLock == defaults.keyLock);
     CHECK(close(read.a4, defaults.a4) && close(read.mix, defaults.mix) && close(read.outputDb, defaults.outputDb));
     CHECK(read.limiter == defaults.limiter && read.bypass == defaults.bypass);
+}
+
+TEST_CASE("Plugin: parameter round trips tolerate rounding but reject a changed value")
+{
+    RootnoteProcessor processor;
+    for (auto* base : processor.getParameters())
+    {
+        auto* parameter = static_cast<juce::RangedAudioParameter*>(base);
+        const auto& range = parameter->getNormalisableRange();
+        for (float position : { 0.0f, 0.13f, 0.5f, 0.79f, 1.0f })
+        {
+            const float expected = range.snapToLegalValue(parameter->convertFrom0to1(position));
+            set(processor, parameter->getParameterID().toRawUTF8(), expected);
+            CHECK_MSG(holds(processor, parameter->getParameterID().toRawUTF8(), expected),
+                      parameter->getParameterID().toStdString());
+            const double tolerance = parameterTolerance(*parameter, static_cast<double>(expected));
+            const float different = static_cast<float>(static_cast<double>(expected) + 4.0 * tolerance);
+            CHECK(!holds(processor, parameter->getParameterID().toRawUTF8(), different));
+        }
+    }
+    // Symmetric stepped ranges can denormalise zero to a few millionths.
+    set(processor, ids::boostFine, 0.0f);
+    CHECK(holds(processor, ids::boostFine, 0.0f));
 }
 
 TEST_CASE("Plugin: parameter text shows units and typed values are understood")

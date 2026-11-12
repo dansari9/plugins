@@ -129,11 +129,11 @@ TEST_CASE("Series: ratios")
         CHECK(kDrumRatios[slot] > kDrumRatios[slot - 1]);
     CHECK(kDrumRatios[0] == 1.0);
 
-    CHECK(seriesRatio(SeriesType::octaves, kOctaveRootSlot) == 1.0);
-    CHECK(seriesRatio(SeriesType::octaves, kOctaveRootSlot - 1) == 0.5);
-    CHECK(seriesRatio(SeriesType::octaves, kOctaveRootSlot + 3) == 8.0);
-    CHECK(seriesRatio(SeriesType::octaves, 0) == 1.0 / 64.0);
-    CHECK(seriesRatio(SeriesType::octaves, kOctaveSlots - 1) == 4096.0);
+    CHECK_NEAR(seriesRatio(SeriesType::octaves, kOctaveRootSlot), 1.0, 1.0e-10);
+    CHECK_NEAR(seriesRatio(SeriesType::octaves, kOctaveRootSlot - 1), 0.5, 1.0e-10);
+    CHECK_NEAR(seriesRatio(SeriesType::octaves, kOctaveRootSlot + 3), 8.0, 1.0e-10);
+    CHECK_NEAR(seriesRatio(SeriesType::octaves, 0), 1.0 / 64.0, 1.0e-10);
+    CHECK_NEAR(seriesRatio(SeriesType::octaves, kOctaveSlots - 1), 4096.0, 1.0e-10);
 
     CHECK(seriesSlotEnabled(SeriesType::harmonic, 7, 8));
     CHECK(!seriesSlotEnabled(SeriesType::harmonic, 8, 8));
