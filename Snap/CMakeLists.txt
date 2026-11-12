@@ -64,3 +64,20 @@ target_link_libraries(Snap
         juce::juce_recommended_config_flags
         juce::juce_recommended_warning_flags
 )
+
+# One test executable that drives the real processor and editor without a host.
+# `SnapTests --screenshot <file.png>` renders the editor instead of running the tests.
+add_executable(SnapTests Tests/SnapTests.cpp)
+target_include_directories(SnapTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/Source)
+target_link_libraries(SnapTests
+    PRIVATE
+        Snap
+        juce::juce_audio_utils
+        juce::juce_recommended_config_flags
+        juce::juce_recommended_warning_flags
+)
+# The tests compare floats bit-exactly on purpose and replace the global operator new.
+if(NOT MSVC)
+    set_source_files_properties(Tests/SnapTests.cpp PROPERTIES COMPILE_OPTIONS "-Wno-float-equal;-Wno-mismatched-new-delete")
+endif()
+set_target_properties(SnapTests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
