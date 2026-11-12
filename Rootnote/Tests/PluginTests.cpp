@@ -129,6 +129,8 @@ TEST_CASE("Plugin: identity")
 {
     RootnoteProcessor processor;
     CHECK(processor.getName() == "Rootnote");
+    CHECK(juce::String(JucePlugin_VersionString) == "0.4.2");
+    CHECK(juce::String(JUCE_STRINGIFY(JucePlugin_AUMainType)) == "'aufx'");
     CHECK(processor.acceptsMidi());
     CHECK(!processor.producesMidi());
     CHECK(!processor.isMidiEffect());

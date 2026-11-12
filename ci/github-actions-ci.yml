@@ -138,6 +138,13 @@ jobs:
       - name: Build AU, VST3, tests
         run: cmake --build Rootnote/build --config Release --parallel --target Rootnote_AU Rootnote_VST3 RootnoteCoreTests
 
+      - name: Ad-hoc sign and verify AU and VST3
+        run: |
+          codesign --force --deep -s - Rootnote/build/Rootnote_artefacts/Release/AU/Rootnote.component
+          codesign --verify --deep --strict --verbose=2 Rootnote/build/Rootnote_artefacts/Release/AU/Rootnote.component
+          codesign --force --deep -s - Rootnote/build/Rootnote_artefacts/Release/VST3/Rootnote.vst3
+          codesign --verify --deep --strict --verbose=2 Rootnote/build/Rootnote_artefacts/Release/VST3/Rootnote.vst3
+
       - name: Unit tests
         run: |
           BIN="$(find Rootnote/build -type f -name RootnoteCoreTests -perm +111 | head -n 1)"
@@ -155,7 +162,7 @@ jobs:
           killall -9 AudioComponentRegistrar 2>/dev/null || true
           sleep 3
           auval -a | grep -i Dwks || true
-          auval -v aumf RtNt Dwks
+          auval -v aufx RtNt Dwks
 
       - name: Package (zip keeps bundle permissions)
         run: cd Rootnote/build/Rootnote_artefacts/Release && ditto -c -k --keepParent AU/Rootnote.component "$GITHUB_WORKSPACE/Rootnote-AU-macos.zip" && ditto -c -k --keepParent VST3/Rootnote.vst3 "$GITHUB_WORKSPACE/Rootnote-VST3-macos.zip"

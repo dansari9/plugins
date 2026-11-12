@@ -18,8 +18,8 @@ if(ROOTNOTE_COPY_AFTER_BUILD)
     set_property(GLOBAL PROPERTY JUCE_COPY_PLUGIN_AFTER_BUILD TRUE)
 endif()
 
-# The AU type (aumf) and the two codes identify the plug-in to hosts and to
-# saved sessions. Never change them after a release.
+# A regular AU audio insert in Logic; VST3/Standalone retain MIDI control.
+# Keep the RtNt/Dwks codes. The AU type changes to aufx in 0.4.2.
 juce_add_plugin(Rootnote
     COMPANY_NAME "Dripworks"
     COMPANY_COPYRIGHT "Dripworks"
@@ -35,7 +35,7 @@ juce_add_plugin(Rootnote
     IS_MIDI_EFFECT FALSE
     EDITOR_WANTS_KEYBOARD_FOCUS FALSE
     FORMATS ${ROOTNOTE_FORMATS}
-    AU_MAIN_TYPE kAudioUnitType_MusicEffect
+    AU_MAIN_TYPE kAudioUnitType_Effect
     VST3_CATEGORIES Fx EQ Filter
 )
 

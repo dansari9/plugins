@@ -1,4 +1,4 @@
-# Rootnote 0.4.1
+# Rootnote 0.4.2
 
 Dripworks note-based resonant drum-tuning EQ. Cut unwanted resonances, boost a
 note and its harmonic, octave or membrane series, and add a transient-excited
@@ -67,34 +67,43 @@ Close your DAW, copy the complete bundle, then rescan plugins:
 | Linux VST3 | `~/.vst3/Rootnote.vst3` |
 | Windows VST3 | `%LOCALAPPDATA%\Programs\Common\VST3\Rootnote.vst3` (or the host's configured VST3 folder) |
 
-For a downloaded unsigned macOS AU build you trust, remove its quarantine:
+On Mac, quit Logic/Live and copy `Rootnote.component` into
+`~/Library/Audio/Plug-Ins/Components/`. For Ableton Live, copy `Rootnote.vst3`
+into `~/Library/Audio/Plug-Ins/VST3/`.
+
+CI builds are ad-hoc signed and signature-verified, but are not notarized.
+For a downloaded build you trust, remove quarantine from the installed bundle:
 
 ```sh
 xattr -dr com.apple.quarantine ~/Library/Audio/Plug-Ins/Components/Rootnote.component
+# If you installed VST3 too:
+xattr -dr com.apple.quarantine ~/Library/Audio/Plug-Ins/VST3/Rootnote.vst3
 ```
 
-For VST3 use the corresponding `~/Library/Audio/Plug-Ins/VST3/Rootnote.vst3`
-path. The Standalone runs directly from its build folder and needs audio/MIDI
+In **Logic Pro > Settings > Plug-in Manager**, select **Rootnote > Reset &
+Rescan Selection**, then restart Logic. Ad-hoc signing alone does not remove
+the downloaded-file quarantine. See [AU cache and rescanning](#au-cache-and-rescanning)
+if an earlier failed scan is still cached.
+
+The Standalone runs directly from its build folder and needs audio/MIDI
 devices selected in its settings.
 
-## Logic Pro: MIDI-controlled AU (`aumf`)
+## Logic Pro: Audio FX (`aufx`)
 
-1. Put the drum audio on an audio track and create a **Software Instrument** track.
-2. In that track's **Instrument** slot choose **AU MIDI-controlled Effects >
-   Dripworks > Rootnote** (Stereo). Rootnote is an `aumf`, not a MIDI FX insert.
-3. In Logic's plugin-window **Side Chain** chooser, select the drum track or a
-   bus fed by it. That audio is Rootnote's input; hear the processed output on
-   the software instrument track. Route the source's dry output to No Output
-   if you do not want an additional dry copy.
-4. Record/sequence MIDI on the instrument track, or select/arm it for a keyboard.
-   In Rootnote's **Ch 1+2** mode, channel 1 controls Boost and channel 2 Cut.
-   Preserve event channels by leaving the track's MIDI channel at All.
-   **Omni > Boost** accepts any channel for Boost.
+On the drum track, choose **Audio FX > Audio Units > Dripworks > Rootnote**,
+then Mono, Mono → Stereo or Stereo as appropriate. This also works after
+Drummer / Drum Kit Designer on a software-instrument channel strip. Open the
+insert to show the editor; if Logic shows its generic controls, select
+**Editor** in the plug-in window's View menu.
 
-This follows the instrument-slot/side-chain routing described in
-[Native Instruments' Logic MIDI-effect guide](https://support.native-instruments.com/support/solutions/articles/69000879791-how-to-set-up-a-midi-controlled-effect-in-logic-pro-x).
-Rootnote's AU identity remains `aumf RtNt Dwks`; on macOS validate with
-`auval -v aumf RtNt Dwks`.
+The AU is now a plain Audio FX so normal drum inserts use the track's audio
+without MIDI-controlled-effect instrument/side-chain routing. Optional MIDI
+control remains available in VST3 and Standalone; use the note controls in Logic.
+
+The AU identity is `aufx RtNt Dwks`; validate with `auval -v aufx RtNt Dwks`.
+The type changed from the pre-0.4.2 MIDI-controlled AU. Existing sessions using
+that old AU identity need a new Audio FX instance and their settings reapplied;
+this is not an automatic replacement of the old instrument-slot instance.
 
 ## Ableton Live
 
@@ -105,6 +114,8 @@ Monitor Auto / use Monitor In for a keyboard. Keep drum audio playing: MIDI
 selects resonances but does not generate a hit. Use Omni > Boost if Live's
 routing does not preserve the incoming MIDI channel. Use manual Cut Note or
 Match cut when a separate channel-2 destination is unavailable.
+Ch 1+2 controls Boost on channel 1 and Cut on channel 2; Omni > Boost accepts
+any channel. Set MIDI Mode to Off when MIDI control is unwanted.
 See [Live's routing manual](https://www.ableton.com/en/manual/routing-and-i-o/).
 
 ## Tuning and presets
@@ -158,7 +169,7 @@ AUs, as described in [Apple's troubleshooting guide](https://support.apple.com/e
 ## Headless editor snapshot
 
 Render a demo kick, detected Cut and MIDI-controlled Boost at the default
-560 × 760 size (1× PNG). The optional second path receives an identical copy:
+960 × 540 logical size (2× PNG). The optional second path receives an identical copy:
 
 ```sh
 xvfb-run -a Rootnote/build/RootnotePluginTests --snapshot Rootnote/artifacts/rootnote_editor.png /workspace/rootnote-logs/editor.png
