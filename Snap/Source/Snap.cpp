@@ -49,6 +49,7 @@ bool SnapProcessor::isBusesLayoutSupported(const BusesLayout& l) const
 
 void SnapProcessor::prepareToPlay(double fs, int)
 {
+    fs = fs > 0 && fs < 1.0e7 ? fs : 48000.0; // a nonsense rate (NaN, inf, <= 0) must not reach the int casts below
     cFastA = coef(fs, 0.3), cFastR = coef(fs, 40), cSlowA = coef(fs, 20), cSlowR = coef(fs, 300), cGain = coef(fs, 1);
     fast = slowAttack = slowRelease = gainDb = peakIn = peakOut = peakGain = 0;
     decimation = jmax(1, (int) (fs * 2.5 / historySize)), count = 0;
@@ -85,12 +86,14 @@ void SnapProcessor::processBlock(AudioBuffer<float>& buffer, MidiBuffer&)
         const float target = jlimit(-24.0f, 24.0f, sAttack.getNextValue() * 0.006f * transient + sSustain.getNextValue() * 0.01f * tail);
         gainDb = target + cGain * (gainDb - target);
 
-        const float wet = sMix.getNextValue(), gain = (1.0f + wet * (Decibels::decibelsToGain(gainDb) - 1.0f)) * sOut.getNextValue();
+        const float shaped = 1.0f + sMix.getNextValue() * (Decibels::decibelsToGain(gainDb) - 1.0f), gain = shaped * sOut.getNextValue();
         for (int c = 0; c < channels; ++c)
             outLevel = jmax(outLevel, std::abs(x[c][i] *= gain));
 
+        // The display traces the shaping actually applied (after Mix); Output is a static trim seen on the OUT envelope.
+        const float applied = db(shaped);
         peakIn = jmax(peakIn, level), peakOut = jmax(peakOut, outLevel);
-        peakGain = std::abs(gainDb) > std::abs(peakGain) ? gainDb : peakGain;
+        peakGain = std::abs(applied) > std::abs(peakGain) ? applied : peakGain;
         if (++count >= decimation)
         {
             const int w = history.write.load(std::memory_order_relaxed);
@@ -109,9 +112,14 @@ void SnapProcessor::getStateInformation(MemoryBlock& dest)
         copyXmlToBinary(*xml, dest);
 }
 
-// Accepts only a <SNAP> tree. Unknown entries are ignored, values are clamped, missing ones reset to default.
+// Accepts only a <SNAP> tree. Unknown entries are ignored, values are clamped, missing or unparsable ones reset
+// to default. JUCE's XML parser recurses per nesting level and expands DTD entities, so a blob with more tags than
+// any real state (the tag count bounds the depth) or with a DTD / comment ("<!") is rejected before parsing.
 void SnapProcessor::setStateInformation(const void* data, int size)
 {
+    const std::string_view raw(static_cast<const char*>(data), (size_t) jmax(0, size));
+    if (std::count(raw.begin(), raw.end(), '<') > 256 || raw.find("<!") != std::string_view::npos)
+        return;
     const auto xml = getXmlFromBinary(data, size);
     if (xml == nullptr || !xml->hasTagName(apvts.state.getType()))
         return;
@@ -120,7 +128,9 @@ void SnapProcessor::setStateInformation(const void* data, int size)
     {
         auto* p = apvts.getParameter(id);
         const auto s = tree.getChildWithProperty("id", id)["value"].toString().trim();
-        const float f = s.isNotEmpty() && s.containsOnly("+-.0123456789eE") ? s.getFloatValue() : NAN;
+        auto rest = s.getCharPointer();
+        const auto d = CharacterFunctions::readDoubleValue(rest); // locale-independent; must consume the whole string
+        const float f = s.isNotEmpty() && rest.isEmpty() ? (float) d : NAN;
         p->setValueNotifyingHost(std::isfinite(f) ? p->convertTo0to1(p->getNormalisableRange().snapToLegalValue(f)) : p->getDefaultValue());
     }
 }
@@ -216,7 +226,7 @@ struct Editor : AudioProcessorEditor, Timer
         for (auto [p, colour] : { std::pair { &in, Colour(0xff4a4a46) }, std::pair { &out, orange.withAlpha(0.9f) } })
         {
             p->lineTo(graph.getRight(), mid), p->lineTo(graph.getX(), mid), p->closeSubPath();
-            p->addPath(*p, AffineTransform::verticalFlip(2 * mid));
+            p->addPath(Path(*p), AffineTransform::verticalFlip(2 * mid)); // a copy: addPath reads its source while appending
             g.setColour(colour), g.fillPath(*p);
         }
         g.setColour(white.withAlpha(0.35f)), g.drawHorizontalLine((int) mid, graph.getX(), graph.getRight());

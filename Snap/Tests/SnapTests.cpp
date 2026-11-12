@@ -7,13 +7,24 @@
 #include <new>
 #include <thread>
 
-// Real-time check: count heap allocations made on a thread flagged as "audio".
+// Real-time check: count heap allocations made on a thread flagged as "audio". operator new is
+// counted everywhere; on glibc (outside ASan, which owns malloc) the C allocators are too, which
+// catches JUCE's HeapBlock / AudioBuffer storage.
 static thread_local bool onAudioThread = false;
 static std::atomic<int> audioAllocations { 0 };
+static void countAllocation() { audioAllocations += onAudioThread ? 1 : 0; }
+#if defined(__GLIBC__) && !defined(__SANITIZE_ADDRESS__)
+#define SNAP_COUNTS_MALLOC 1
+extern "C" void* __libc_malloc(size_t);
+extern "C" void* __libc_calloc(size_t, size_t);
+extern "C" void* __libc_realloc(void*, size_t);
+extern "C" void* malloc(size_t n) noexcept { return countAllocation(), __libc_malloc(n); }
+extern "C" void* calloc(size_t n, size_t s) noexcept { return countAllocation(), __libc_calloc(n, s); }
+extern "C" void* realloc(void* p, size_t n) noexcept { return countAllocation(), __libc_realloc(p, n); }
+#endif
 void* operator new(std::size_t n)
 {
-    if (onAudioThread)
-        ++audioAllocations;
+    countAllocation();
     if (void* p = std::malloc(n == 0 ? 1 : n))
         return p;
     throw std::bad_alloc();
@@ -94,12 +105,13 @@ static double energy(const std::vector<float>& x, size_t from, size_t to)
         e += (double) x[i] * x[i];
     return e;
 }
-static juce::MemoryBlock blob(const char* xml)
+static juce::MemoryBlock blob(const juce::String& xml) // the copyXmlToBinary layout, text verbatim
 {
-    juce::MemoryBlock m;
-    juce::AudioProcessor::copyXmlToBinary(*juce::parseXML(xml), m);
-    return m;
+    juce::MemoryOutputStream m;
+    m.writeInt(0x21324356), m.writeInt((int) xml.getNumBytesAsUTF8()), m.write(xml.toRawUTF8(), xml.getNumBytesAsUTF8());
+    return m.getMemoryBlock();
 }
+static void load(Proc& p, const juce::MemoryBlock& m) { p.setStateInformation(m.getData(), (int) m.getSize()); }
 
 static void testState()
 {
@@ -109,10 +121,10 @@ static void testState()
         Proc a, b;
         for (auto* param : a.getParameters())
             param->setValueNotifyingHost(r.nextFloat());
+        CHECK(!defaults(a));
         juce::MemoryBlock m;
         a.getStateInformation(m);
-        b.setStateInformation(m.getData(), (int) m.getSize());
-        a.setStateInformation(m.getData(), (int) m.getSize());
+        load(b, m);
         juce::MemoryBlock m2;
         b.getStateInformation(m2);
         CHECK(m == m2);
@@ -124,13 +136,24 @@ static void testState()
     Proc v1;
     const auto fixture = blob(R"(<SNAP stateVersion="1"><PARAM id="attack" value="60.0"/><PARAM id="sustain" value="-40.0"/>)"
                               R"(<PARAM id="mix" value="75.0"/><PARAM id="output" value="-3.5"/></SNAP>)");
-    v1.setStateInformation(fixture.getData(), (int) fixture.getSize());
+    load(v1, fixture);
     CHECK(get(v1, "attack") == 60.0f && get(v1, "sustain") == -40.0f && get(v1, "mix") == 75.0f && get(v1, "output") == -3.5f);
     // Unknown entries ignored, out-of-range clamped, missing and unparsable back to default.
-    const auto odd = blob(R"(<SNAP stateVersion="7" future="x"><PARAM id="attack" value="1e9"/><PARAM id="mix" value="abc"/>)"
-                          R"(<PARAM id="output" value="nan"/><PARAM id="wobble" value="3"/><EXTRA/></SNAP>)");
-    v1.setStateInformation(odd.getData(), (int) odd.getSize());
+    load(v1, blob(R"(<SNAP stateVersion="7" future="x"><PARAM id="attack" value="1e9"/><PARAM id="mix" value="abc"/>)"
+                  R"(<PARAM id="output" value="nan"/><PARAM id="wobble" value="3"/><EXTRA/></SNAP>)"));
     CHECK(get(v1, "attack") == 100.0f && get(v1, "sustain") == 0.0f && get(v1, "mix") == 100.0f && get(v1, "output") == 0.0f);
+    for (auto* bad : { "12abc", "1-2", "5.5.5", "--3", "1e", "." }) // anything not wholly a number is unparsable
+    {
+        load(v1, fixture);
+        load(v1, blob(juce::String(R"(<SNAP><PARAM id="attack" value="X"/><PARAM id="sustain" value="X"/><PARAM id="mix" value="X"/>)"
+                                   R"(<PARAM id="output" value="X"/></SNAP>)").replace("X", bad)));
+        CHECK(defaults(v1));
+    }
+    // Hostile blobs (deep nesting, DTD entities) are rejected before parsing and leave the state alone.
+    load(v1, fixture);
+    load(v1, blob("<SNAP>" + juce::String::repeatedString("<a>", 1000000)));
+    load(v1, blob(R"(<!DOCTYPE SNAP [<!ENTITY a "&a;&a;">]><SNAP><PARAM id="attack" value="&a;"/></SNAP>)"));
+    CHECK(get(v1, "attack") == 60.0f && get(v1, "output") == -3.5f);
 
     // (3) Garbage, empty, truncated and foreign data never crash and leave defaults.
     Proc g;
@@ -148,8 +171,7 @@ static void testState()
             std::memcpy(junk.getData(), good.getData(), 8);
         g.setStateInformation(junk.getData(), (int) junk.getSize());
     }
-    const auto foreign = blob(R"(<ROOTNOTE><PARAM id="attack" value="50"/></ROOTNOTE>)");
-    g.setStateInformation(foreign.getData(), (int) foreign.getSize());
+    load(g, blob(R"(<ROOTNOTE><PARAM id="attack" value="50"/></ROOTNOTE>)"));
     CHECK(defaults(g));
 }
 
@@ -170,6 +192,11 @@ static void testIdentity() // (4)
         found.add(withId->paramID);
     }
     CHECK(found == ids);
+    // Numeric IDs hosts store automation under: VST3 ParamID and AU parameter ID, both hashes of the string ID.
+    const juce::uint32 hashed[] = { 0x2c1eee48, 0x119e6223, 0x1a65c, 0x44111901 };
+    for (int i = 0; i < 4; ++i)
+        CHECK(juce::VST3ClientExtensions::convertJuceParameterId(ids[i]) == hashed[i]
+              && ((juce::uint32) ids[i].hashCode() & 0x7fffffff) == hashed[i]);
     CHECK(defaults(p) && p.getLatencySamples() == 0 && p.getTailLengthSeconds() == 0 && !p.acceptsMidi() && !p.producesMidi());
     CHECK(p.getNumPrograms() == 1);
 }
@@ -191,6 +218,16 @@ static void testBounded() // (5) and (10)
                         ok = ok && std::isfinite(y) && std::abs(y) <= 64.0f; // input peak <= 1, max gain 63x
                     CHECK(ok);
                 }
+    for (double fs : { 0.0, -48000.0, 1.0e300, std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::infinity() })
+    {
+        Proc q; // a broken host's sample rate must not break anything (UBSan: no invalid casts)
+        set(q, "attack", 100), set(q, "sustain", 100);
+        prepare(q, fs, 64, 2);
+        bool ok = true;
+        for (float y : run(q, 48000, 64, 2, 0.1))
+            ok = ok && std::isfinite(y) && std::abs(y) <= 64.0f;
+        CHECK(ok);
+    }
     Proc p; // repeated prepare / release with changing rates and block sizes
     set(p, "attack", 100);
     for (int n = 0; n < 30; ++n)
@@ -228,12 +265,35 @@ static void testSound() // (6), (7), (8)
     CHECK(energy(render(0, 100), t0, t1) > 2.0 * energy(unity, t0, t1));
     CHECK(energy(render(0, -100), t0, t1) < 0.5 * energy(unity, t0, t1));
 
+    // The display's gain trace shows the shaping actually applied, so none at Mix 0.
+    auto traced = [&](float mix) {
+        Proc p;
+        set(p, "attack", 100), set(p, "mix", mix);
+        prepare(p, fs, 256, 2);
+        run(p, fs, 256, 2, 1.0);
+        float m = 0;
+        for (auto& g : p.history.gainDb)
+            m = std::max(m, std::abs(g.load()));
+        return m;
+    };
+    CHECK(traced(100) > 3 && traced(0) == 0);
+
     // (8) No allocation inside processBlock, including while parameters move.
     onAudioThread = true;
     int* volatile probe = new int(1); // volatile: an unobserved new/delete pair may legally be elided
     delete probe;
     onAudioThread = false;
-    CHECK(audioAllocations.exchange(0) == 1); // the counter itself works
+    CHECK(audioAllocations.exchange(0) > 0); // the counter itself works...
+#ifdef SNAP_COUNTS_MALLOC
+    onAudioThread = true;
+    {
+        juce::AudioBuffer<float> b(2, 512);
+        float* volatile v = b.getWritePointer(0);
+        (void) v;
+    }
+    onAudioThread = false;
+    CHECK(audioAllocations.exchange(0) > 0); // ...including JUCE's malloc-based buffers
+#endif
     Proc p;
     prepare(p, fs, 512, 2);
     for (int n = 0; n < 20; ++n)

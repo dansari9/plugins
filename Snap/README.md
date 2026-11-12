@@ -8,7 +8,7 @@ the slow envelope is above the fast one, and **Sustain** turns that part up or d
 share one gain, so the stereo image stays put.
 
 The display shows the last 2.5 s: the input in grey, the output in orange, and the gain Snap applied
-in blue (centre line = 0 dB, edges = ±18 dB).
+after Mix in blue (centre line = 0 dB, edges = ±18 dB).
 
 ## Controls
 
@@ -71,4 +71,5 @@ The state is the parameter tree as XML (`<SNAP stateVersion="1">`). Rules for fu
 - The v1 fixture in `Tests/SnapTests.cpp` must keep loading unchanged.
 
 Loading ignores unknown entries, clamps out-of-range values, resets missing or unreadable values to
-their default, and ignores data that is not a Snap state.
+their default, and ignores data that is not a Snap state. Blobs with more than 256 tags or a DTD are
+rejected before parsing (JUCE's XML parser recurses per level), so a state must stay under 256 tags.
