@@ -421,6 +421,32 @@ TEST_CASE("Plugin: MIDI channel 1 plays the boost note and channel 2 the cut not
     CHECK_NEAR(processor.displayState().boostHz, noteToHz(48.0), 1.0e-6);
 }
 
+TEST_CASE("Plugin: a restored state plays its own notes, whatever MIDI played before")
+{
+    RootnoteProcessor processor;
+    prepare(processor);
+    juce::MemoryBlock state;
+    processor.getStateInformation(state);
+
+    juce::AudioBuffer<float> block(2, 512);
+    juce::MidiBuffer midi;
+    midi.addEvent(juce::MidiMessage::noteOn(1, 60, 1.0f), 0);
+    block.clear();
+    processor.processBlock(block, midi);
+    midi.clear();
+    for (int i = 0; i < 20; ++i)
+        processor.processBlock(block, midi);
+    CHECK(processor.displayState().boostFromMidi);
+    CHECK_NEAR(hzToNote(processor.displayState().boostHz), 60.0, 0.01);
+
+    // Same knob value as before, so only the restore itself can take the note back from MIDI.
+    processor.setStateInformation(state.getData(), static_cast<int>(state.getSize()));
+    for (int i = 0; i < 20; ++i)
+        processor.processBlock(block, midi);
+    CHECK(!processor.displayState().boostFromMidi);
+    CHECK_NEAR(hzToNote(processor.displayState().boostHz), 36.0, 0.01);
+}
+
 TEST_CASE("Plugin: a MIDI note takes effect on the sample of its event")
 {
     juce::Random random(4);

@@ -53,7 +53,7 @@ public:
     // ---- Editor interface. Everything below is safe to call from the message thread. ----
 
     DisplayState displayState() const noexcept;
-    rootnote::TunerReading tunerReading() const noexcept { return analysis.reading(); }
+    rootnote::TunerReading tunerReading() const { return analysis.reading(); }
 
     /**
         Counted. While at least one editor is open the tuner runs and the
@@ -90,6 +90,7 @@ private:
     rootnote::AnalysisWorker analysis;
     rootnote::SpscFifo spectrumFifo { static_cast<size_t>(1) << 15 };
 
+    std::atomic<bool> stateRestored { false }; // set by setStateInformation, consumed by the audio thread
     std::atomic<int> displayUsers { 0 };
     std::atomic<double> boostHz { 0.0 };
     std::atomic<double> cutHz { 0.0 };

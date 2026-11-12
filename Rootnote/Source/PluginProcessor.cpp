@@ -68,6 +68,9 @@ void RootnoteProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::Mid
     float* const channels[2] = { buffer.getWritePointer(0), numChannels == 2 ? buffer.getWritePointer(1) : nullptr };
     analysis.push(channels[0], channels[1], numSamples);
 
+    // A restored state plays its own notes, not a MIDI note left over from before.
+    if (stateRestored.exchange(false, std::memory_order_relaxed))
+        engine.releaseMidi();
     engine.setParams(parameters.read());
 
     // Each MIDI event takes effect on its own sample: process up to it, apply it, carry on.
@@ -142,7 +145,10 @@ void RootnoteProcessor::setStateInformation(const void* data, int sizeInBytes)
 {
     const auto xml = getXmlFromBinary(data, sizeInBytes);
     if (xml != nullptr && xml->hasTagName(apvts.state.getType()))
+    {
         apvts.replaceState(juce::ValueTree::fromXml(*xml));
+        stateRestored.store(true, std::memory_order_relaxed);
+    }
 }
 
 RootnoteProcessor::DisplayState RootnoteProcessor::displayState() const noexcept
