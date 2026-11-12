@@ -3,6 +3,8 @@
 #include "NoteMath.h"
 #include "Scales.h"
 
+#include <cstdint>
+
 namespace rootnote
 {
 enum class MidiMode
@@ -29,7 +31,8 @@ struct MidiEvent
 /**
     Decides which note each bank plays: the knob (host parameter) or MIDI.
 
-    MIDI is monophonic with last-note priority per bank. The most recent
+    MIDI is monophonic with last-note priority per bank. A held key is known
+    by its channel and its note, so the same note on two channels is two keys. The most recent
     source wins: a MIDI note takes over from the knob, and moving the knob (or
     automation) takes over from a held MIDI note. MIDI never writes the host
     parameter. No allocation; audio-thread safe.
@@ -58,12 +61,10 @@ public:
         configured = false;
     }
 
-    /** Returns a mask of the targets whose note changed. */
-    unsigned setConfig(const Config& newConfig) noexcept
+    /** Takes the knob notes and the MIDI settings. A knob that moved takes its bank back from MIDI. */
+    void setConfig(const Config& newConfig) noexcept
     {
-        const double before[2] = { note(boost), note(cut) };
-        const bool first = !configured;
-
+        const bool modeChanged = !configured || newConfig.mode != config.mode;
         if (configured)
         {
             if (newConfig.boostKnobNote != config.boostKnobNote)
@@ -74,27 +75,19 @@ public:
         config = newConfig;
         configured = true;
 
-        if (config.mode == MidiMode::off)
+        if (modeChanged)
         {
-            voices[boost] = {};
-            voices[cut] = {};
-        }
-        else if (config.mode == MidiMode::omniBoost)
-        {
-            voices[cut] = {};
+            // Keys the new routing would no longer release must not stay held.
+            if (config.mode != MidiMode::channels12)
+                voices[cut] = {};
+            if (config.mode == MidiMode::off)
+                voices[boost] = {};
+            else if (config.mode == MidiMode::channels12)
+                voices[boost].removeIf([](int id) { return id / 128 != 0; });
         }
 
-        if (config.noteOff == NoteOffMode::returnToKnob)
-            for (auto& voice : voices)
-                if (voice.numHeld == 0)
-                    voice.midiOwns = false;
-
-        unsigned changed = 0;
-        if (first || note(boost) != before[boost])
-            changed |= boostChanged;
-        if (first || note(cut) != before[cut])
-            changed |= cutChanged;
-        return changed;
+        for (auto& voice : voices)
+            released(voice);
     }
 
     /** Returns a mask of the targets whose note changed. */
@@ -106,25 +99,27 @@ public:
 
         Voice& voice = voices[target];
         const double before = note(static_cast<Target>(target));
+        const int channel = (event.channel < 1 ? 1 : (event.channel > 16 ? 16 : event.channel)) - 1;
         const int midiNote = event.note < 0 ? 0 : (event.note > 127 ? 127 : event.note);
+        const int id = channel * 128 + midiNote;
 
         switch (event.type)
         {
             case MidiEvent::Type::noteOn:
-                voice.remove(midiNote);
-                voice.push(midiNote);
+                voice.removeIf([id](int held) { return held == id; });
+                voice.held[voice.numHeld++] = static_cast<uint16_t>(id);
                 voice.midiNote = midiNote;
                 voice.midiOwns = true;
                 ++noteOnCounter;
                 break;
 
             case MidiEvent::Type::noteOff:
-                voice.remove(midiNote);
+                voice.removeIf([id](int held) { return held == id; });
                 released(voice);
                 break;
 
             case MidiEvent::Type::allNotesOff:
-                voice.numHeld = 0;
+                voice.removeIf([channel](int held) { return held / 128 == channel; });
                 released(voice);
                 break;
         }
@@ -150,26 +145,24 @@ public:
     unsigned noteOnCount() const noexcept { return noteOnCounter; }
 
 private:
+    /** Every key of every channel can be held at once, so nothing is ever dropped. */
+    static constexpr int kMaxHeld = 16 * 128;
+
     struct Voice
     {
-        unsigned char held[128] {};
+        uint16_t held[kMaxHeld] {}; // (channel - 1) * 128 + note, oldest first
         int numHeld = 0;
         int midiNote = 60;
         bool midiOwns = false;
 
-        void remove(int n) noexcept
+        template <typename Predicate>
+        void removeIf(Predicate&& matches) noexcept
         {
             int write = 0;
             for (int read = 0; read < numHeld; ++read)
-                if (held[read] != static_cast<unsigned char>(n))
+                if (!matches(static_cast<int>(held[read])))
                     held[write++] = held[read];
             numHeld = write;
-        }
-
-        void push(int n) noexcept
-        {
-            if (numHeld < 128)
-                held[numHeld++] = static_cast<unsigned char>(n);
         }
     };
 
@@ -184,12 +177,13 @@ private:
         return -1;
     }
 
+    /** After keys went up: the newest key still held plays, or the note stays or returns to the knob. */
     void released(Voice& voice) const noexcept
     {
         if (!voice.midiOwns)
             return;
         if (voice.numHeld > 0)
-            voice.midiNote = voice.held[voice.numHeld - 1];
+            voice.midiNote = voice.held[voice.numHeld - 1] % 128;
         else if (config.noteOff == NoteOffMode::returnToKnob)
             voice.midiOwns = false;
     }

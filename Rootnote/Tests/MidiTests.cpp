@@ -42,7 +42,7 @@ double boostNote(const Engine& engine, double a4 = 440.0)
 TEST_CASE("MIDI: channel 1 plays the boost note, channel 2 the cut note")
 {
     NoteControl control;
-    CHECK(control.setConfig(config()) == (NoteControl::boostChanged | NoteControl::cutChanged));
+    control.setConfig(config());
     CHECK(control.note(NoteControl::boost) == 36.0);
     CHECK(control.note(NoteControl::cut) == 38.0);
     CHECK(!control.midiOwns(NoteControl::boost));
@@ -91,7 +91,7 @@ TEST_CASE("MIDI: omni sends every channel to boost, off ignores everything")
     both.setConfig(config());
     both.handleEvent(on(1, 50));
     both.handleEvent(on(2, 52));
-    CHECK(both.setConfig(config(MidiMode::off)) == (NoteControl::boostChanged | NoteControl::cutChanged));
+    both.setConfig(config(MidiMode::off));
     CHECK(both.note(NoteControl::boost) == 36.0);
     CHECK(both.note(NoteControl::cut) == 38.0);
 
@@ -100,8 +100,54 @@ TEST_CASE("MIDI: omni sends every channel to boost, off ignores everything")
     toOmni.setConfig(config());
     toOmni.handleEvent(on(1, 50));
     toOmni.handleEvent(on(2, 52));
-    CHECK(toOmni.setConfig(config(MidiMode::omniBoost)) == NoteControl::cutChanged);
+    toOmni.setConfig(config(MidiMode::omniBoost));
     CHECK(toOmni.note(NoteControl::boost) == 50.0);
+    CHECK(toOmni.note(NoteControl::cut) == 38.0);
+}
+
+TEST_CASE("MIDI: a held key is a channel and a note, so omni keeps channels apart")
+{
+    // The same note on two channels: releasing one leaves the other held.
+    NoteControl control;
+    control.setConfig(config(MidiMode::omniBoost, NoteOffMode::returnToKnob));
+    control.handleEvent(on(1, 60));
+    control.handleEvent(on(2, 60));
+    CHECK(control.heldCount(NoteControl::boost) == 2);
+    CHECK(control.handleEvent(off(1, 60)) == 0u);
+    CHECK(control.midiOwns(NoteControl::boost));
+    CHECK(control.note(NoteControl::boost) == 60.0);
+    CHECK(control.handleEvent(off(2, 60)) == NoteControl::boostChanged);
+    CHECK(control.note(NoteControl::boost) == 36.0);
+
+    // All-notes-off on one channel releases that channel's keys only.
+    control.handleEvent(on(3, 50));
+    control.handleEvent(on(4, 55));
+    control.handleEvent(allOff(4));
+    CHECK(control.heldCount(NoteControl::boost) == 1);
+    CHECK(control.note(NoteControl::boost) == 50.0);
+    control.handleEvent(allOff(3));
+    CHECK(!control.midiOwns(NoteControl::boost));
+
+    // Back to Ch 1+2: keys of the other channels could never be released again, so they go.
+    control.handleEvent(on(1, 40));
+    control.handleEvent(on(5, 45));
+    control.setConfig(config(MidiMode::channels12, NoteOffMode::returnToKnob));
+    CHECK(control.heldCount(NoteControl::boost) == 1);
+    CHECK(control.note(NoteControl::boost) == 40.0);
+    control.handleEvent(off(1, 40));
+    CHECK(control.note(NoteControl::boost) == 36.0);
+
+    // Every key of every channel fits.
+    NoteControl full;
+    full.setConfig(config(MidiMode::omniBoost, NoteOffMode::returnToKnob));
+    for (int channel = 1; channel <= 16; ++channel)
+        for (int note = 0; note < 128; ++note)
+            full.handleEvent(on(channel, note));
+    CHECK(full.heldCount(NoteControl::boost) == 16 * 128);
+    for (int channel = 1; channel <= 16; ++channel)
+        full.handleEvent(allOff(channel));
+    CHECK(full.heldCount(NoteControl::boost) == 0);
+    CHECK(!full.midiOwns(NoteControl::boost));
 }
 
 TEST_CASE("MIDI: mono, last-note priority")
@@ -150,7 +196,7 @@ TEST_CASE("MIDI: note-off holds the note by default, or returns to the knob")
     CHECK(!back.midiOwns(NoteControl::boost));
 
     // Changing the mode to Return while a released note is held lets it go.
-    CHECK(hold.setConfig(config(MidiMode::channels12, NoteOffMode::returnToKnob)) == NoteControl::boostChanged);
+    hold.setConfig(config(MidiMode::channels12, NoteOffMode::returnToKnob));
     CHECK(hold.note(NoteControl::boost) == 36.0);
 
     // All-notes-off behaves like releasing every key.
@@ -172,12 +218,12 @@ TEST_CASE("MIDI: the most recent source wins between knob and keyboard")
     CHECK(control.note(NoteControl::boost) == 45.0);
 
     // Same knob value again: MIDI keeps the note.
-    CHECK(control.setConfig(c) == 0u);
+    control.setConfig(c);
     CHECK(control.note(NoteControl::boost) == 45.0);
 
     // The knob (or automation) moves: it takes over, even with the key still down.
     c.boostKnobNote = 41.5;
-    CHECK(control.setConfig(c) == NoteControl::boostChanged);
+    control.setConfig(c);
     CHECK(control.note(NoteControl::boost) == 41.5);
     CHECK(control.handleEvent(off(1, 45)) == 0u);
     CHECK(control.note(NoteControl::boost) == 41.5);
@@ -212,7 +258,7 @@ TEST_CASE("MIDI: key lock snaps played notes to the scale, notes are folded into
     // Unlocking shows the played note again; changing the key re-snaps.
     control.handleEvent(on(1, 61));
     c.keyLock = false;
-    CHECK(control.setConfig(c) == NoteControl::boostChanged);
+    control.setConfig(c);
     CHECK(control.note(NoteControl::boost) == 61.0);
     c.keyLock = true;
     c.key = 1; // C# major contains C#
