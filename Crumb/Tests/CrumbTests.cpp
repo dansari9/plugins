@@ -838,6 +838,81 @@ template <typename Done> static void pumpUntil(Done done)
 static double testMs = 0;
 static double testClock() { return testMs; }
 static float vu(juce::Component& e, int c) { return (float) e.getProperties()["vu" + juce::String(c)]; }
+static juce::String pixels(const juce::Image&);
+
+// Observe real Component::repaint invalidations without a window or an extra snapshot paint advancing scope gain.
+struct RepaintCapture : juce::CachedComponentImage
+{
+    juce::Component& component;
+    juce::Rectangle<int> pending;
+    explicit RepaintCapture(juce::Component& c) : component(c), pending(c.getLocalBounds()) {}
+    void paint(juce::Graphics& g) override { component.paint(g); }
+    bool invalidateAll() override { pending = component.getLocalBounds(); return false; }
+    bool invalidate(const juce::Rectangle<int>& r) override { pending = pending.getUnion(r); return false; }
+    void releaseResources() override {}
+    bool consume(juce::Image& image, float scale)
+    {
+        if (pending.isEmpty()) return false;
+        juce::Graphics g(image);
+        g.addTransform(juce::AffineTransform::scale(scale));
+        g.reduceClipRegion(pending);
+        paint(g), pending = {};
+        return true;
+    }
+};
+
+static void testScopeRepaints()
+{
+    for (int percent : { 50, 100, 200 })
+        for (float held : { 0.0f, 0.08f }) // decay to the floor, or to a retained nonzero waveform peak
+        {
+            Proc p[2];
+            std::unique_ptr<juce::AudioProcessorEditor> editors[2];
+            RepaintCapture* captures[2] {};
+            juce::Image images[2];
+            const float scale = (float) percent / 50; // same 2x pixel density as the immutable goldens
+            testMs = 0;
+            for (int k = 0; k < 2; ++k)
+            {
+                p[k].scope.clock = testClock;
+                prepare(p[k], 48000, 512, 2), set(p[k], "bypass", 1);
+                run(p[k], 512, 2, 8192, [](int i) { return (float) (0.4 * std::sin(i * 0.1)); });
+                editors[k].reset(p[k].createEditor());
+                dynamic_cast<juce::Timer&>(*editors[k]).stopTimer();
+                editors[k]->setSize(1024 * percent / 100, 576 * percent / 100);
+                auto& plate = *editors[k]->getChildComponent(0);
+                captures[k] = new RepaintCapture(plate);
+                plate.setCachedComponentImage(captures[k]); // component takes ownership
+                images[k] = juce::Image(juce::Image::ARGB, 1024 * percent / 50, 576 * percent / 50, true);
+                captures[k]->consume(images[k], scale);
+                run(p[k], 512, 2, 8192, [held](int i) { return held * (float) std::sin(i * 0.1); });
+            }
+            int paints = 0;
+            for (int frame = 0; frame < 120; ++frame)
+            {
+                testMs += 1000.0 / 30;
+                for (int k = 0; k < 2; ++k)
+                    dynamic_cast<juce::Timer&>(*editors[k]).timerCallback();
+                // Reference consumes the original editor's unconditional 30 Hz screen repaint.
+                captures[1]->invalidate({ 24, 56, 976, 216 });
+                const bool painted = captures[0]->consume(images[0], scale);
+                paints += painted;
+                if (frame == 119) CHECK(!painted); // settled idle still suppresses screen repaints
+                captures[1]->consume(images[1], scale);
+            }
+            CHECK(paints > 1 && paints < 120);
+            testMs += 1000.0 / 30;
+            for (int k = 0; k < 2; ++k)
+            {
+                run(p[k], 512, 2, 8192, [](int i) { return (float) (0.01 * std::sin(i * 0.1)); });
+                dynamic_cast<juce::Timer&>(*editors[k]).timerCallback();
+                CHECK(captures[k]->consume(images[k], scale));
+            }
+            const auto scope = (juce::Rectangle<int> { 24, 56, 632, 212 } * scale).toNearestInt();
+            CHECK(pixels(images[0].getClippedImage(scope)) == pixels(images[1].getClippedImage(scope)));
+        }
+}
+
 static void testMeter()
 {
     const auto zeroVu = [](int) { return 0.25118864f; };
@@ -978,6 +1053,20 @@ static void testEditorState()
     CHECK(get(p, "rate") == 9200);
     knob->setValue(knob->getDoubleClickReturnValue(), juce::sendNotificationSync);
     CHECK(get(p, "rate") == 26040);
+    // Exercise JUCE's actual mouse shortcuts, including its implicit Alt/Option single-click default reset.
+    const auto mouseClick = [&](int modifiers, int clicks) {
+        knob->setValue(9200, juce::sendNotificationSync);
+        const auto time = juce::Time::getCurrentTime();
+        const juce::MouseEvent event(juce::Desktop::getInstance().getMainMouseSource(), { 30, 30 },
+                                    juce::ModifierKeys(modifiers | juce::ModifierKeys::leftButtonModifier),
+                                    1, 0, 0, 0, 0, knob, knob, time, { 30, 30 }, time, clicks, false);
+        if (clicks == 2) knob->mouseDoubleClick(event);
+        else { knob->mouseDown(event); knob->mouseUp(event); }
+        return get(p, "rate");
+    };
+    CHECK(mouseClick(0, 1) == 9200);
+    CHECK(mouseClick(juce::ModifierKeys::altModifier, 1) == 26040);
+    CHECK(mouseClick(0, 2) == 26040);
     // Restore on a host thread while dispatching real editor timers and asynchronous attachments.
     juce::MemoryBlock states[2];
     p.getStateInformation(states[0]);
@@ -1246,6 +1335,7 @@ int main(int argc, char** argv)
     testEditor();
     testPresets();
     testScopeFifo();
+    testScopeRepaints();
     testMeter();
     testEditorState();
     std::cout << (failures == 0 ? "All Crumb tests passed\n" : "Crumb tests FAILED\n");

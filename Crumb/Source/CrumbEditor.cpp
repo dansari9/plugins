@@ -133,6 +133,7 @@ struct Editor : AudioProcessorEditor, Timer
     std::vector<std::unique_ptr<ParameterAttachment>> keyAtt;
     std::vector<float> in = std::vector<float>(crumb::Scope::size), out = std::vector<float>(crumb::Scope::size);
     float scopePeak = 0.1f, needle[2] {}, speed[2] {}, level[2] {};
+    bool scopeDecayPending = true;
     crumb::Scope::Meter seen;   // the meter totals last read: opening the editor starts from the current position
     double stepAt = 0, heard = 0; // ms: needle time integrated up to, last new audio
     bool clip[2] {};
@@ -311,7 +312,7 @@ struct Editor : AudioProcessorEditor, Timer
                 speed[c] += (169 * (level[c] - needle[c]) - 20.8f * speed[c]) / 240, needle[c] += speed[c] / 240;
         stepAt = k < 240 ? stepAt : t;
         const auto write = proc.scope.write.load(std::memory_order_acquire);
-        bool screens = changed || write != scopeSeen;
+        bool screens = changed || write != scopeSeen || scopeDecayPending;
         scopeSeen = write;
         for (int c = 0; c < 2; ++c)
         {
@@ -464,6 +465,7 @@ struct Editor : AudioProcessorEditor, Timer
         for (int i = start; i < start + n; ++i)
             peak = jmax(peak, std::abs(in[(size_t) i]), std::abs(out[(size_t) i]));
         scopePeak = jmax(0.05f, peak, scopePeak * 0.95f); // auto gain: fast up, slow down
+        scopeDecayPending = scopePeak > jmax(0.05f, peak);
         for (auto [data, colour, width] : { std::tuple { in.data(), trace, 2.5f }, { out.data(), orange, 2.0f } })
         {
             auto& p = waveform;
