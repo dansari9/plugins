@@ -77,6 +77,7 @@ add_executable(CrumbTests Tests/CrumbTests.cpp)
 target_include_directories(CrumbTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/Source)
 target_link_libraries(CrumbTests
     PRIVATE
+        CrumbFonts
         juce::juce_cryptography
         Crumb
         juce::juce_audio_utils

@@ -1,6 +1,7 @@
 // CrumbTests: drives the real processor and editor without a host. Exit code 1 on failure.
 //   CrumbTests --screenshot a.png [pre]   render the editor (100 %, 2x pixels) after a drum + bass loop (pre: filter pre)
 #include "Crumb.h"
+#include "BinaryData.h"
 #include <juce_cryptography/juce_cryptography.h>
 #define SCREENSHOT_PRESET 14 // "drums · break dust": 12 bit, 26 kHz, images on, lp post
 #include <cstdlib>
@@ -1131,8 +1132,8 @@ static int screenshot(const juce::File& file, bool preFilter)
 }
 
 // Sound and pixel contract with 81593d3, the build before the coefficient cache, the shared minBLEP and the editor
-// caches: SHA-256 of rendered audio and of editor snapshots. The values are from Linux x86-64 (GCC, glibc, JUCE's
-// software renderer); other platforms' libm and renderers legitimately differ, so they skip this test.
+// caches: SHA-256 of rendered audio and of editor snapshots. Captured on Debian 13 x86-64, GCC 14.2, glibc 2.41,
+// JUCE's software renderer; only matching libm and renderer fingerprints enforce these absolute hashes.
 static juce::String sha(const juce::MemoryOutputStream& m) { return juce::SHA256(m.getData(), m.getDataSize()).toHexString(); }
 // The automation sweep: at the start of every 8th 512-sample block (85 ms: ramps and settled stretches) rate, cutoff,
 // reso, approxDev, imagesShift and bits move; jitter is 30 % for blocks 96..191, then 0 (the channels' phases differ).
@@ -1234,14 +1235,44 @@ static const Shot shots[] = {
 };
 static void testGoldens()
 {
+    const auto audio = render(-1, 2), image = pixels(snapshot(false, 100));
+    CHECK(audio == render(-1, 2));
+    CHECK(image == pixels(snapshot(false, 100)));
+    std::cout << "Checked audio and 100 % snapshot determinism\n";
 #if JUCE_LINUX && JUCE_INTEL && JUCE_64BIT
-    for (const auto& s : sounds)
-        if (render(s.program, s.channels) != s.hash)
-            CHECK(!"bit-exact render"), std::cerr << "  program " << s.program << ", " << s.channels << " ch\n";
-    for (const auto& s : shots)
-        if (pixels(snapshot(s.preFilter, s.percent)) != s.hash)
-            CHECK(!"pixel-exact snapshot"), std::cerr << "  " << s.percent << " %" << (s.preFilter ? " pre" : "") << "\n";
-    std::cout << "Checked " << std::size(sounds) << " audio hashes and " << std::size(shots) << " pixel hashes from 81593d3\n";
+    // Independent probes: never use plug-in output as an environment fingerprint (that would hide regressions).
+    juce::MemoryOutputStream math;
+    for (int i = 1; i <= 256; ++i)
+    {
+        volatile double input = i * 0.123456789; // force runtime libm calls, not compiler constant folding
+        const double x = input;
+        const double values[] = { std::sin(x), std::cos(x), std::tan(x), std::exp(-x), std::exp2(x),
+                                  std::log(x), std::log2(x), std::log1p(x), std::tanh(x), std::pow(x, 0.37) };
+        math.write(values, sizeof(values));
+    }
+    juce::Image probe(juce::Image::ARGB, 128, 32, true);
+    {
+        juce::Graphics g(probe);
+        g.setColour(juce::Colours::white);
+        g.fillRoundedRectangle(0.25f, 0.75f, 127.0f, 31.0f, 4.5f);
+        g.setColour(juce::Colours::black);
+        g.setFont(juce::Font(juce::FontOptions(juce::Typeface::createSystemTypefaceFor(
+            BinaryData::GeistMonoRegular_ttf, BinaryData::GeistMonoRegular_ttfSize)).withPointHeight(11.0f)));
+        g.drawText("crumb 0123456789", probe.getBounds(), juce::Justification::centred, false);
+    }
+    const bool matchingMath = sha(math) == "07adb83962bd7f372226ea055bca705c159534fa4a19d3279488b12cd95eea5c";
+    const bool matchingRenderer = pixels(probe) == "415fc224a6be9102f7093db72385bc65066fc503da351b5c5716ebcaaafe7f54";
+    if (matchingMath)
+        for (const auto& s : sounds)
+            if (render(s.program, s.channels) != s.hash)
+                CHECK(!"bit-exact render"), std::cerr << "  program " << s.program << ", " << s.channels << " ch\n";
+    if (matchingMath && matchingRenderer) // snapshots also contain the audio-driven scopes and meters
+        for (const auto& s : shots)
+            if (pixels(snapshot(s.preFilter, s.percent)) != s.hash)
+                CHECK(!"pixel-exact snapshot"), std::cerr << "  " << s.percent << " %" << (s.preFilter ? " pre" : "") << "\n";
+    std::cout << "Environment fingerprints: " << sha(math) << " / " << pixels(probe) << "\nChecked "
+              << (matchingMath ? std::size(sounds) : 0) << " audio hashes and "
+              << (matchingMath && matchingRenderer ? std::size(shots) : 0) << " pixel hashes from 81593d3 (matching environments only)\n";
 #endif
 }
 // CrumbTests --bench: processBlock ns per stereo sample frame (48 kHz, block 512, warmed; init = the defaults, the
