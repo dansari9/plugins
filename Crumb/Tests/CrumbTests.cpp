@@ -1087,11 +1087,12 @@ static void testInteraction()
             CHECK(box != nullptr);
             const auto dial = centre(*slider, slider->getLocalBounds().withTrimmedTop(box->getY() == 0 ? box->getHeight() : 0).withTrimmedBottom(box->getY() == 0 ? 0 : box->getHeight()));
             param->setValueNotifyingHost(0.3f);
-            now = juce::jmax(now, juce::Time::currentTimeMillis()) + 2000;
-            mouse(dial, false), mouse(dial, true);
-            for (int k = 1; k <= 10; ++k) // 50 design px up = 0.2 of the range
-                mouse(dial - juce::Point<float>(0, 5.0f * (float) k * (float) percent / 100), true);
-            mouse(dial - juce::Point<float>(0, 50.0f * (float) percent / 100), false);
+            // Drag the Slider directly: the peer path hit-tests the on-screen window, which stays racy on macOS CI.
+            const auto from = slider->getLocalPoint(e.get(), dial), to = slider->getLocalPoint(e.get(), dial - juce::Point<float>(0, 50.0f * (float) percent / 100)); // 50 design px up = 0.2 of the range
+            const auto time = juce::Time::getCurrentTime();
+            const auto event = [&](juce::Point<float> pos) { return juce::MouseEvent(juce::Desktop::getInstance().getMainMouseSource(), pos, juce::ModifierKeys::leftButtonModifier,
+                                                                                      1, 0, 0, 0, 0, slider, slider, time, from, time, 1, pos != from); };
+            slider->mouseDown(event(from)), slider->mouseDrag(event(to)), slider->mouseUp(event(to));
             CHECK(std::abs(param->getValue() - 0.5f) < 0.01f);
             click(dial, 2);
             CHECK(param->getValue() == param->getDefaultValue());
