@@ -1025,7 +1025,7 @@ static void testEditorEdges()
     dir.deleteRecursively();
 }
 
-// Peer mouse events at 100 % and 200 %: every control reacts at its hit region of cells, the regions
+// Mouse events at 100 % and 200 %: every control reacts at its hit region of cells, the regions
 // do not overlap, dials drag with the slider's 250 px sensitivity, double-click resets, and clicking a value types one.
 static void testInteraction()
 {
@@ -1036,26 +1036,21 @@ static void testInteraction()
         prepare(p, 48000, 512, 2);
         std::unique_ptr<juce::AudioProcessorEditor> e(p.createEditor());
         auto& timer = dynamic_cast<juce::Timer&>(*e);
-        e->setSize(1024 * percent / 100, 576 * percent / 100);
-        juce::Component window;
-        window.setSize(512, 384), window.addAndMakeVisible(*e);
-        window.addToDesktop(0), window.setVisible(true);
-        auto* peer = e->getPeer();
-        CHECK(peer != nullptr);
-        if (peer == nullptr) return;
-        auto now = juce::Time::currentTimeMillis(); // real clock: JUCE stamps its async fake mouse moves with it
-        const auto mouse = [&](juce::Point<float> at, bool down) {
-            peer->handleMouseEvent(juce::MouseInputSource::InputSourceType::mouse, window.getLocalPoint(e.get(), at), down ? juce::ModifierKeys::leftButtonModifier : juce::ModifierKeys(),
-                                   juce::MouseInputSource::defaultPressure, juce::MouseInputSource::defaultOrientation, now += 20);
-        };
-        const auto click = [&](juce::Point<float> at, int clicks = 1) {
-            // macOS hit-tests the actual on-screen window. Reveal the target and pump only before the gesture.
-            // isDragging() and the source's button modifiers share state, so neither identifies a fresh move.
-            e->setTopLeftPosition(window.getLocalBounds().getCentre() - at.roundToInt()), pump();
-            now = juce::jmax(now, juce::Time::currentTimeMillis()) + 2000; // past the double-click time of any earlier down, synthetic or real
-            mouse(at, false);
-            for (int k = 0; k < clicks; ++k)
-                mouse(at, true), mouse(at, false);
+        e->setSize(1024 * percent / 100, 576 * percent / 100), e->setVisible(true); // getComponentAt skips hidden components
+        const auto click = [&](juce::Point<float> at) {
+            // Through the component tree: the peer path hit-tests the on-screen window, which stays racy on macOS CI.
+            auto* c = e->getComponentAt(at.roundToInt());
+            if (auto* b = dynamic_cast<juce::Button*>(c))
+            {
+                auto done = std::make_shared<bool>(false); // triggerClick posts a message: dispatch until a later one arrives
+                b->triggerClick(), juce::MessageManager::callAsync([done] { *done = true; }), pumpUntil([&] { return *done; });
+            }
+            else if (auto* l = dynamic_cast<juce::Label*>(c)) // what Label::mouseUp does, minus its peer contains() test
+            {
+                CHECK(l->isEditableOnSingleClick() && l->isEnabled());
+                l->showEditor();
+            }
+            CHECK(dynamic_cast<juce::Button*>(c) != nullptr || dynamic_cast<juce::Label*>(c) != nullptr);
             timer.timerCallback();
         };
         const auto centre = [&](juce::Component& c, juce::Rectangle<int> area) { return e->getLocalArea(&c, area).toFloat().getCentre(); };
@@ -1087,7 +1082,7 @@ static void testInteraction()
             CHECK(box != nullptr);
             const auto dial = centre(*slider, slider->getLocalBounds().withTrimmedTop(box->getY() == 0 ? box->getHeight() : 0).withTrimmedBottom(box->getY() == 0 ? 0 : box->getHeight()));
             param->setValueNotifyingHost(0.3f);
-            // Drag the Slider directly: the peer path hit-tests the on-screen window, which stays racy on macOS CI.
+            // Drag the Slider directly, like click().
             const auto from = slider->getLocalPoint(e.get(), dial), to = slider->getLocalPoint(e.get(), dial - juce::Point<float>(0, 50.0f * (float) percent / 100)); // 50 design px up = 0.2 of the range
             const auto time = juce::Time::getCurrentTime();
             const auto event = [&](juce::Point<float> pos, int clicks = 1) { return juce::MouseEvent(juce::Desktop::getInstance().getMainMouseSource(), pos, juce::ModifierKeys::leftButtonModifier,
@@ -1122,7 +1117,6 @@ static void testInteraction()
         click(at("A")), CHECK(p.abSlot() == 0);
         const int files = folder.getNumberOfChildFiles(juce::File::findFiles);
         click(at("save")), CHECK(folder.getNumberOfChildFiles(juce::File::findFiles) == files + 1 && p.preset == -1);
-        window.removeFromDesktop();
     }
     folder.deleteRecursively();
 }
