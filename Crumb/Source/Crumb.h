@@ -1,0 +1,152 @@
+#pragma once
+#include <juce_audio_utils/juce_audio_utils.h>
+#include <array>
+#include <complex>
+#include <string_view>
+#include <vector>
+
+// crumb: vintage-sampler bit crusher by daveydidit (clean-room: textbook DSP only).
+// FROZEN: the parameter IDs listed in Crumb.cpp (ParameterID version 1, appended autoGain 2) and the state format
+// (APVTS XML <CRUMB stateVersion="2">, plus additive root attributes). Never rename, remove or reorder; only append.
+namespace crumb
+{
+void fft(std::vector<std::complex<double>>& x, bool inverse); // radix-2 in place, size a power of two
+// The whole document is the flat state grammar: <CRUMB> with attributes, children at most one level deep, matching
+// closing tags, complete character references, no DTD. JUCE's XmlDocument checks none of that, so it is run first.
+bool isFlatCrumbXml(std::string_view xml);
+
+// DSP pieces the processor runs and the editor's display chain reruns (pure: no shared state).
+// Zavalishin TPT state-variable filter (topology-preserving transform, trapezoidal integration).
+struct Coef { double k = 2, a1 = 1, a2 = 0, a3 = 0; };
+inline Coef svf(double g, double k)
+{
+    Coef c { k, 1 / (1 + g * (g + k)), 0, 0 };
+    c.a2 = g * c.a1, c.a3 = g * c.a2;
+    return c;
+}
+struct Svf
+{
+    double s1 = 0, s2 = 0;
+    std::array<double, 3> run(double x, const Coef& c) // lowpass, bandpass, highpass
+    {
+        const double v3 = x - s2, v1 = c.a1 * s1 + c.a2 * v3, v2 = s2 + c.a2 * s1 + c.a3 * v3;
+        s1 = 2 * v1 - s1, s2 = 2 * v2 - s2;
+        return { v2, v1, x - c.k * v1 - v2 };
+    }
+};
+// Butterworth damping 2cos((2i+1)pi/2N) of the cascaded sections: 8th-order approx filter, 4th-order images filter.
+inline constexpr double approxK[] = { 1.9615705608, 1.6629392246, 1.1111404660, 0.3901806440 }, imagesK[] = { 1.8477590650, 0.7653668647 };
+
+// ADC soft clip: linear up to the knee, then a tanh shoulder to +-1.
+inline constexpr double knee = 0.5, soft = 1 - knee;
+inline double clip(double x) { return std::abs(x) <= knee ? x : std::copysign(knee + soft * std::tanh((std::abs(x) - knee) / soft), x); }
+
+// Live display feed: the audio thread writes (in, out) pairs with relaxed atomic stores, the editor copies the newest n.
+// Lock-free and allocation-free on both sides; a frame torn by a concurrent write only shows as one odd sample.
+struct Scope
+{
+    static constexpr int size = 1 << 14; // 85 ms at 192 kHz: a 20 ms window plus room to find a trigger
+    std::array<std::atomic<float>, size> in {}, out {};
+    std::atomic<uint32_t> write { 0 };
+    // Output meter feed: running totals (sum of squares, frames) published as one record under a sequence count that
+    // is odd while the audio thread writes; the editor takes differences. clipAt: clock() of the last sample > 0 dBFS.
+    struct Meter { double energy[2] {}; uint64_t frames = 0; };
+    std::atomic<uint32_t> seq { 0 };
+    std::atomic<double> energy[2] {}, clipAt[2] { -1e9, -1e9 };
+    std::atomic<uint64_t> frames { 0 };
+    double (*clock)() = [] { return juce::Time::getMillisecondCounterHiRes(); }; // ms; tests substitute their own
+    void publish(const double* e, uint64_t n) // audio thread only: never waits
+    {
+        const auto s = seq.load(std::memory_order_relaxed);
+        seq.store(s + 1, std::memory_order_relaxed);
+        std::atomic_thread_fence(std::memory_order_release);
+        for (int c = 0; c < 2; ++c)
+            energy[c].store(energy[c].load(std::memory_order_relaxed) + e[c], std::memory_order_relaxed);
+        frames.store(frames.load(std::memory_order_relaxed) + n, std::memory_order_relaxed);
+        seq.store(s + 2, std::memory_order_release);
+    }
+    bool meter(Meter& m) const // false if a write was in progress: the caller keeps its previous record
+    {
+        const auto s = seq.load(std::memory_order_acquire);
+        const Meter r { { energy[0].load(std::memory_order_relaxed), energy[1].load(std::memory_order_relaxed) }, frames.load(std::memory_order_relaxed) };
+        std::atomic_thread_fence(std::memory_order_acquire);
+        return (s & 1) == 0 && seq.load(std::memory_order_relaxed) == s ? (m = r, true) : false;
+    }
+    void push(uint32_t at, float i, float o) { in[(size_t) (at & (size - 1))].store(i, std::memory_order_relaxed), out[(size_t) (at & (size - 1))].store(o, std::memory_order_relaxed); }
+    void read(float* i, float* o, int n) const // the newest n <= size pairs, oldest first
+    {
+        const auto w = write.load(std::memory_order_acquire);
+        for (uint32_t k = 0; k < (uint32_t) n; ++k)
+            i[k] = in[(size_t) ((w - (uint32_t) n + k) & (size - 1))].load(std::memory_order_relaxed), o[k] = out[(size_t) ((w - (uint32_t) n + k) & (size - 1))].load(std::memory_order_relaxed);
+    }
+};
+struct Preset
+{
+    const char* name;
+    float v[16]; // every parameter before bypass, in ID order, plain units (choices and switches by index)
+};
+extern const Preset presets[25];
+} // namespace crumb
+
+class CrumbProcessor : public juce::AudioProcessor
+{
+public:
+    static constexpr int stateVersion = 2; // 2 (0.2.0): autoGain; missing (1, 0.1.x) loads it off
+
+    explicit CrumbProcessor(juce::File presetDirectory = {});
+    ~CrumbProcessor() override;
+    void prepareToPlay(double sampleRate, int blockSize) override;
+    void releaseResources() override {}
+    bool isBusesLayoutSupported(const BusesLayout&) const override;
+    void processBlock(juce::AudioBuffer<float>&, juce::MidiBuffer&) override;
+    using AudioProcessor::processBlock;
+    juce::AudioProcessorParameter* getBypassParameter() const override;
+
+    juce::AudioProcessorEditor* createEditor() override;
+    bool hasEditor() const override { return true; }
+    const juce::String getName() const override { return JucePlugin_Name; }
+    bool acceptsMidi() const override { return false; }
+    bool producesMidi() const override { return false; }
+    double getTailLengthSeconds() const override { return 0.0; }
+    // Factory presets are the host's programs. User presets live in presetFolder() and are reached by prev/next.
+    int getNumPrograms() override { return 25; }
+    int getCurrentProgram() override { return juce::jmax(0, preset.load()); }
+    void setCurrentProgram(int index) override;
+    const juce::String getProgramName(int index) override;
+    void changeProgramName(int, const juce::String&) override {}
+    void getStateInformation(juce::MemoryBlock&) override;
+    void setStateInformation(const void*, int) override;
+
+    juce::AudioProcessorValueTreeState apvts;
+    crumb::Scope scope;
+    std::atomic<double> sampleRate { 48000 };
+    std::atomic<int> editorWidth { 0 }; // 0 = never resized; saved as an additive root attribute
+
+    // Preset UI and host-state transactions. preset: 0..24 factory, -1 user file or unknown (old state).
+    juce::File presetFolder() const;
+    void stepPreset(int delta); // through factory presets, then the user files
+    juce::File saveUserPreset();
+    juce::String presetName() const;
+    std::atomic<int> preset { 0 };
+    int abSlot() const { return ab.load(); }
+    void selectAb(int slot);
+
+private:
+    void setAll(const float* normalised); // every parameter but bypass, as one gesture each
+    void applyParams(const juce::XmlElement& state, bool bypass); // all IDs (bypass optional); missing or unreadable -> default, missing autoGain -> off
+    void setIdentity(int index, const juce::String& name);
+    void serialize(juce::MemoryBlock&);
+    struct Transaction;
+    juce::CriticalSection txLock; // writers only: presets, A/B, restore. May be held across host callbacks and I/O.
+    mutable juce::CriticalSection stateLock; // brief: `busy`, `committed`, userName. Never held across a callback.
+    bool busy = false; // a writer is publishing: saves return `committed`, the state before it
+    juce::MemoryBlock committed;
+    const juce::File presetDirectory;
+    std::atomic<bool> resetPending { false }; // set by prepareToPlay, taken by the first block after it
+    std::vector<float> slots[2]; // written by writers only, read by serialize()
+    int slotPreset[2] { 0, 0 };
+    std::atomic<int> ab { 0 };
+    juce::String userName, slotName[2];
+    struct Dsp;
+    std::unique_ptr<Dsp> dsp; // allocated once in the constructor, never on the audio thread
+};
