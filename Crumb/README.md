@@ -69,7 +69,7 @@ vintage-sampler flavours, named bits·rate: 1 `12·26k dusty` · 2 `12·40k warm
 11 `14·44k glue` · 12 `12·20k thick` · by use: 13 `drums · crunch bus` · 14 `drums · break dust` ·
 15 `bass · warm 12` · 16 `bass · sub grit` · 17 `keys · lo-fi` · 18 `vocal · radio` · 19 `vocal · phone` ·
 20 `hats · sizzle` · 21 `pad · drift` · 22 `fx · alias sweep` · 23 `fx · 700 hz wreck` · 24 `mix · parallel crush`.
-Presets leave auto gain as it is and keep their designed level: with it on, output loads as the preset's output + preamp.
+Presets leave auto gain as it is and load their values unchanged; with it on, their wet path is compensated for the preamp.
 
 User presets are plain XML files (`user 01.xml`, …) in the user's app-data folder under `daveydidit/crumb/Presets`
 (macOS `~/Library/daveydidit/crumb/Presets`, Windows `%APPDATA%\daveydidit\crumb\Presets`, Linux

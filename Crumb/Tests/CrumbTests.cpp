@@ -515,8 +515,9 @@ static void testSound()
         CHECK(diff < 1e-6f);
     }
     // Auto gain: a -30 dBFS 1 kHz sine, bits off (the clip stays linear up to +24 dB: peak 0.5, its knee). At +12 dB
-    // preamp with auto gain on the output RMS stays within 1 dB of preamp 0 (off: 12 dB up). Toggling it and jumping the
-    // preamp are smoothed: no sample step above the sine's own (0.0165 at +12 dB, before auto gain).
+    // preamp with auto gain on the output RMS stays within 1 dB of preamp 0 (off: 12 dB up). Toggling it on, jumping the
+    // preamp to +24 dB and toggling it off are smoothed: on a 20 Hz sine (largest own step 0.0013 at +24 dB, off) no
+    // sample step exceeds 0.003 (unsmoothed, the toggles would step by ~0.1 and ~0.45).
     const auto sine = [](int i) { return (float) (0.0316 * std::sin(2 * juce::MathConstants<double>::pi * 1000 * i / 48000)); };
     const auto rms = [&](float preamp, float on) {
         Proc q;
@@ -528,23 +529,42 @@ static void testSound()
             e += y[i] * y[i];
         return 10 * std::log10(e / 24000);
     };
-    const double flat = rms(0, 1), on = rms(12, 1), off = rms(12, 0);
-    std::cout << "auto gain, -30 dBFS 1 kHz: preamp 0 " << flat << " dB, +12 on " << on << " dB, +12 off " << off << " dB\n";
-    CHECK(std::abs(on - flat) < 1 && std::abs(off - flat - 12) < 1);
+    const double flat = rms(0, 1), compensated = rms(12, 1), off = rms(12, 0);
+    std::cout << "auto gain, -30 dBFS 1 kHz: preamp 0 " << flat << " dB, +12 on " << compensated << " dB, +12 off " << off << " dB\n";
+    CHECK(std::abs(compensated - flat) < 1 && std::abs(off - flat - 12) < 1);
+    const auto low = [](int i) { return (float) (0.0316 * std::sin(2 * juce::MathConstants<double>::pi * 20 * i / 48000)); };
     Proc q;
     set(q, { { "preamp", 12 }, { "bits", 0 }, { "autoGain", 0 } });
     prepare(q, 48000, 512, 2);
-    auto y = run(q, 512, 2, 4800, sine);
+    auto y = run(q, 512, 2, 4800, low);
     for (auto [id, v] : { std::pair { "autoGain", 1.0f }, { "preamp", 24.0f }, { "autoGain", 0.0f } })
     {
         set(q, id, v);
-        for (float s : run(q, 512, 2, 4800, [&](int i) { return sine((int) y.size() + i); }))
+        for (float s : run(q, 512, 2, 4800, [&](int i) { return low((int) y.size() + i); }))
             y.push_back(s);
     }
     float step = 0;
-    for (size_t i = 1; i < y.size() * 3 / 4; ++i)
+    for (size_t i = 1; i < y.size(); ++i)
         step = std::max(step, std::abs(y[i] - y[i - 1]));
-    CHECK(step < 0.0175f);
+    std::cout << "auto gain transitions: largest step " << step << "\n";
+    CHECK(step < 0.003f);
+    // Factory presets load as stored with auto gain on: 24 (35 % wet, +12 dB preamp) keeps its dry path at unity (mix
+    // 0: the input exactly) and its blend no louder than with auto gain off.
+    const auto preset = [&](float on, float mix) {
+        Proc r;
+        set(r, "autoGain", on), r.setCurrentProgram(24);
+        if (mix >= 0) set(r, "mix", mix);
+        prepare(r, 48000, 512, 2);
+        return run(r, 512, 2, 48000, sine);
+    };
+    const auto dry = preset(1, 0);
+    float worst = 0;
+    for (size_t i = 0; i < dry.size(); ++i)
+        worst = std::max(worst, std::abs(dry[i] - sine((int) i)));
+    const auto level = [](const std::vector<float>& v) { double e = 0; for (size_t i = v.size() / 2; i < v.size(); ++i) e += v[i] * v[i]; return 10 * std::log10(e / (double) (v.size() / 2)); };
+    const double blendOn = level(preset(1, -1)), blendOff = level(preset(0, -1));
+    std::cout << "preset 24, -30 dBFS 1 kHz: auto on " << blendOn << " dB, off " << blendOff << " dB\n";
+    CHECK(worst < 1e-6f && blendOn <= blendOff + 0.1);
 }
 
 static const std::vector<Settings> extremes {
@@ -756,11 +776,11 @@ static void testPresets()
     for (int i = 0; i < p.getNumPrograms(); ++i)
     {
         names.addIfNotAlreadyThere(p.getProgramName(i));
-        set(p, "autoGain", (float) (i % 2)), p.setCurrentProgram(i); // auto gain stays; on, the output trim adds the preamp
+        set(p, "autoGain", (float) (i % 2)), p.setCurrentProgram(i); // auto gain stays, the values load unchanged
         CHECK(p.getCurrentProgram() == i && p.presetName() == p.getProgramName(i) && get(p, "autoGain") == (float) (i % 2));
         for (int k = 0; k < 16; ++k) // every value is on its parameter's grid, so it is stored exactly
         {
-            const float v = crumb::presets[i].v[k] + (k == 15 && i % 2 ? crumb::presets[i].v[0] : 0);
+            const float v = crumb::presets[i].v[k];
             CHECK(std::abs(get(p, ids[k]) - v) < 1e-3f * std::max(1.0f, std::abs(v)));
         }
         prepare(p, 48000, 512, 2);
@@ -964,6 +984,45 @@ static void testScopeRepaints()
             { juce::Graphics g(fresh); g.addTransform(juce::AffineTransform::scale(scale)); e->paint(g); }   // so this renders all cells
             CHECK(pixels(image) == pixels(fresh));
         }
+}
+
+// Low host rates (fewer scope samples than wave dot columns) build, run and paint; the display's hold is continuous at
+// the host rate (rate 44099.9 and 44100 at 44.1 kHz draw nearly the same wave band); an overlong user preset name stays
+// between the preset arrows and leaves them and the number as with a short one.
+static void testEditorEdges()
+{
+    const auto frames = [](juce::AudioProcessorEditor& e) {
+        for (int k = 0; k < 3; ++k) dynamic_cast<juce::Timer&>(e).timerCallback();
+        return e.createComponentSnapshot(e.getLocalBounds());
+    };
+    const auto band = [&](double fs, float rate) {
+        Proc p;
+        set(p, { { "rate", rate }, { "jitter", 0 } }), prepare(p, fs, 512, 2);
+        run(p, 512, 2, 8192, [fs](int i) { return signal(i, fs); });
+        std::unique_ptr<juce::AudioProcessorEditor> e(p.createEditor());
+        return frames(*e).getClippedImage({ 17, 203, 905, 169 }); // cells (2, 12, 106, 10): the wave band
+    };
+    for (double fs : { 8000.0, 11025.0, 22050.0 })
+        CHECK(band(fs, 26040).isValid());
+    const juce::Image below = band(44100, 44099.9f), at = band(44100, 44100);
+    int differ = 0;
+    for (int y = 0; y < at.getHeight(); ++y)
+        for (int x = 0; x < at.getWidth(); ++x) differ += below.getPixelAt(x, y) != at.getPixelAt(x, y);
+    std::cout << "wave band, rate 44099.9 vs 44100 at 44.1 kHz: " << differ << " of " << at.getWidth() * at.getHeight() << " pixels differ\n";
+    CHECK(differ < at.getWidth() * at.getHeight() / 100); // one-sample shifts of the steps only
+    const auto dir = juce::File::getSpecialLocation(juce::File::tempDirectory).getNonexistentChildFile("crumb-names", "", false);
+    dir.createDirectory(), dir.getChildFile("a.xml").replaceWithText("<CRUMB/>");
+    dir.getChildFile("b" + juce::String::repeatedString("long name ", 6) + "x.xml").replaceWithText("<CRUMB/>");
+    Proc p(dir);
+    p.setCurrentProgram(24), p.stepPreset(1);
+    std::unique_ptr<juce::AudioProcessorEditor> e(p.createEditor());
+    const auto shortName = frames(*e);
+    p.stepPreset(1);
+    const auto longName = frames(*e);
+    CHECK(p.presetName().length() == 62);
+    for (juce::Rectangle<int> r : { juce::Rectangle<int> { 239, 17, 68, 17 }, { 529, 17, 17, 17 } }) // cells 28-35 (‹, --), 62-63 (›)
+        CHECK(pixels(shortName.getClippedImage(r)) == pixels(longName.getClippedImage(r)));
+    dir.deleteRecursively();
 }
 
 // Real mouse events through a window at 100 % and 200 %: every control reacts at its hit region of cells, the regions
@@ -1387,11 +1446,11 @@ static const Golden sounds[] = {
 // Editor snapshots of the 0.2.0 grid UI (ASCII option 5, auto gain chip), same environment gate as the audio.
 struct Shot { Variant variant; int percent; const char* hash; };
 static const Shot shots[] = {
-    { post, 100, "5b6d24386798e1573079d5b12619b699fd64cf2ebec93120495731db83ace98f" },
-    { post, 50, "724491ec24db7dab0a2d80890850a714aab555c2dd4428e41bfa624f0d98815e" },
-    { post, 200, "5b46a7b0ddecf2e4d2af88497a3df4d667577fb6201e1e8599286f978cd3f92c" },
-    { pre, 100, "a96fa0665e8830c2535dbb2b243d8cf7d07dcbabd76e323e12b18cf595ffc177" },
-    { off, 100, "b613976e56cbb5f00fd8755565d151f51f0a6eb4f67c34c25edb1f9ff090edf1" },
+    { post, 100, "94f174d7e4e500c64c97bc82b530ab16d952440f9a26c7522450900a1c2b3ebe" },
+    { post, 50, "2611d5ba6442cafeaa0d50d8c029a5ddcfa042e647f2dc54dd6399ed1a265788" },
+    { post, 200, "297027dced20e93b70bca6281ea771a26f676d38002d37e6f62620d01e3df50c" },
+    { pre, 100, "15c4a903220e013791d5e569018c3372a200d9ee05603c2343d00ab63cbc672c" },
+    { off, 100, "f68ccd009e9f996a093074d3dc31180d8873850e49d207b892adf5034bb24905" },
 };
 static void testGoldens()
 {
@@ -1505,6 +1564,13 @@ static int benchEditor()
         }
         std::cout << percent << " %: timerCallback " << timer / 200 << " ms, invalidated-region paint " << dirty / 200
                   << " ms, full paint " << full / 200 << " ms\n";
+        for (int frame = 0; frame < 120; ++frame)
+            testMs += 1000.0 / 30, dynamic_cast<juce::Timer&>(*e).timerCallback();
+        capture->pending = {};
+        const auto t0 = Clock::now();
+        for (int frame = 0; frame < 200; ++frame)
+            testMs += 1000.0 / 30, dynamic_cast<juce::Timer&>(*e).timerCallback();
+        std::cout << percent << " %: idle timerCallback " << ms(t0, Clock::now()) / 200 << " ms, repaint " << !capture->pending.isEmpty() << "\n";
     }
     return 0;
 }
@@ -1547,6 +1613,7 @@ int main(int argc, char** argv)
     testPresets();
     testScopeFifo();
     testScopeRepaints();
+    testEditorEdges();
     testInteraction();
     testMeter();
     testEditorState();

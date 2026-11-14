@@ -1,8 +1,8 @@
 // crumb editor: ASCII design option 5, "one wave" (crusher-design/ascii/option_5.*, made by src/grid.py + opt5.py).
 // One 120 x 34 cell grid scaled with the window (50-200 %, fixed aspect). Text is Geist Mono in its cells; braille, box,
-// block and geometric glyphs are vectors per cell, so they join. The grid is rebuilt from the state at 30 Hz: the 20 ms
-// scope runs through an editor-side copy of the stage chain and crosses the panel, each stage showing its own output.
-// Only cells that changed are redrawn into a device-pixel image and repainted, so an idle editor paints nothing.
+// block and geometric glyphs are vectors per cell, so they join. At 30 Hz, when anything it shows changed, the grid is
+// rebuilt: the 20 ms scope runs through an editor-side copy of the stage chain and crosses the panel, each stage showing
+// its own output. Only cells that changed are redrawn into a device-pixel image and repainted: idle costs nothing.
 // Controls are invisible Sliders and Buttons on their hit cells in a 1024 x 576 layer scaled with the window: drag,
 // double-click = default and click the value to type work as before. Keys follow their parameters through attachments.
 #include "BinaryData.h"
@@ -44,7 +44,7 @@ struct Grid
             if (const auto c = p.getAndAdvance(); isPositiveAndBelow(x, C) && isPositiveAndBelow(y, R))
                 at[y][x] = { c, fg, bg, bold };
     }
-    void centre(int x, int w, int y, const String& s, Colour fg, bool bold = false) { put(x + (w - s.length()) / 2, y, s.substring(0, w), fg, bold); }
+    void centre(int x, int w, int y, String s, Colour fg, bool bold = false) { s = s.substring(0, w), put(x + (w - s.length()) / 2, y, s, fg, bold); }
     void right(int x, int y, const String& s, Colour fg, bool bold = false) { put(x - s.length() + 1, y, s, fg, bold); }
 };
 
@@ -63,19 +63,6 @@ const char* const digits[10][4] = { { "█▀█", "█ █", "█ █", "▀▀
                                     { "▀▀█", "▄▄█", "  █", "▀▀▀" }, { "█ █", "█▄█", "  █", "  ▀" }, { "█▀▀", "█▄▄", "  █", "▀▀▀" },
                                     { "█▀▀", "█▄▄", "█ █", "▀▀▀" }, { "▀▀█", "  █", "  █", "  ▀" }, { "█▀█", "█▄█", "█ █", "▀▀▀" },
                                     { "█▀█", "█▄█", "  █", "▀▀▀" } };
-
-// The processor's TPT state-variable filter (Crumb.cpp), for the editor's copy of the stage chain.
-struct Svf
-{
-    double s1 = 0, s2 = 0, k = 2, a1 = 1, a2 = 0, a3 = 0;
-    void set(double g, double damping) { k = damping, a1 = 1 / (1 + g * (g + k)), a2 = g * a1, a3 = g * a2; }
-    std::array<double, 3> run(double x)
-    {
-        const double v3 = x - s2, v1 = a1 * s1 + a2 * v3, v2 = s2 + a2 * s1 + a3 * v3;
-        s1 = 2 * v1 - s1, s2 = 2 * v2 - s2;
-        return { v2, v1, x - k * v1 - v2 };
-    }
-};
 
 // Controls draw nothing: the grid shows them. The value box only appears while a value is typed.
 struct Look : LookAndFeel_V4
@@ -116,7 +103,9 @@ struct Editor : AudioProcessorEditor, Timer
     crumb::Scope::Meter seen; // the meter totals last read: opening the editor starts from the current position
     double stepAt = 0, heard = 0, peakAt = 0;
     bool clip[2] {};
-    std::unique_ptr<Grid> shown = std::make_unique<Grid>(), building = std::make_unique<Grid>();
+    Grid shown;
+    std::vector<float> drawnFrom; // what the shown grid was built from: the same again means idle, nothing to rebuild
+    String drawnName;
     Image image; // the shown grid in device pixels
     Font fonts[2] { mono(1, false), mono(1, true) };
 
@@ -262,7 +251,20 @@ struct Editor : AudioProcessorEditor, Timer
                 start = i;
                 break;
             }
-        refresh(true);
+        std::vector<float> now(in.begin(), in.begin() + m);
+        now.reserve((size_t) m + 32);
+        for (auto* param : proc.getParameters())
+            now.push_back(param->getValue());
+        now.push_back((float) proc.sampleRate.load());
+        const bool waveChanged = drawnFrom.size() < now.size() || !std::equal(now.begin(), now.end(), drawnFrom.begin());
+        for (int c = 0; c < 2; ++c)
+            now.insert(now.end(), { std::floor(vuRows(needle[c]) * 8), peak[c] >= 0.5f ? (float) roundToInt(peak[c]) : -1.0f, (float) clip[c] });
+        now.insert(now.end(), { scopePeak, (float) n, (float) start, (float) proc.preset.load(), (float) proc.abSlot() });
+        if (now == drawnFrom && proc.presetName() == drawnName)
+            return;
+        drawnFrom = std::move(now), drawnName = proc.presetName();
+        if (waveChanged) runChain();
+        refresh();
     }
     static float vuRows(float gain) // lit rows of 24: +3 VU fills the column, the scale marks are where opt5 puts them
     {
@@ -276,7 +278,9 @@ struct Editor : AudioProcessorEditor, Timer
     // The stage chain as Crumb.cpp runs it, without its smoothing, ADAA, ladder errors, DC coupling or band-limited steps,
     // magnified so each stage's crush shows at braille resolution: the steps are counted on the screen (2^(bits/4 + 0.8)
     // levels across the band: 14 at 12 bit, 7 at 8 bit) and every rate and cutoff is divided by 16, as if the 20 ms
-    // played 16 times faster. Cheap enough to rerun on the snapshot every frame. seg[s] = the output of stage s.
+    // played 16 times faster (so the hold always shows, continuous in the rate up to the host's). The filters run
+    // forward and back, so each stage stays lined up with the wave. Cheap enough to rerun on a new snapshot every frame.
+    // seg[s] = the output of stage s.
     void runChain()
     {
         constexpr double zoom = 16;
@@ -286,31 +290,29 @@ struct Editor : AudioProcessorEditor, Timer
         const double dither = value("dither") / 100.0, jitter = value("jitter") / 100.0, mix = value("mix") / 100.0;
         const double inc0 = rate / fs, jc = 1 - std::exp(-2 * pi * 30 * zoom / fs), jn = 0.5 / std::sqrt(jc / (3 * (2 - jc)));
         const double outGain = Decibels::decibelsToGain((double) value("output")), wet = value("autoGain") > 0.5f ? 1 / gain : 1;
-        const bool tread = value("dcShift") > 0.5f, approxOn = value("approxOn") > 0.5f, imagesOn = value("imagesOn") > 0.5f, identity = value("rate") >= fs && jitter <= 0;
+        const bool tread = value("dcShift") > 0.5f, approxOn = value("approxOn") > 0.5f, imagesOn = value("imagesOn") > 0.5f;
         const int type = roundToInt(value("fType"));
         const auto g = [fs](double hz) { return std::tan(pi * jmin(0.49 * fs, hz) / fs); };
-        Svf approxF[4], imagesF[2], filter;
+        crumb::Coef approxF[4], imagesF[2], filter = crumb::svf(g(value("cutoff") / zoom), 2 * std::pow(40.0, -value("reso") / 100.0));
         for (int k = 0; k < 4; ++k)
-            approxF[k].set(g(0.5 * rate * std::exp2(value("approxDev") / 100.0)), std::array { 1.9615705608, 1.6629392246, 1.1111404660, 0.3901806440 }[(size_t) k]);
+            approxF[k] = crumb::svf(g(0.5 * rate * std::exp2(value("approxDev") / 100.0)), crumb::approxK[k]);
         for (int k = 0; k < 2; ++k)
-            imagesF[k].set(g(0.5 * rate * std::exp2(2 * value("imagesShift") / 100.0)), std::array { 1.8477590650, 0.7653668647 }[(size_t) k]);
-        filter.set(g(value("cutoff") / zoom), 2 * std::pow(40.0, -value("reso") / 100.0));
+            imagesF[k] = crumb::svf(g(0.5 * rate * std::exp2(2 * value("imagesShift") / 100.0)), crumb::imagesK[k]);
         uint32 seed = 1;
         double phase = 0, held = 0, walk = 0;
         const auto random = [&seed] { return (double) ((seed = seed * 1664525u + 1013904223u) >> 8) * 0x1p-24; };
         const int length = start + n + n / 4;
         float* y = work.data();
-        const auto zeroPhase = [&](const Svf* f, int sections, int shape) { // forward then backward: lined up with its input
+        const auto zeroPhase = [&](const crumb::Coef* c, int sections, int shape) { // forward then backward: lined up with its input
             for (int pass = 0; pass < 2; ++pass)
                 for (int k = 0; k < sections; ++k)
                 {
-                    Svf svf = f[k];
-                    svf.s2 = y[pass == 0 ? 0 : length - 1]; // settled on the first sample
+                    crumb::Svf svf { 0, y[pass == 0 ? 0 : length - 1] }; // settled on the first sample
                     for (int i = 0; i < length; ++i)
                     {
                         auto& v = y[pass == 0 ? i : length - 1 - i];
-                        const auto o = svf.run(v);
-                        v = (float) (shape == 1 ? o[0] : shape == 2 ? svf.k * o[1] : shape == 3 ? o[2] : o[0] + o[2]); // lp bp hp br
+                        const auto o = svf.run(v, c[k]);
+                        v = (float) (shape == 1 ? o[0] : shape == 2 ? c[k].k * o[1] : shape == 3 ? o[2] : o[0] + o[2]); // lp bp hp br
                     }
                 }
         };
@@ -318,10 +320,7 @@ struct Editor : AudioProcessorEditor, Timer
         {
             if (s == In)
                 for (int i = 0; i < length; ++i)
-                {
-                    const double a = jlimit(-64.0, 64.0, in[(size_t) i] * gain);
-                    y[i] = (float) (std::abs(a) <= 0.5 ? a : std::copysign(0.5 + 0.5 * std::tanh((std::abs(a) - 0.5) / 0.5), a));
-                }
+                    y[i] = (float) crumb::clip(jlimit(-64.0, 64.0, in[(size_t) i] * gain));
             else if (s == Quant && resolution > 0)
                 for (int i = 0; i < length; ++i)
                 {
@@ -330,7 +329,7 @@ struct Editor : AudioProcessorEditor, Timer
                 }
             else if (s == Approx && approxOn)
                 zeroPhase(approxF, 4, 1);
-            else if (s == Resample && !identity)
+            else if (s == Resample)
                 for (int i = 0; i < length; ++i)
                 {
                     walk += jc * (2 * random() - 1 - walk);
@@ -379,11 +378,9 @@ struct Editor : AudioProcessorEditor, Timer
         g.centre(x - 1, 10, s.up ? y + 4 : y - 1, valueText, fade(white, on), true);
     }
 
-    void refresh(bool frame)
+    void refresh()
     {
-        runChain();
-        Grid& g = *building;
-        g = {};
+        Grid g;
         const auto x = stageX();
         const bool preFilter = preOrder();
         // Header: name, preset number and name with prev / next, save, A / B, maker.
@@ -450,14 +447,13 @@ struct Editor : AudioProcessorEditor, Timer
                 const auto& v = seg[w == 0 ? stageOf[2 + k / 2] : In];
                 const int a = k * n / dotCols, e = jmax(a + 1, (k + 1) * n / dotCols);
                 float lo = v[(size_t) a], hi = lo;
-                if (k > 0) // joined to the previous column's last sample
+                if (a > 0) // joined to the previous column's last sample (none when columns outnumber samples)
                     lo = jmin(lo, seg[w == 0 ? stageOf[2 + (k - 1) / 2] : In][(size_t) a - 1]), hi = jmax(hi, seg[w == 0 ? stageOf[2 + (k - 1) / 2] : In][(size_t) a - 1]);
                 for (int i = a; i < e; ++i)
                     lo = jmin(lo, v[(size_t) i]), hi = jmax(hi, v[(size_t) i]);
                 range[w][k][0] = lo, range[w][k][1] = hi, top = jmax(top, -lo, hi);
             }
-        if (frame)
-            scopePeak = jmax(0.05f, top, scopePeak * 0.95f); // auto gain: fast up, slow down
+        scopePeak = jmax(0.05f, top, scopePeak * 0.95f); // display gain: fast up, slow down
         uint8 dots[2][2][10][VX - 2] {}; // [wave, ghost][red][row][column]
         for (int w = 0; w < 2; ++w)
             for (int k = 0; k < dotCols; ++k)
@@ -481,11 +477,11 @@ struct Editor : AudioProcessorEditor, Timer
         for (int c = 0; c < 2; ++c)
         {
             const int cx = VX + 3 + 5 * c;
-            const float lit = vuRows(needle[c]);
+            const int lit = (int) std::floor(vuRows(needle[c]) * 8); // in eighths of a row
             g.put(cx, 3, u(clip[c] ? "●" : "○"), clip[c] ? red : dark);
             for (int j = 0; j < 24; ++j)
             {
-                const int eighths = jlimit(0, 8, (int) std::floor((lit - (float) (23 - j)) * 8));
+                const int eighths = jlimit(0, 8, lit - 8 * (23 - j));
                 g.put(cx, 4 + j, eighths > 0 ? String::charToString((juce_wchar) (0x2580 + eighths)) : u("│"), eighths > 0 ? (j < 4 ? red : white) : rule);
             }
             if (peak[c] >= 0.5f)
@@ -518,9 +514,9 @@ struct Editor : AudioProcessorEditor, Timer
         for (int j = 0; j < R; ++j)
             for (int i = 0, first = -1, last = -1; i <= C; ++i)
             {
-                if (i < C && g.at[j][i] != shown->at[j][i])
+                if (i < C && g.at[j][i] != shown.at[j][i])
                 {
-                    shown->at[j][i] = g.at[j][i], first = first < 0 ? i : first, last = i;
+                    shown.at[j][i] = g.at[j][i], first = first < 0 ? i : first, last = i;
                     if (context) drawCell(*context, i, j);
                 }
                 else if (first >= 0 && (i == C || i - last > 8))
@@ -549,7 +545,7 @@ struct Editor : AudioProcessorEditor, Timer
     // One cell in device pixels. Cells are snapped to whole pixels, so lines and blocks join without seams.
     void drawCell(Graphics& g, int i, int j)
     {
-        const auto& c = shown->at[j][i];
+        const auto& c = shown.at[j][i];
         const auto px = [this](int k) { return roundToInt((float) k * (float) image.getWidth() / C); };
         const auto py = [this](int k) { return roundToInt((float) k * (float) image.getHeight() / R); };
         const auto r = Rectangle<int>::leftTopRightBottom(px(i), py(j), px(i + 1), py(j + 1));

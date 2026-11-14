@@ -15,6 +15,32 @@ void fft(std::vector<std::complex<double>>& x, bool inverse); // radix-2 in plac
 // closing tags, complete character references, no DTD. JUCE's XmlDocument checks none of that, so it is run first.
 bool isFlatCrumbXml(std::string_view xml);
 
+// DSP pieces the processor runs and the editor's display chain reruns (pure: no shared state).
+// Zavalishin TPT state-variable filter (topology-preserving transform, trapezoidal integration).
+struct Coef { double k = 2, a1 = 1, a2 = 0, a3 = 0; };
+inline Coef svf(double g, double k)
+{
+    Coef c { k, 1 / (1 + g * (g + k)), 0, 0 };
+    c.a2 = g * c.a1, c.a3 = g * c.a2;
+    return c;
+}
+struct Svf
+{
+    double s1 = 0, s2 = 0;
+    std::array<double, 3> run(double x, const Coef& c) // lowpass, bandpass, highpass
+    {
+        const double v3 = x - s2, v1 = c.a1 * s1 + c.a2 * v3, v2 = s2 + c.a2 * s1 + c.a3 * v3;
+        s1 = 2 * v1 - s1, s2 = 2 * v2 - s2;
+        return { v2, v1, x - c.k * v1 - v2 };
+    }
+};
+// Butterworth damping 2cos((2i+1)pi/2N) of the cascaded sections: 8th-order approx filter, 4th-order images filter.
+inline constexpr double approxK[] = { 1.9615705608, 1.6629392246, 1.1111404660, 0.3901806440 }, imagesK[] = { 1.8477590650, 0.7653668647 };
+
+// ADC soft clip: linear up to the knee, then a tanh shoulder to +-1.
+inline constexpr double knee = 0.5, soft = 1 - knee;
+inline double clip(double x) { return std::abs(x) <= knee ? x : std::copysign(knee + soft * std::tanh((std::abs(x) - knee) / soft), x); }
+
 // Live display feed: the audio thread writes (in, out) pairs with relaxed atomic stores, the editor copies the newest n.
 // Lock-free and allocation-free on both sides; a frame torn by a concurrent write only shows as one odd sample.
 struct Scope

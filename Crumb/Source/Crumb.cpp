@@ -119,33 +119,9 @@ const Kernel& kernel()
     return table;
 }
 
-// Zavalishin TPT state-variable filter (topology-preserving transform, trapezoidal integration).
-struct Coef
-{
-    double k = 2, a1 = 1, a2 = 0, a3 = 0;
-};
-Coef svf(double g, double k)
-{
-    Coef c { k, 1 / (1 + g * (g + k)), 0, 0 };
-    c.a2 = g * c.a1, c.a3 = g * c.a2;
-    return c;
-}
-struct Svf
-{
-    double s1 = 0, s2 = 0;
-    std::array<double, 3> run(double x, const Coef& c) // lowpass, bandpass, highpass
-    {
-        const double v3 = x - s2, v1 = c.a1 * s1 + c.a2 * v3, v2 = s2 + c.a2 * s1 + c.a3 * v3;
-        s1 = 2 * v1 - s1, s2 = 2 * v2 - s2;
-        return { v2, v1, x - c.k * v1 - v2 };
-    }
-};
-// Butterworth damping 2cos((2i+1)pi/2N) of the cascaded sections: 8th-order approx filter, 4th-order images filter.
-constexpr double approxK[] = { 1.9615705608, 1.6629392246, 1.1111404660, 0.3901806440 }, imagesK[] = { 1.8477590650, 0.7653668647 };
-
-// ADC soft clip (linear up to the knee, then a tanh shoulder to +-1) and its antiderivative for first-order ADAA.
-constexpr double knee = 0.5, soft = 1 - knee;
-double clip(double x) { return std::abs(x) <= knee ? x : std::copysign(knee + soft * std::tanh((std::abs(x) - knee) / soft), x); }
+// The TPT state-variable filter, its Butterworth dampings and the ADC soft clip are in Crumb.h (the editor reruns them).
+using crumb::Coef, crumb::svf, crumb::Svf, crumb::approxK, crumb::imagesK, crumb::knee, crumb::soft, crumb::clip;
+// The soft clip's antiderivative, for first-order ADAA.
 double clipIntegral(double x)
 {
     const double a = std::abs(x), u = (a - knee) / soft; // stable log cosh, continuous at the knee
@@ -629,8 +605,8 @@ void CrumbProcessor::setStateInformation(const void* data, int size)
 // Values: preamp dB, bits (0 off), dcShift, dither %, rate Hz, jitter %, approxOn, approxDev %, imagesOn, imagesShift %,
 // fType (0 off 1 lp 2 bp 3 hp 4 br), fOrder (0 pre 1 post), cutoff Hz, reso %, mix %, output dB.
 // 1-12: classic 8/12/16-bit sampler flavours (generic names), 13-24: by use. Names are "bits·rate flavour".
-// Auto gain is not part of a preset: loading one leaves it as it is and keeps the designed level either way. With auto
-// gain on, the output knob is a trim on top of it, so it loads as output + preamp (12·32k punch: +6 dB instead of -6).
+// Auto gain is not part of a preset: loading one leaves it as it is and loads the values unchanged. With it on, the wet
+// path is compensated for the preamp like any other setting (a global output offset would also move the dry path).
 constexpr crumb::Preset crumb::presets[25] = {
     { "init", { 0, 12, 0, 0, 26040, 0, 1, 0, 0, 0, 0, 1, 20000, 0, 100, 0 } },
     { "12\xc2\xb7" "26k dusty", { 4, 12, 0, 0, 26040, 4, 1, 0, 1, 10, 1, 1, 11000, 8, 100, -1 } },
@@ -674,7 +650,7 @@ void CrumbProcessor::setCurrentProgram(int index)
     float n[numSound];
     n[numSound - 1] = apvts.getParameter(ids[AutoGain])->getValue();
     for (int i = 0; i < Bypass; ++i)
-        n[i] = apvts.getParameter(ids[i])->convertTo0to1(v[i] + (i == Output && n[numSound - 1] > 0.5f ? v[Preamp] : 0));
+        n[i] = apvts.getParameter(ids[i])->convertTo0to1(v[i]);
     {
         const Transaction transaction(*this);
         setAll(n);
