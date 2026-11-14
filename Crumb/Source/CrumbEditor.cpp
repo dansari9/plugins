@@ -251,15 +251,14 @@ struct Editor : AudioProcessorEditor, Timer
                 start = i;
                 break;
             }
-        std::vector<float> now(in.begin(), in.begin() + m);
-        now.reserve((size_t) m + 32);
+        std::vector<float> now(in.begin(), in.begin() + m); // n and start follow from these and the rate
         for (auto* param : proc.getParameters())
             now.push_back(param->getValue());
         now.push_back((float) proc.sampleRate.load());
         const bool waveChanged = drawnFrom.size() < now.size() || !std::equal(now.begin(), now.end(), drawnFrom.begin());
         for (int c = 0; c < 2; ++c)
             now.insert(now.end(), { std::floor(vuRows(needle[c]) * 8), peak[c] >= 0.5f ? (float) roundToInt(peak[c]) : -1.0f, (float) clip[c] });
-        now.insert(now.end(), { scopePeak, (float) n, (float) start, (float) proc.preset.load(), (float) proc.abSlot() });
+        now.insert(now.end(), { scopePeak, (float) proc.preset.load(), (float) proc.abSlot() });
         if (now == drawnFrom && proc.presetName() == drawnName)
             return;
         drawnFrom = std::move(now), drawnName = proc.presetName();
