@@ -7,17 +7,19 @@ using namespace juce;
 namespace
 {
 // ============================ FROZEN — never rename/reorder semantics ============================
-// Hosts store sessions and automation under these string IDs (ParameterID version hint 1). Never rename,
-// remove, reorder or change a range so that old values move. New parameters are APPENDED only.
+// Hosts store sessions and automation under these string IDs (ParameterID version hint 1; autoGain, appended in
+// 0.2.0: 2). Never rename, remove, reorder or change a range so that old values move. New parameters are APPENDED only.
 // Planned stereo independence (pending David): append `link` (default ON) and per-channel twins such as
-// `rateR`, `bitsR`, ... after "bypass". Old states lack them, so they load at their defaults = linked,
+// `rateR`, `bitsR`, ... after "autoGain". Old states lack them, so they load at their defaults = linked,
 // both channels identical. The state parser below already resets missing IDs to defaults.
 const char* const ids[] = { "preamp", "bits",     "dcShift", "dither", "rate",   "jitter", "approxOn", "approxDev", "imagesOn",
-                            "imagesShift", "fType", "fOrder", "cutoff", "reso", "mix",    "output", "bypass" };
+                            "imagesShift", "fType", "fOrder", "cutoff", "reso", "mix",    "output", "bypass", "autoGain" };
 // =================================================================================================
-enum { Preamp, Bits, DcShift, Dither, Rate, Jitter, ApproxOn, ApproxDev, ImagesOn, ImagesShift, FType, FOrder, Cutoff, Reso, Mix, Output, Bypass, numParams };
+enum { Preamp, Bits, DcShift, Dither, Rate, Jitter, ApproxOn, ApproxDev, ImagesOn, ImagesShift, FType, FOrder, Cutoff, Reso, Mix, Output, Bypass, AutoGain, numParams };
+constexpr int numSound = numParams - 1; // presets and A/B slots: every parameter but bypass, k -> ids[k < Bypass ? k : k + 1]
+int sound(int k) { return k < Bypass ? k : k + 1; }
 // Smoothed per-sample controls. Rate and cutoff are smoothed as log2(Hz); the last four mix the filter outputs.
-enum { SPre, SRate, SDither, SJitter, SApprox, SDev, SImages, SShift, SCut, SReso, SOrder, SMix, SOut, SBypass, SDry, SLP, SBP, SHP, SClip, numSmoothed };
+enum { SPre, SRate, SDither, SJitter, SApprox, SDev, SImages, SShift, SCut, SReso, SOrder, SMix, SOut, SBypass, SDry, SLP, SBP, SHP, SClip, SAuto, numSmoothed };
 constexpr double pi = MathConstants<double>::pi;
 constexpr int taps = 64, over = 64, ringMask = taps - 1; // minBLEP length (host samples) and table oversampling
 
@@ -69,7 +71,8 @@ AudioProcessorValueTreeState::ParameterLayout layout()
              num(Reso, "Reso / Bandwidth", 0, 100, 0, "%"),
              num(Mix, "Mix", 0, 100, 100, "%"),
              num(Output, "Output", -24, 12, 0, "dB"),
-             onOff(Bypass, "Bypass", false) };
+             onOff(Bypass, "Bypass", false),
+             std::make_unique<AudioParameterBool>(ParameterID { ids[AutoGain], 2 }, "Auto Gain", true) };
 }
 
 // Minimum-phase lowpass sampled `over` times per host sample over `taps` samples: its impulse (unit DC gain per host
@@ -327,7 +330,7 @@ struct CrumbProcessor::Dsp
         const double t[numSmoothed] = { Decibels::decibelsToGain(p(Preamp)), std::log2(p(Rate)), p(Dither) / 100, p(Jitter) / 100, p(ApproxOn),
                                         p(ApproxDev) / 100, p(ImagesOn), p(ImagesShift) / 100, std::log2(p(Cutoff)), p(Reso) / 100, p(FOrder),
                                         p(Mix) / 100, Decibels::decibelsToGain(p(Output)), p(Bypass), type == 0 ? 1.0 : 0.0,
-                                        type == 1 || type == 4 ? 1.0 : 0.0, type == 2 ? 1.0 : 0.0, type == 3 || type == 4 ? 1.0 : 0.0, clipOn };
+                                        type == 1 || type == 4 ? 1.0 : 0.0, type == 2 ? 1.0 : 0.0, type == 3 || type == 4 ? 1.0 : 0.0, clipOn, p(AutoGain) };
         for (int k = 0; k < numSmoothed; ++k)
             jump ? smooth[(size_t) k].setCurrentAndTargetValue(t[k]) : smooth[(size_t) k].setTargetValue(t[k]);
     }
@@ -415,13 +418,15 @@ void CrumbProcessor::processBlock(AudioBuffer<float>& buffer, MidiBuffer&)
         d.smooth[SClip].setTargetValue(d.clipOn);
         d.next(f);
         const double on = 1 - f.v[SBypass], mix = f.v[SMix] * on, gain = 1 + on * (f.v[SOut] - 1);
+        // Auto gain: the wet path gets the inverse of the smoothed preamp, crossfaded in over 20 ms. Off, wet = 1 exactly.
+        const double wet = 1 + f.v[SAuto] * (1 / f.v[SPre] - 1);
         float in = 0, out = 0;
         BlepWeights shared;
         const bool locked = channels == 2 && exactlyEqual(f.v[SJitter], 0.0) && exactlyEqual(d.ch[0].phase, d.ch[1].phase);
         for (int c = 0; c < channels; ++c) // non-finite input becomes silence; absurd levels are clipped
         {
             const double dry = std::isfinite(x[c][i]) ? jlimit(-1000.0f, 1000.0f, x[c][i]) : 0.0f;
-            x[c][i] = (float) ((dry + mix * (d.ch[(size_t) c].process(dry, f, locked && c == 1 ? &shared : nullptr, locked && c == 0 ? &shared : nullptr) - dry)) * gain);
+            x[c][i] = (float) ((dry + mix * (d.ch[(size_t) c].process(dry, f, locked && c == 1 ? &shared : nullptr, locked && c == 0 ? &shared : nullptr) * wet - dry)) * gain);
             in += (float) dry / (float) channels, out += x[c][i] / (float) channels, peak[c] = jmax(peak[c], std::abs(x[c][i])), energy[c] += x[c][i] * x[c][i];
         }
         scope.push(w + (uint32_t) i, in, out);
@@ -457,7 +462,8 @@ void CrumbProcessor::serialize(MemoryBlock& dest) // under stateLock
 {
     auto state = apvts.copyState();
     state.setProperty("stateVersion", stateVersion, nullptr);
-    // Additive since 0.1.0 milestone 3 (older readers ignore them): preset, A/B slots ("preset;v0,..,v15" normalised), editor size.
+    // Additive since 0.1.0 milestone 3 (older readers ignore them): preset, A/B slots ("preset;v0,..,v16" normalised,
+    // in sound() order; 0.1.x wrote 16 values, no autoGain), editor size.
     state.setProperty("preset", preset.load(), nullptr);
     if (preset < 0 && userName.isNotEmpty())
         state.setProperty("presetName", userName, nullptr);
@@ -566,17 +572,20 @@ bool crumb::isFlatCrumbXml(std::string_view xml)
     return complete && pos == xml.size();
 }
 
-void CrumbProcessor::applyParams(const XmlElement& state, int count)
+void CrumbProcessor::applyParams(const XmlElement& state, bool bypass)
 {
-    for (int i = 0; i < count; ++i)
+    for (int i = 0; i < numParams; ++i)
     {
+        if (i == Bypass && !bypass)
+            continue;
         auto* p = apvts.getParameter(ids[i]);
         const XmlElement* c = nullptr; // the first PARAM with this id; other tags are unknown entries, ignored
         for (auto* e : state.getChildWithTagNameIterator("PARAM"))
             if (c == nullptr && e->getStringAttribute("id") == ids[i])
                 c = e;
         const auto v = number(c != nullptr ? c->getStringAttribute("value") : String());
-        p->setValueNotifyingHost(v ? p->convertTo0to1(p->getNormalisableRange().snapToLegalValue((float) *v)) : p->getDefaultValue());
+        // stateVersion 1 migration: sessions and user presets from 0.1.x have no autoGain and load with it off, as they sounded.
+        p->setValueNotifyingHost(v ? p->convertTo0to1(p->getNormalisableRange().snapToLegalValue((float) *v)) : c == nullptr && i == AutoGain ? 0.0f : p->getDefaultValue());
     }
 }
 
@@ -596,18 +605,19 @@ void CrumbProcessor::setStateInformation(const void* data, int size)
     if (tree == nullptr)
         return;
     const Transaction transaction(*this);
-    // Migration hook: stateVersion 1 is the only format so far. When a later version changes the meaning of stored
-    // data, read the root's stateVersion here and translate before applying (append-only IDs need nothing).
-    applyParams(*tree, numParams);
-    for (int k = 0; k < 2; ++k) // a slot counts only with a preset and 16 normalised values
+    // Migration: stateVersion 1 (0.1.x) lacks autoGain, in the parameters and in the A/B slots: both load it off.
+    applyParams(*tree, true);
+    for (int k = 0; k < 2; ++k) // a slot counts only with a preset and 17 normalised values (16 from 0.1.x)
     {
         const auto t = StringArray::fromTokens(tree->getStringAttribute(k == 0 ? "slotA" : "slotB"), ";,", "");
         slots[k].clear(), slotName[k] = tree->getStringAttribute(k == 0 ? "slotNameA" : "slotNameB");
         slotPreset[k] = (int) jlimit(-1.0, 24.0, number(t[0]).value_or(-1));
-        for (int i = 1; i < t.size() && t.size() == 17; ++i)
+        for (int i = 1; i < t.size() && (t.size() == 17 || t.size() == 18); ++i)
             if (const auto v = number(t[i]); v && *v >= 0 && *v <= 1)
                 slots[k].push_back((float) *v);
-        if (slots[k].size() != 16)
+        if (t.size() == 17 && slots[k].size() == 16)
+            slots[k].push_back(0); // auto gain off
+        if (slots[k].size() != (size_t) numSound)
             slots[k].clear();
     }
     ab = number(tree->getStringAttribute("ab")).value_or(0) > 0.5 ? 1 : 0;
@@ -619,6 +629,8 @@ void CrumbProcessor::setStateInformation(const void* data, int size)
 // Values: preamp dB, bits (0 off), dcShift, dither %, rate Hz, jitter %, approxOn, approxDev %, imagesOn, imagesShift %,
 // fType (0 off 1 lp 2 bp 3 hp 4 br), fOrder (0 pre 1 post), cutoff Hz, reso %, mix %, output dB.
 // 1-12: classic 8/12/16-bit sampler flavours (generic names), 13-24: by use. Names are "bits·rate flavour".
+// Auto gain is not part of a preset: loading one leaves it as it is and keeps the designed level either way. With auto
+// gain on, the output knob is a trim on top of it, so it loads as output + preamp (12·32k punch: +6 dB instead of -6).
 constexpr crumb::Preset crumb::presets[25] = {
     { "init", { 0, 12, 0, 0, 26040, 0, 1, 0, 0, 0, 0, 1, 20000, 0, 100, 0 } },
     { "12\xc2\xb7" "26k dusty", { 4, 12, 0, 0, 26040, 4, 1, 0, 1, 10, 1, 1, 11000, 8, 100, -1 } },
@@ -649,18 +661,20 @@ constexpr crumb::Preset crumb::presets[25] = {
 
 void CrumbProcessor::setAll(const float* normalised)
 {
-    for (int i = 0; i < Bypass; ++i)
-        if (auto* p = apvts.getParameter(ids[i]); std::abs(p->getValue() - normalised[i]) > 1e-7f)
-            p->beginChangeGesture(), p->setValueNotifyingHost(normalised[i]), p->endChangeGesture();
+    for (int k = 0; k < numSound; ++k)
+        if (auto* p = apvts.getParameter(ids[sound(k)]); std::abs(p->getValue() - normalised[k]) > 1e-7f)
+            p->beginChangeGesture(), p->setValueNotifyingHost(normalised[k]), p->endChangeGesture();
 }
 
 void CrumbProcessor::setCurrentProgram(int index)
 {
     if (!isPositiveAndBelow(index, 25))
         return;
-    float n[16];
+    const auto& v = crumb::presets[index].v;
+    float n[numSound];
+    n[numSound - 1] = apvts.getParameter(ids[AutoGain])->getValue();
     for (int i = 0; i < Bypass; ++i)
-        n[i] = apvts.getParameter(ids[i])->convertTo0to1(crumb::presets[index].v[i]);
+        n[i] = apvts.getParameter(ids[i])->convertTo0to1(v[i] + (i == Output && n[numSound - 1] > 0.5f ? v[Preamp] : 0));
     {
         const Transaction transaction(*this);
         setAll(n);
@@ -693,7 +707,7 @@ void CrumbProcessor::stepPreset(int delta)
     if (const auto xml = decode(files[at - 25].loadFileAsString().toStdString())) // a user file: parameters, no bypass
     {
         const Transaction transaction(*this);
-        applyParams(*xml, Bypass);
+        applyParams(*xml, false);
         setIdentity(-1, files[at - 25].getFileNameWithoutExtension());
     }
 }
@@ -721,9 +735,9 @@ void CrumbProcessor::selectAb(int slot)
     const int from = ab;
     if (slot == from || !isPositiveAndBelow(slot, 2))
         return;
-    slots[from].resize(16);
-    for (int i = 0; i < Bypass; ++i)
-        slots[from][(size_t) i] = apvts.getParameter(ids[i])->getValue();
+    slots[from].resize(numSound);
+    for (int k = 0; k < numSound; ++k)
+        slots[from][(size_t) k] = apvts.getParameter(ids[sound(k)])->getValue();
     slotPreset[from] = preset, slotName[from] = userName;
     if (!slots[slot].empty()) // never visited: it starts as a copy of the other slot
         setAll(slots[slot].data()), setIdentity(slotPreset[slot], slotName[slot]);

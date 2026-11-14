@@ -57,7 +57,7 @@ using Proc = CrumbProcessor;
 using Settings = std::vector<std::pair<const char*, float>>;
 // FROZEN: this list is the contract with every saved session. The test fails if the plug-in's list changes.
 static const juce::StringArray ids { "preamp", "bits",   "dcShift", "dither", "rate", "jitter", "approxOn", "approxDev", "imagesOn",
-                                     "imagesShift", "fType", "fOrder", "cutoff", "reso", "mix",  "output", "bypass" };
+                                     "imagesShift", "fType", "fOrder", "cutoff", "reso", "mix",  "output", "bypass", "autoGain" };
 
 static void set(Proc& p, const char* id, float v)
 {
@@ -146,20 +146,33 @@ static void testIdentity()
     for (auto* param : p.getParameters())
     {
         auto* withId = dynamic_cast<juce::AudioProcessorParameterWithID*>(param);
-        CHECK(withId != nullptr && withId->getVersionHint() == 1);
+        CHECK(withId != nullptr && withId->getVersionHint() == (withId->paramID == "autoGain" ? 2 : 1)); // appended in 0.2.0
         found.add(withId->paramID);
     }
-    CHECK(found == ids && found.size() == 17 && p.getName() == "crumb");
+    CHECK(found == ids && found.size() == 18 && p.getName() == "crumb");
     CHECK(p.getBypassParameter() == p.apvts.getParameter("bypass"));
     // Plan v2 defaults.
     CHECK(get(p, "preamp") == 0 && get(p, "bits") == 12 && get(p, "dcShift") == 0 && get(p, "dither") == 0 && get(p, "rate") == 26040
           && get(p, "jitter") == 0 && get(p, "approxOn") == 1 && get(p, "approxDev") == 0 && get(p, "imagesOn") == 0
           && get(p, "imagesShift") == 0 && get(p, "fType") == 0 && get(p, "fOrder") == 1 && get(p, "cutoff") == 20000 && get(p, "reso") == 0
-          && get(p, "mix") == 100 && get(p, "output") == 0 && get(p, "bypass") == 0);
+          && get(p, "mix") == 100 && get(p, "output") == 0 && get(p, "bypass") == 0 && get(p, "autoGain") == 1);
     CHECK(p.apvts.getParameter("bits")->getText(0, 16) == "OFF");
     CHECK(p.getLatencySamples() == 0 && p.getTailLengthSeconds() == 0 && !p.acceptsMidi() && !p.producesMidi());
     prepare(p, 44100, 512, 2);
     CHECK(p.getLatencySamples() == 0);
+}
+
+// Frozen v1 fixture, exactly as Crumb 0.1.0 writes it (no autoGain). Must load in every future version.
+static juce::MemoryBlock v1Fixture()
+{
+    return blob(R"(<?xml version="1.0" encoding="UTF-8"?>)"
+                "\n"
+                R"(<CRUMB stateVersion="1"><PARAM id="approxDev" value="-25.0"/><PARAM id="approxOn" value="0.0"/>)"
+                R"(<PARAM id="bits" value="8.0"/><PARAM id="bypass" value="0.0"/><PARAM id="cutoff" value="1234.5"/>)"
+                R"(<PARAM id="dcShift" value="1.0"/><PARAM id="dither" value="40.0"/><PARAM id="fOrder" value="0.0"/>)"
+                R"(<PARAM id="fType" value="2.0"/><PARAM id="imagesOn" value="1.0"/><PARAM id="imagesShift" value="60.0"/>)"
+                R"(<PARAM id="jitter" value="15.0"/><PARAM id="mix" value="75.0"/><PARAM id="output" value="-3.5"/>)"
+                R"(<PARAM id="preamp" value="12.5"/><PARAM id="rate" value="22050.0"/><PARAM id="reso" value="33.3"/></CRUMB>)");
 }
 
 static void testState()
@@ -180,7 +193,7 @@ static void testState()
         CHECK(m == m2);
         for (auto& id : ids)
             CHECK(get(a, id) == get(b, id));
-        CHECK(juce::AudioProcessor::getXmlFromBinary(m.getData(), (int) m.getSize())->getIntAttribute("stateVersion") == 1);
+        CHECK(juce::AudioProcessor::getXmlFromBinary(m.getData(), (int) m.getSize())->getIntAttribute("stateVersion") == 2);
         if (n < 6)
         {
             prepare(a, 48000, 256, 2), prepare(b, 48000, 256, 2);
@@ -189,24 +202,34 @@ static void testState()
             CHECK(ya == yb);
         }
     }
-    // Frozen v1 fixture, exactly as Crumb 0.1.0 writes it. Must load in every future version.
     Proc v1;
-    const auto fixture = blob(R"(<?xml version="1.0" encoding="UTF-8"?>)"
-                              "\n"
-                              R"(<CRUMB stateVersion="1"><PARAM id="approxDev" value="-25.0"/><PARAM id="approxOn" value="0.0"/>)"
-                              R"(<PARAM id="bits" value="8.0"/><PARAM id="bypass" value="0.0"/><PARAM id="cutoff" value="1234.5"/>)"
-                              R"(<PARAM id="dcShift" value="1.0"/><PARAM id="dither" value="40.0"/><PARAM id="fOrder" value="0.0"/>)"
-                              R"(<PARAM id="fType" value="2.0"/><PARAM id="imagesOn" value="1.0"/><PARAM id="imagesShift" value="60.0"/>)"
-                              R"(<PARAM id="jitter" value="15.0"/><PARAM id="mix" value="75.0"/><PARAM id="output" value="-3.5"/>)"
-                              R"(<PARAM id="preamp" value="12.5"/><PARAM id="rate" value="22050.0"/><PARAM id="reso" value="33.3"/></CRUMB>)");
+    const auto fixture = v1Fixture();
     auto fixtureLoaded = [&](Proc& p) {
         return get(p, "approxDev") == -25.0f && get(p, "approxOn") == 0 && get(p, "bits") == 8 && get(p, "cutoff") == 1234.5f && get(p, "dcShift") == 1
                && get(p, "dither") == 40 && get(p, "fOrder") == 0 && get(p, "fType") == 2 && get(p, "imagesOn") == 1 && get(p, "imagesShift") == 60
                && get(p, "jitter") == 15 && get(p, "mix") == 75 && get(p, "output") == -3.5f && get(p, "preamp") == 12.5f && get(p, "rate") == 22050
-               && get(p, "reso") == 33.3f && get(p, "bypass") == 0;
+               && get(p, "reso") == 33.3f && get(p, "bypass") == 0 && get(p, "autoGain") == 0; // 0.1.x: auto gain off
     };
     load(v1, fixture);
     CHECK(fixtureLoaded(v1) && v1.preset == -1 && v1.presetName() == "custom" && v1.abSlot() == 0 && v1.editorWidth == 0);
+    for (float on : { 0.0f, 1.0f }) // autoGain round trip either way, into an instance holding the other value
+    {
+        Proc a, b;
+        set(a, "autoGain", on), set(b, "autoGain", 1 - on);
+        juce::MemoryBlock m;
+        a.getStateInformation(m), load(b, m);
+        CHECK(get(b, "autoGain") == on);
+    }
+    // A 0.1.x A/B slot (16 values) and a 0.1.x user preset file carry no autoGain: both load it off.
+    load(v1, blob("<CRUMB ab='0' slotB='3;0.5" + juce::String::repeatedString(",0.5", 15) + "'/>"));
+    set(v1, "autoGain", 1), v1.selectAb(1);
+    CHECK(v1.abSlot() == 1 && get(v1, "autoGain") == 0 && get(v1, "mix") == 50);
+    const auto old = juce::File::getSpecialLocation(juce::File::tempDirectory).getNonexistentChildFile("crumb-old", "", false);
+    old.createDirectory(), old.getChildFile("old.xml").replaceWithText("<CRUMB><PARAM id=\"bits\" value=\"7\"/></CRUMB>");
+    Proc legacy(old);
+    legacy.setCurrentProgram(24), legacy.stepPreset(1);
+    CHECK(legacy.presetName() == "old" && get(legacy, "bits") == 7 && get(legacy, "autoGain") == 0);
+    old.deleteRecursively();
     // Unknown entries ignored (e.g. a future `link` / `rateR`), out-of-range clamped, missing and unparsable back to default.
     load(v1, blob(R"(<CRUMB stateVersion="7" future="x"><PARAM id="preamp" value="1e9"/><PARAM id="mix" value="abc"/>)"
                   R"(<PARAM id="output" value="nan"/><PARAM id="rateR" value="3"/><PARAM id="link" value="0"/><EXTRA/></CRUMB>)"));
@@ -304,7 +327,7 @@ static std::vector<double> spectrum(const Settings& s, double freq, double fs = 
     else
     {
         Proc p;
-        set(p, s);
+        set(p, "autoGain", 0), set(p, s);
         prepare(p, fs, block, 2);
         y = run(p, block, 2, size + skip, [w, amp](int i) { return (float) (amp * std::sin(w * i)); });
     }
@@ -372,7 +395,7 @@ static void testConverterPath()
     for (float sign : { -1.0f, 1.0f })
     {
         Proc p;
-        set(p, { { "preamp", 48 }, { "bits", 0 }, { "rate", 44100 }, { "approxOn", 0 } });
+        set(p, { { "preamp", 48 }, { "bits", 0 }, { "rate", 44100 }, { "approxOn", 0 }, { "autoGain", 0 } });
         prepare(p, 44100, 512, 1);
         const auto y = run(p, 512, 1, 2048, [sign](int i) { return sign * (i % 2 ? 0.2f : 0.4f); });
         for (size_t i = 1; i < y.size(); ++i) CHECK(sign * y[i] > 0.999f && std::abs(y[i]) <= 1.0f);
@@ -474,7 +497,7 @@ static void testSound()
     CHECK(error(8) > 100 * error(16));
     // Preamp drives the ADC clip: output stays within +-1 at +48 dB, mix 0 and bypass give the dry signal.
     Proc p;
-    set(p, { { "preamp", 48 }, { "bits", 0 }, { "rate", 44100 }, { "approxOn", 0 } });
+    set(p, { { "preamp", 48 }, { "bits", 0 }, { "rate", 44100 }, { "approxOn", 0 }, { "autoGain", 0 } });
     prepare(p, 44100, 512, 2);
     float m = 0;
     for (float y : run(p, 512, 2, 22050, [](int i) { return signal(i, 44100); }))
@@ -491,6 +514,37 @@ static void testSound()
             diff = std::max(diff, std::abs(y[i] - signal((int) i, 44100)));
         CHECK(diff < 1e-6f);
     }
+    // Auto gain: a -30 dBFS 1 kHz sine, bits off (the clip stays linear up to +24 dB: peak 0.5, its knee). At +12 dB
+    // preamp with auto gain on the output RMS stays within 1 dB of preamp 0 (off: 12 dB up). Toggling it and jumping the
+    // preamp are smoothed: no sample step above the sine's own (0.0165 at +12 dB, before auto gain).
+    const auto sine = [](int i) { return (float) (0.0316 * std::sin(2 * juce::MathConstants<double>::pi * 1000 * i / 48000)); };
+    const auto rms = [&](float preamp, float on) {
+        Proc q;
+        set(q, { { "preamp", preamp }, { "bits", 0 }, { "autoGain", on } });
+        prepare(q, 48000, 512, 2);
+        const auto y = run(q, 512, 2, 48000, sine);
+        double e = 0;
+        for (size_t i = 24000; i < y.size(); ++i)
+            e += y[i] * y[i];
+        return 10 * std::log10(e / 24000);
+    };
+    const double flat = rms(0, 1), on = rms(12, 1), off = rms(12, 0);
+    std::cout << "auto gain, -30 dBFS 1 kHz: preamp 0 " << flat << " dB, +12 on " << on << " dB, +12 off " << off << " dB\n";
+    CHECK(std::abs(on - flat) < 1 && std::abs(off - flat - 12) < 1);
+    Proc q;
+    set(q, { { "preamp", 12 }, { "bits", 0 }, { "autoGain", 0 } });
+    prepare(q, 48000, 512, 2);
+    auto y = run(q, 512, 2, 4800, sine);
+    for (auto [id, v] : { std::pair { "autoGain", 1.0f }, { "preamp", 24.0f }, { "autoGain", 0.0f } })
+    {
+        set(q, id, v);
+        for (float s : run(q, 512, 2, 4800, [&](int i) { return sine((int) y.size() + i); }))
+            y.push_back(s);
+    }
+    float step = 0;
+    for (size_t i = 1; i < y.size() * 3 / 4; ++i)
+        step = std::max(step, std::abs(y[i] - y[i - 1]));
+    CHECK(step < 0.0175f);
 }
 
 static const std::vector<Settings> extremes {
@@ -702,10 +756,13 @@ static void testPresets()
     for (int i = 0; i < p.getNumPrograms(); ++i)
     {
         names.addIfNotAlreadyThere(p.getProgramName(i));
-        p.setCurrentProgram(i);
-        CHECK(p.getCurrentProgram() == i && p.presetName() == p.getProgramName(i));
+        set(p, "autoGain", (float) (i % 2)), p.setCurrentProgram(i); // auto gain stays; on, the output trim adds the preamp
+        CHECK(p.getCurrentProgram() == i && p.presetName() == p.getProgramName(i) && get(p, "autoGain") == (float) (i % 2));
         for (int k = 0; k < 16; ++k) // every value is on its parameter's grid, so it is stored exactly
-            CHECK(std::abs(get(p, ids[k]) - crumb::presets[i].v[k]) < 1e-3f * std::max(1.0f, std::abs(crumb::presets[i].v[k])));
+        {
+            const float v = crumb::presets[i].v[k] + (k == 15 && i % 2 ? crumb::presets[i].v[0] : 0);
+            CHECK(std::abs(get(p, ids[k]) - v) < 1e-3f * std::max(1.0f, std::abs(v)));
+        }
         prepare(p, 48000, 512, 2);
         const auto y = run(p, 512, 2, 48000, [](int n) { return 1.5f * signal(n, 48000); });
         float peak = 0;
@@ -947,10 +1004,11 @@ static void testInteraction()
         CHECK(cellsOf("prev") == juce::Rectangle<int>(30, 1, 2, 1) && cellsOf("next") == juce::Rectangle<int>(62, 1, 2, 1) && cellsOf("save") == juce::Rectangle<int>(67, 1, 4, 1));
         CHECK(cellsOf("A") == juce::Rectangle<int>(74, 1, 1, 1) && cellsOf("B") == juce::Rectangle<int>(76, 1, 1, 1) && cellsOf("approxOn") == juce::Rectangle<int>(39, 6, 11, 1));
         CHECK(cellsOf("lp") == juce::Rectangle<int>(82, 24, 2, 2) && cellsOf("post") == juce::Rectangle<int>(82, 27, 4, 2) && cellsOf("rate") == juce::Rectangle<int>(52, 4, 10, 6));
+        CHECK(cellsOf("autoGain") == juce::Rectangle<int>(99, 30, 6, 1)); // "■ auto" in the mix column, beside the output dB
         const char* const knobIds[] = { "preamp", "dither", "approxDev", "rate", "jitter", "imagesShift", "cutoff", "reso", "mix", "output" };
-        const char* const keyIds[] = { "prev", "next", "save", "A", "B", "minus", "plus", "dcShift", "approxOn", "imagesOn", "pre", "post", "dock", "off", "lp", "bp", "hp", "br" };
+        const char* const keyIds[] = { "prev", "next", "save", "A", "B", "minus", "plus", "dcShift", "approxOn", "imagesOn", "pre", "post", "dock", "off", "lp", "bp", "hp", "br", "autoGain" };
         juce::StringArray all(knobIds, 10);
-        all.addArray(juce::StringArray(keyIds, 18));
+        all.addArray(juce::StringArray(keyIds, 19));
         for (int i = 0; i < all.size(); ++i)
             for (int j = i + 1; j < all.size(); ++j)
                 CHECK(!find(*e, all[i])->getBoundsInParent().intersects(find(*e, all[j])->getBoundsInParent()));
@@ -982,7 +1040,8 @@ static void testInteraction()
         set(p, "bits", 12), set(p, "dcShift", 0), set(p, "approxOn", 0), set(p, "imagesOn", 0), set(p, "fOrder", 1), pump();
         click(at("plus")), CHECK(get(p, "bits") == 13);
         click(at("minus")), click(at("minus")), CHECK(get(p, "bits") == 11);
-        for (auto* id : { "dcShift", "approxOn", "imagesOn" })
+        set(p, "autoGain", 0), pump();
+        for (auto* id : { "dcShift", "approxOn", "imagesOn", "autoGain" })
             click(at(id)), CHECK(get(p, id) == 1), click(at(id)), CHECK(get(p, id) == 0);
         for (int k = 0; k < 5; ++k)
             click(at(keyIds[13 + (k + 2) % 5])), CHECK(get(p, "fType") == (float) ((k + 2) % 5));
@@ -1191,13 +1250,14 @@ static float groove(int i)
 }
 
 // The screenshot fixture: preset 14 after a drum + bass loop, then one second of 30 fps editor frames (the VU settles).
-// Variants: post (as stored), pre (filter pre), off (quantize, approx, images and filter off, dc shift on, slot B).
+// Variants: post (as stored, auto gain on), pre (filter pre), off (quantize, approx, images, filter and auto gain off, dc
+// shift on, slot B).
 enum Variant { post, pre, off };
 static std::unique_ptr<juce::AudioProcessorEditor> fixture(Proc& p, Variant variant = post)
 {
     p.setCurrentProgram(SCREENSHOT_PRESET);
     if (variant == off)
-        p.selectAb(1), set(p, { { "bits", 0.0f }, { "approxOn", 0.0f }, { "imagesOn", 0.0f }, { "fType", 0.0f }, { "dcShift", 1.0f } });
+        p.selectAb(1), set(p, { { "bits", 0.0f }, { "approxOn", 0.0f }, { "imagesOn", 0.0f }, { "fType", 0.0f }, { "dcShift", 1.0f }, { "autoGain", 0.0f } });
     if (variant == pre)
         set(p, "fOrder", 0);
     prepare(p, 48000, 512, 2);
@@ -1243,22 +1303,27 @@ static void sweep(Proc& p, int b)
     set(p, "jitter", b >= 96 && b < 192 ? 30.0f : 0.0f);
 }
 // The groove (right = -0.7 x left) at 48 kHz in 512-sample blocks, every output sample hashed. program >= 0: that
-// factory preset, 2 s from a settled start. -1: the sweep over 4 s from init with preamp 6 dB, dither 20 %, images on,
-// lowpass post. -2: the same, re-prepared at 96 kHz at block 200.
+// factory preset, 2 s from a settled start (auto gain off, as 0.1.x). -1: the sweep over 4 s from init with preamp 6 dB,
+// dither 20 %, images on, lowpass post. -2: the same, re-prepared at 96 kHz at block 200. -3: the v1 session fixture, 2 s.
 static juce::String render(int program, int channels)
 {
     Proc p;
+    if (program != -3)
+        set(p, "autoGain", 0);
     if (program >= 0)
         p.setCurrentProgram(program);
+    else if (program == -3)
+        load(p, v1Fixture());
     else
         set(p, { { "preamp", 6.0f }, { "dither", 20.0f }, { "imagesOn", 1.0f }, { "fType", 1.0f } });
     prepare(p, 48000, 512, channels);
     juce::AudioBuffer<float> buffer(channels, 512);
     juce::MidiBuffer midi;
     juce::MemoryOutputStream bytes;
-    for (int b = 0; b < (program >= 0 ? 188 : 375); ++b)
+    const bool swept = program == -1 || program == -2;
+    for (int b = 0; b < (swept ? 375 : 188); ++b)
     {
-        if (program < 0)
+        if (swept)
             sweep(p, b);
         if (program == -2 && b == 200)
             prepare(p, 96000, 512, channels);
@@ -1292,6 +1357,7 @@ static const Golden sounds[] = {
     { -2, 2, "6b4a7e3db119bd7953b329a5a71f07bf5c5e02f5050930ea45c399f2cc6a9e7f" },
     { -1, 2, "445d8085bf79a75d05fe72045b84b65e4c8aa564bd33a06d2f08e4b152a95311" },
     { -1, 1, "4119ae083e0464e315bb483ba720446203b872edbd4426f44fbb5bc78abb0597" },
+    { -3, 2, "d161cef61d86431757df92a39862ac941fa4d5a93fe5819f42c31dc60c5350bc" }, // rendered by 0.1.x (d0329a6)
     { 0, 2, "9befbda2d1f1802ffc80fb83aa9b18bfaff9ff65a1f1b7d6eaee8e8045ff6f2e" },
     { 1, 2, "8201286ab87f8f6155c92a3f77afc490eb13130527b18c2f262927eaba6567cf" },
     { 2, 2, "cddbbccf343284426076b733aeb4e5fb425c7704b269ec2776e7c4cae6022d15" },
@@ -1318,14 +1384,14 @@ static const Golden sounds[] = {
     { 23, 2, "3dd38314799190f0b3a37c7cdacbc1465a9fc03864e2b7a1ba2d85def5c6e6e6" },
     { 24, 2, "4a59ca93339bccf65af8b3c5d2fead29d818041909037212529c3291d908666e" },
 };
-// Editor snapshots of the 0.2.0 grid UI (ASCII option 5), same environment gate as the audio.
+// Editor snapshots of the 0.2.0 grid UI (ASCII option 5, auto gain chip), same environment gate as the audio.
 struct Shot { Variant variant; int percent; const char* hash; };
 static const Shot shots[] = {
-    { post, 100, "b100b189941d20ffa409232da8955960918c11767a381abb18628fc87cc014c9" },
-    { post, 50, "5e9c5d42353a06c06d83c3652e30eb02d6969a6b36bdfed642d30088523f77e7" },
-    { post, 200, "43cd70318cf5e1ce71c0776f64c55b554de8fcc863b9fdc4e59c0ca4b492551c" },
-    { pre, 100, "6f0c730ec5374758557178c9ad5aa45f8e9e0c8686c031e6da7da10e76cfb3cc" },
-    { off, 100, "8f310ef67770b2d9c350a0db10489da85001c0fbcfecf53a1c155caf88b959bc" },
+    { post, 100, "5b6d24386798e1573079d5b12619b699fd64cf2ebec93120495731db83ace98f" },
+    { post, 50, "724491ec24db7dab0a2d80890850a714aab555c2dd4428e41bfa624f0d98815e" },
+    { post, 200, "5b46a7b0ddecf2e4d2af88497a3df4d667577fb6201e1e8599286f978cd3f92c" },
+    { pre, 100, "a96fa0665e8830c2535dbb2b243d8cf7d07dcbabd76e323e12b18cf595ffc177" },
+    { off, 100, "b613976e56cbb5f00fd8755565d151f51f0a6eb4f67c34c25edb1f9ff090edf1" },
 };
 static void testGoldens()
 {

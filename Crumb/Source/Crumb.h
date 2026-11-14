@@ -6,8 +6,8 @@
 #include <vector>
 
 // crumb: vintage-sampler bit crusher by daveydidit (clean-room: textbook DSP only).
-// FROZEN: the parameter IDs listed in Crumb.cpp (ParameterID version 1) and the state format
-// (APVTS XML <CRUMB stateVersion="1">, plus additive root attributes). Never rename, remove or reorder; only append.
+// FROZEN: the parameter IDs listed in Crumb.cpp (ParameterID version 1, appended autoGain 2) and the state format
+// (APVTS XML <CRUMB stateVersion="2">, plus additive root attributes). Never rename, remove or reorder; only append.
 namespace crumb
 {
 void fft(std::vector<std::complex<double>>& x, bool inverse); // radix-2 in place, size a power of two
@@ -57,7 +57,7 @@ struct Scope
 struct Preset
 {
     const char* name;
-    float v[16]; // every parameter but bypass, in ID order, plain units (choices and switches by index)
+    float v[16]; // every parameter before bypass, in ID order, plain units (choices and switches by index)
 };
 extern const Preset presets[25];
 } // namespace crumb
@@ -65,7 +65,7 @@ extern const Preset presets[25];
 class CrumbProcessor : public juce::AudioProcessor
 {
 public:
-    static constexpr int stateVersion = 1;
+    static constexpr int stateVersion = 2; // 2 (0.2.0): autoGain; missing (1, 0.1.x) loads it off
 
     explicit CrumbProcessor(juce::File presetDirectory = {});
     ~CrumbProcessor() override;
@@ -107,7 +107,7 @@ public:
 
 private:
     void setAll(const float* normalised); // every parameter but bypass, as one gesture each
-    void applyParams(const juce::XmlElement& state, int count); // the first `count` IDs; missing or unreadable -> default
+    void applyParams(const juce::XmlElement& state, bool bypass); // all IDs (bypass optional); missing or unreadable -> default, missing autoGain -> off
     void setIdentity(int index, const juce::String& name);
     void serialize(juce::MemoryBlock&);
     struct Transaction;

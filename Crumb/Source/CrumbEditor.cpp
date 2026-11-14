@@ -105,7 +105,7 @@ struct Editor : AudioProcessorEditor, Timer
     Component layer; // the controls, in design pixels
     Slider knobs[10];
     Key prev { "prev" }, next { "next" }, save { "save" }, slotA { "A" }, slotB { "B" }, minusKey { "minus" }, plus { "plus" }, dcShift { "dcShift" },
-        approx { "approxOn" }, images { "imagesOn" }, pre { "pre" }, post { "post" }, dock { "dock" }, typeKeys[5] { Key { "off" }, Key { "lp" }, Key { "bp" }, Key { "hp" }, Key { "br" } };
+        approx { "approxOn" }, images { "imagesOn" }, pre { "pre" }, post { "post" }, dock { "dock" }, autoGain { "autoGain" }, typeKeys[5] { Key { "off" }, Key { "lp" }, Key { "bp" }, Key { "hp" }, Key { "br" } };
     // Attachments after the components they drive, so they are destroyed first.
     std::unique_ptr<AudioProcessorValueTreeState::SliderAttachment> knobAtt[10];
     std::vector<std::unique_ptr<ParameterAttachment>> keyAtt;
@@ -159,7 +159,7 @@ struct Editor : AudioProcessorEditor, Timer
             keyAtt.push_back(std::move(att));
             return keyAtt.back().get();
         };
-        bind("dcShift", { &dcShift }), bind("approxOn", { &approx }), bind("imagesOn", { &images });
+        bind("dcShift", { &dcShift }), bind("approxOn", { &approx }), bind("imagesOn", { &images }), bind("autoGain", { &autoGain });
         bind("fType", { &typeKeys[0], &typeKeys[1], &typeKeys[2], &typeKeys[3], &typeKeys[4] });
         auto* order = bind("fOrder", { &pre, &post });
         dock.onClick = [this, order] { order->setValueAsCompleteGesture(preOrder() ? 1.0f : 0.0f); }; // the filter moves into the dock
@@ -167,7 +167,7 @@ struct Editor : AudioProcessorEditor, Timer
         auto* bitsAtt = keyAtt.back().get();
         minusKey.onClick = [this, bitsAtt] { bitsAtt->setValueAsCompleteGesture((float) jmax(0, bits() - 1)); };
         plus.onClick = [this, bitsAtt] { bitsAtt->setValueAsCompleteGesture((float) jmin(24, bits() + 1)); };
-        for (auto* key : { &minusKey, &plus, &dcShift, &approx, &images, &pre, &post, &dock, &typeKeys[0], &typeKeys[1], &typeKeys[2], &typeKeys[3], &typeKeys[4] })
+        for (auto* key : { &minusKey, &plus, &dcShift, &approx, &images, &pre, &post, &dock, &autoGain, &typeKeys[0], &typeKeys[1], &typeKeys[2], &typeKeys[3], &typeKeys[4] })
             layer.addAndMakeVisible(*key);
         layout();
 
@@ -210,6 +210,7 @@ struct Editor : AudioProcessorEditor, Timer
         minusKey.setBounds(cells(q + 1, 5, 3, 4)), plus.setBounds(cells(q + 12, 5, 3, 4)), dcShift.setBounds(cells(q + 3, 25, 12, 1));
         approx.setBounds(cells(x[Approx] + 1, 6, 11, 1)), images.setBounds(cells(x[Images] + 1, 6, 11, 1));
         pre.setBounds(cells(f + 2, 27, 3, 2)), post.setBounds(cells(f + 6, 27, 4, 2)), dock.setBounds(cells(x[Dock] + 1, band - 1, 5, 12));
+        autoGain.setBounds(cells(x[Mix] + 3, 30, 6, 1));
         for (int k = 0, tx = f + 2; k < 5; tx += (int) std::strlen(types[k]) + 1, ++k)
             typeKeys[k].setBounds(cells(tx, 24, (int) std::strlen(types[k]), 2));
         laidOutPre = preOrder();
@@ -284,7 +285,7 @@ struct Editor : AudioProcessorEditor, Timer
         const double levels = std::exp2(resolution / 4.0 + 0.8), lsb = 2 / levels * scopePeak / 0.92, half = levels / 2;
         const double dither = value("dither") / 100.0, jitter = value("jitter") / 100.0, mix = value("mix") / 100.0;
         const double inc0 = rate / fs, jc = 1 - std::exp(-2 * pi * 30 * zoom / fs), jn = 0.5 / std::sqrt(jc / (3 * (2 - jc)));
-        const double outGain = Decibels::decibelsToGain((double) value("output"));
+        const double outGain = Decibels::decibelsToGain((double) value("output")), wet = value("autoGain") > 0.5f ? 1 / gain : 1;
         const bool tread = value("dcShift") > 0.5f, approxOn = value("approxOn") > 0.5f, imagesOn = value("imagesOn") > 0.5f, identity = value("rate") >= fs && jitter <= 0;
         const int type = roundToInt(value("fType"));
         const auto g = [fs](double hz) { return std::tan(pi * jmin(0.49 * fs, hz) / fs); };
@@ -343,7 +344,7 @@ struct Editor : AudioProcessorEditor, Timer
                 zeroPhase(&filter, 1, type);
             else if (s == Mix)
                 for (int i = 0; i < length; ++i)
-                    y[i] = (float) ((in[(size_t) i] + mix * (y[i] - in[(size_t) i])) * outGain);
+                    y[i] = (float) ((in[(size_t) i] + mix * (y[i] * wet - in[(size_t) i])) * outGain);
             std::copy(y + start, y + start + n, seg[s].begin());
         }
     }
@@ -424,6 +425,7 @@ struct Editor : AudioProcessorEditor, Timer
         const auto toggle = [&](int tx, int ty, const char* id, const String& name, bool on) { g.put(tx, ty, u(value(id) > 0.5f ? "■" : "□"), fade(value(id) > 0.5f ? red : grey, on)), g.put(tx + 2, ty, name, value(id) > 0.5f ? fade(white, on) : fade(grey, on), value(id) > 0.5f); };
         toggle(q + 4, 25, "dcShift", "dc shift", b > 0);
         toggle(x[Approx] + 2, 6, "approxOn", "approx", true), toggle(x[Images] + 2, 6, "imagesOn", "images", true);
+        toggle(x[Mix] + 3, 30, "autoGain", "auto", true); // output follows the preamp down
         // filter: type words (the selected one red, underlined), pre / post.
         const int f = x[Filter], type = roundToInt(value("fType"));
         for (int k = 0, tx = f + 2; k < 5; tx += (int) std::strlen(types[k]) + 1, ++k)
@@ -502,7 +504,8 @@ struct Editor : AudioProcessorEditor, Timer
         g.put(19, R - 2, String(value("dcShift") > 0.5f ? "mid-tread" : "mid-riser") + dot + "dither " + text("dither") + dot
                              + (value("approxOn") > 0.5f ? "approx " + text("approxDev") : String("approx off")) + dot
                              + (value("imagesOn") > 0.5f ? "images +" + text("imagesShift") : String("images off")) + dot
-                             + (type > 0 ? String(types[type]) + " " + text("cutoff") + (preFilter ? " pre" : " post") : String("filter off")), dark);
+                             + (type > 0 ? String(types[type]) + " " + text("cutoff") + (preFilter ? " pre" : " post") : String("filter off"))
+                             + (value("autoGain") > 0.5f ? dot + "auto " + (value("preamp") > 0 ? u("−") + text("preamp").substring(1) : text("preamp")) : String()), dark);
         g.right(VX - 2, R - 2, "20 ms", dark), g.right(C - 3, R - 2, "v" JucePlugin_VersionString, dark);
         show(g);
     }
