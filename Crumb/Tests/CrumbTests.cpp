@@ -1043,7 +1043,7 @@ static void testInteraction()
         auto* peer = e->getPeer();
         CHECK(peer != nullptr);
         if (peer == nullptr) return;
-        juce::int64 now = 1000000;
+        auto now = juce::Time::currentTimeMillis(); // real clock: JUCE stamps its async fake mouse moves with it
         const auto mouse = [&](juce::Point<float> at, bool down) {
             // macOS hit-tests the actual on-screen window. Reveal each target, then let the window become visible.
             if (!down && !juce::Desktop::getInstance().getMainMouseSource().isDragging())
