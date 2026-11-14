@@ -1045,13 +1045,13 @@ static void testInteraction()
         if (peer == nullptr) return;
         auto now = juce::Time::currentTimeMillis(); // real clock: JUCE stamps its async fake mouse moves with it
         const auto mouse = [&](juce::Point<float> at, bool down) {
-            // macOS hit-tests the actual on-screen window. Reveal each target, then let the window become visible.
-            if (!down && !juce::Desktop::getInstance().getMainMouseSource().isDragging())
-                e->setTopLeftPosition(window.getLocalBounds().getCentre() - at.roundToInt()), pump();
             peer->handleMouseEvent(juce::MouseInputSource::InputSourceType::mouse, window.getLocalPoint(e.get(), at), down ? juce::ModifierKeys::leftButtonModifier : juce::ModifierKeys(),
                                    juce::MouseInputSource::defaultPressure, juce::MouseInputSource::defaultOrientation, now += 20);
         };
         const auto click = [&](juce::Point<float> at, int clicks = 1) {
+            // macOS hit-tests the actual on-screen window. Reveal the target and pump only before the gesture.
+            // isDragging() and the source's button modifiers share state, so neither identifies a fresh move.
+            e->setTopLeftPosition(window.getLocalBounds().getCentre() - at.roundToInt()), pump();
             now = juce::jmax(now, juce::Time::currentTimeMillis()) + 2000; // past the double-click time of any earlier down, synthetic or real
             mouse(at, false);
             for (int k = 0; k < clicks; ++k)
@@ -1090,11 +1090,11 @@ static void testInteraction()
             // Drag the Slider directly: the peer path hit-tests the on-screen window, which stays racy on macOS CI.
             const auto from = slider->getLocalPoint(e.get(), dial), to = slider->getLocalPoint(e.get(), dial - juce::Point<float>(0, 50.0f * (float) percent / 100)); // 50 design px up = 0.2 of the range
             const auto time = juce::Time::getCurrentTime();
-            const auto event = [&](juce::Point<float> pos) { return juce::MouseEvent(juce::Desktop::getInstance().getMainMouseSource(), pos, juce::ModifierKeys::leftButtonModifier,
-                                                                                      1, 0, 0, 0, 0, slider, slider, time, from, time, 1, pos != from); };
+            const auto event = [&](juce::Point<float> pos, int clicks = 1) { return juce::MouseEvent(juce::Desktop::getInstance().getMainMouseSource(), pos, juce::ModifierKeys::leftButtonModifier,
+                                                                                      1, 0, 0, 0, 0, slider, slider, time, from, time, clicks, pos != from); };
             slider->mouseDown(event(from)), slider->mouseDrag(event(to)), slider->mouseUp(event(to));
             CHECK(std::abs(param->getValue() - 0.5f) < 0.01f);
-            click(dial, 2);
+            slider->mouseDoubleClick(event(from, 2));
             CHECK(param->getValue() == param->getDefaultValue());
             click(centre(*box, box->getLocalBounds()));
             CHECK(box->isBeingEdited());
