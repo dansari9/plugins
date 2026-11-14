@@ -1,5 +1,6 @@
 // CrumbTests: drives the real processor and editor without a host. Exit code 1 on failure.
-//   CrumbTests --screenshot a.png [pre]   render the editor (100 %, 2x pixels) after a drum + bass loop (pre: filter pre)
+//   CrumbTests --screenshot a.png [pre|off]   render the editor (100 %, 2x pixels) after a drum + bass loop
+//   CrumbTests --bench | --bench-editor       DSP and editor timings
 #include "Crumb.h"
 #include "BinaryData.h"
 #include <juce_cryptography/juce_cryptography.h>
@@ -41,6 +42,8 @@ void* operator new(std::size_t n, std::align_val_t a) // glibc's aligned path by
         return p;
     throw std::bad_alloc();
 }
+void* operator new(std::size_t n, const std::nothrow_t&) noexcept { return countAllocation(), std::malloc(n == 0 ? 1 : n); } // std::stable_sort
+void operator delete(void* p, const std::nothrow_t&) noexcept { std::free(p); }
 void operator delete(void* p) noexcept { std::free(p); }
 void operator delete(void* p, std::size_t) noexcept { std::free(p); }
 void operator delete(void* p, std::align_val_t) noexcept { std::free(p); }
@@ -862,56 +865,141 @@ struct RepaintCapture : juce::CachedComponentImage
     }
 };
 
+// The editor redraws only cells that changed and repaints only their area: after any run of frames, the image built
+// from those partial repaints equals a render from scratch, and a settled idle editor repaints nothing.
 static void testScopeRepaints()
 {
     for (int percent : { 50, 100, 200 })
         for (float held : { 0.0f, 0.08f }) // decay to the floor, or to a retained nonzero waveform peak
         {
-            Proc p[2];
-            std::unique_ptr<juce::AudioProcessorEditor> editors[2];
-            RepaintCapture* captures[2] {};
-            juce::Image images[2];
-            const float scale = (float) percent / 50; // same 2x pixel density as the immutable goldens
+            Proc p;
             testMs = 0;
-            for (int k = 0; k < 2; ++k)
-            {
-                p[k].scope.clock = testClock;
-                prepare(p[k], 48000, 512, 2), set(p[k], "bypass", 1);
-                run(p[k], 512, 2, 8192, [](int i) { return (float) (0.4 * std::sin(i * 0.1)); });
-                editors[k].reset(p[k].createEditor());
-                dynamic_cast<juce::Timer&>(*editors[k]).stopTimer();
-                editors[k]->setSize(1024 * percent / 100, 576 * percent / 100);
-                auto& plate = *editors[k]->getChildComponent(0);
-                captures[k] = new RepaintCapture(plate);
-                plate.setCachedComponentImage(captures[k]); // component takes ownership
-                images[k] = juce::Image(juce::Image::ARGB, 1024 * percent / 50, 576 * percent / 50, true);
-                captures[k]->consume(images[k], scale);
-                run(p[k], 512, 2, 8192, [held](int i) { return held * (float) std::sin(i * 0.1); });
-            }
+            p.scope.clock = testClock;
+            prepare(p, 48000, 512, 2), set(p, "bypass", 1);
+            run(p, 512, 2, 8192, [](int i) { return (float) (0.4 * std::sin(i * 0.1)); });
+            std::unique_ptr<juce::AudioProcessorEditor> e(p.createEditor());
+            auto& timer = dynamic_cast<juce::Timer&>(*e);
+            timer.stopTimer();
+            e->setSize(1024 * percent / 100, 576 * percent / 100), e->setVisible(true);
+            auto* capture = new RepaintCapture(*e);
+            e->setCachedComponentImage(capture); // the editor takes ownership
+            const float scale = (float) percent / 50; // 2x pixels
+            juce::Image image(juce::Image::RGB, 1024 * percent / 50, 576 * percent / 50, true);
+            capture->consume(image, scale);
+            run(p, 512, 2, 8192, [held](int i) { return held * (float) std::sin(i * 0.1); });
             int paints = 0;
             for (int frame = 0; frame < 120; ++frame)
             {
                 testMs += 1000.0 / 30;
-                for (int k = 0; k < 2; ++k)
-                    dynamic_cast<juce::Timer&>(*editors[k]).timerCallback();
-                // Reference consumes the original editor's unconditional 30 Hz screen repaint.
-                captures[1]->invalidate({ 24, 56, 976, 216 });
-                const bool painted = captures[0]->consume(images[0], scale);
+                timer.timerCallback();
+                const bool painted = capture->consume(image, scale);
                 paints += painted;
-                if (frame == 119) CHECK(!painted); // settled idle still suppresses screen repaints
-                captures[1]->consume(images[1], scale);
+                if (frame == 119) CHECK(!painted); // settled idle: no repaint
+                if (frame == 40) set(p, "bits", 6), set(p, "fOrder", 0); // value changes repaint their cells
             }
             CHECK(paints > 1 && paints < 120);
             testMs += 1000.0 / 30;
-            for (int k = 0; k < 2; ++k)
-            {
-                run(p[k], 512, 2, 8192, [](int i) { return (float) (0.01 * std::sin(i * 0.1)); });
-                dynamic_cast<juce::Timer&>(*editors[k]).timerCallback();
-                CHECK(captures[k]->consume(images[k], scale));
-            }
-            const auto scope = (juce::Rectangle<int> { 24, 56, 632, 212 } * scale).toNearestInt();
-            CHECK(pixels(images[0].getClippedImage(scope)) == pixels(images[1].getClippedImage(scope)));
+            run(p, 512, 2, 8192, [](int i) { return (float) (0.01 * std::sin(i * 0.1)); });
+            timer.timerCallback();
+            CHECK(capture->consume(image, scale));
+            juce::Image other(juce::Image::RGB, 8, 8, true), fresh(juce::Image::RGB, image.getWidth(), image.getHeight(), true);
+            { juce::Graphics g(other); g.addTransform(juce::AffineTransform::scale(0.01f)); e->paint(g); } // drops the cached image
+            { juce::Graphics g(fresh); g.addTransform(juce::AffineTransform::scale(scale)); e->paint(g); }   // so this renders all cells
+            CHECK(pixels(image) == pixels(fresh));
         }
+}
+
+// Real mouse events through a window at 100 % and 200 %: every control reacts at its hit region of cells, the regions
+// do not overlap, dials drag with the slider's 250 px sensitivity, double-click resets, and clicking a value types one.
+static void testInteraction()
+{
+    const auto folder = juce::File::getSpecialLocation(juce::File::tempDirectory).getNonexistentChildFile("crumb-ui", "", false);
+    for (int percent : { 100, 200 })
+    {
+        Proc p(folder);
+        prepare(p, 48000, 512, 2);
+        std::unique_ptr<juce::AudioProcessorEditor> e(p.createEditor());
+        auto& timer = dynamic_cast<juce::Timer&>(*e);
+        e->setSize(1024 * percent / 100, 576 * percent / 100);
+        e->addToDesktop(0), e->setVisible(true);
+        auto* peer = e->getPeer();
+        CHECK(peer != nullptr);
+        if (peer == nullptr) return;
+        juce::int64 now = 1000000;
+        const auto mouse = [&](juce::Point<float> at, bool down) {
+            peer->handleMouseEvent(juce::MouseInputSource::InputSourceType::mouse, at, down ? juce::ModifierKeys::leftButtonModifier : juce::ModifierKeys(),
+                                   juce::MouseInputSource::defaultPressure, juce::MouseInputSource::defaultOrientation, now += 20);
+        };
+        const auto click = [&](juce::Point<float> at, int clicks = 1) {
+            mouse(at, false);
+            for (int k = 0; k < clicks; ++k)
+                mouse(at, true), mouse(at, false);
+            now += 2000, timer.timerCallback(); // past the double-click time
+        };
+        const auto centre = [&](juce::Component& c, juce::Rectangle<int> area) { return e->getLocalArea(&c, area).toFloat().getCentre(); };
+        const auto at = [&](const char* id) { auto* c = find(*e, id); CHECK(c != nullptr); return centre(*c, c->getLocalBounds()); };
+        const auto cellsOf = [&](const char* id) { // in design cells (1024 / 120 x 576 / 34 px)
+            auto* c = find(*e, id);
+            const auto r = c->getBoundsInParent().toFloat();
+            return juce::Rectangle<int>(juce::roundToInt(r.getX() * 120 / 1024), juce::roundToInt(r.getY() * 34 / 576), juce::roundToInt(r.getWidth() * 120 / 1024), juce::roundToInt(r.getHeight() * 34 / 576));
+        };
+        // Hit regions where option 5 puts them (post layout).
+        CHECK(cellsOf("prev") == juce::Rectangle<int>(30, 1, 2, 1) && cellsOf("next") == juce::Rectangle<int>(62, 1, 2, 1) && cellsOf("save") == juce::Rectangle<int>(67, 1, 4, 1));
+        CHECK(cellsOf("A") == juce::Rectangle<int>(74, 1, 1, 1) && cellsOf("B") == juce::Rectangle<int>(76, 1, 1, 1) && cellsOf("approxOn") == juce::Rectangle<int>(39, 6, 11, 1));
+        CHECK(cellsOf("lp") == juce::Rectangle<int>(82, 24, 2, 2) && cellsOf("post") == juce::Rectangle<int>(82, 27, 4, 2) && cellsOf("rate") == juce::Rectangle<int>(52, 4, 10, 6));
+        const char* const knobIds[] = { "preamp", "dither", "approxDev", "rate", "jitter", "imagesShift", "cutoff", "reso", "mix", "output" };
+        const char* const keyIds[] = { "prev", "next", "save", "A", "B", "minus", "plus", "dcShift", "approxOn", "imagesOn", "pre", "post", "dock", "off", "lp", "bp", "hp", "br" };
+        juce::StringArray all(knobIds, 10);
+        all.addArray(juce::StringArray(keyIds, 18));
+        for (int i = 0; i < all.size(); ++i)
+            for (int j = i + 1; j < all.size(); ++j)
+                CHECK(!find(*e, all[i])->getBoundsInParent().intersects(find(*e, all[j])->getBoundsInParent()));
+        for (auto* id : knobIds)
+        {
+            auto* slider = dynamic_cast<juce::Slider*>(find(*e, id));
+            auto* param = p.apvts.getParameter(id);
+            juce::Label* box = nullptr;
+            for (auto* child : slider->getChildren())
+                box = box != nullptr ? box : dynamic_cast<juce::Label*>(child);
+            CHECK(box != nullptr);
+            const auto dial = centre(*slider, slider->getLocalBounds().withTrimmedTop(box->getY() == 0 ? box->getHeight() : 0).withTrimmedBottom(box->getY() == 0 ? 0 : box->getHeight()));
+            param->setValueNotifyingHost(0.3f);
+            mouse(dial, false), mouse(dial, true);
+            for (int k = 1; k <= 10; ++k) // 50 design px up = 0.2 of the range
+                mouse(dial - juce::Point<float>(0, 5.0f * (float) k * (float) percent / 100), true);
+            mouse(dial - juce::Point<float>(0, 50.0f * (float) percent / 100), false);
+            now += 2000;
+            CHECK(std::abs(param->getValue() - 0.5f) < 0.01f);
+            click(dial, 2);
+            CHECK(param->getValue() == param->getDefaultValue());
+            click(centre(*box, box->getLocalBounds()));
+            CHECK(box->isBeingEdited());
+            const auto typed = param->getText(0.7f, 0);
+            if (auto* editor = box->getCurrentTextEditor()) editor->setText(typed);
+            box->hideEditor(false);
+            CHECK(param->getCurrentValueAsText() == typed);
+        }
+        set(p, "bits", 12), set(p, "dcShift", 0), set(p, "approxOn", 0), set(p, "imagesOn", 0), set(p, "fOrder", 1), pump();
+        click(at("plus")), CHECK(get(p, "bits") == 13);
+        click(at("minus")), click(at("minus")), CHECK(get(p, "bits") == 11);
+        for (auto* id : { "dcShift", "approxOn", "imagesOn" })
+            click(at(id)), CHECK(get(p, id) == 1), click(at(id)), CHECK(get(p, id) == 0);
+        for (int k = 0; k < 5; ++k)
+            click(at(keyIds[13 + (k + 2) % 5])), CHECK(get(p, "fType") == (float) ((k + 2) % 5));
+        click(at("pre")), CHECK(get(p, "fOrder") == 0);
+        click(at("post")), CHECK(get(p, "fOrder") == 1);
+        click(at("dock")), CHECK(get(p, "fOrder") == 0 && cellsOf("dock") == juce::Rectangle<int>(91, 11, 5, 12)); // the filter docks pre
+        click(at("dock")), CHECK(get(p, "fOrder") == 1 && cellsOf("dock") == juce::Rectangle<int>(17, 11, 5, 12));
+        p.setCurrentProgram(3);
+        click(at("next")), CHECK(p.getCurrentProgram() == 4);
+        click(at("prev")), click(at("prev")), CHECK(p.getCurrentProgram() == 2);
+        click(at("B")), CHECK(p.abSlot() == 1);
+        click(at("A")), CHECK(p.abSlot() == 0);
+        const int files = folder.getNumberOfChildFiles(juce::File::findFiles);
+        click(at("save")), CHECK(folder.getNumberOfChildFiles(juce::File::findFiles) == files + 1 && p.preset == -1);
+        e->removeFromDesktop();
+    }
+    folder.deleteRecursively();
 }
 
 static void testMeter()
@@ -1103,10 +1191,14 @@ static float groove(int i)
 }
 
 // The screenshot fixture: preset 14 after a drum + bass loop, then one second of 30 fps editor frames (the VU settles).
-static std::unique_ptr<juce::AudioProcessorEditor> fixture(Proc& p, bool preFilter)
+// Variants: post (as stored), pre (filter pre), off (quantize, approx, images and filter off, dc shift on, slot B).
+enum Variant { post, pre, off };
+static std::unique_ptr<juce::AudioProcessorEditor> fixture(Proc& p, Variant variant = post)
 {
     p.setCurrentProgram(SCREENSHOT_PRESET);
-    if (preFilter)
+    if (variant == off)
+        p.selectAb(1), set(p, { { "bits", 0.0f }, { "approxOn", 0.0f }, { "imagesOn", 0.0f }, { "fType", 0.0f }, { "dcShift", 1.0f } });
+    if (variant == pre)
         set(p, "fOrder", 0);
     prepare(p, 48000, 512, 2);
     p.scope.clock = testClock, testMs = 0;
@@ -1121,10 +1213,10 @@ static std::unique_ptr<juce::AudioProcessorEditor> fixture(Proc& p, bool preFilt
     return e;
 }
 
-static int screenshot(const juce::File& file, bool preFilter)
+static int screenshot(const juce::File& file, Variant variant)
 {
     Proc p;
-    const auto e = fixture(p, preFilter);
+    const auto e = fixture(p, variant);
     const auto image = e->createComponentSnapshot(e->getLocalBounds(), true, 2.0f);
     file.deleteFile();
     juce::FileOutputStream out(file);
@@ -1179,10 +1271,10 @@ static juce::String render(int program, int channels)
     }
     return sha(bytes);
 }
-static juce::Image snapshot(bool preFilter, int percent) // the fixture at an editor size, 2x pixels
+static juce::Image snapshot(Variant variant, int percent) // the fixture at an editor size, 2x pixels
 {
     Proc p;
-    auto e = fixture(p, preFilter);
+    auto e = fixture(p, variant);
     e->setSize(1024 * percent / 100, 576 * percent / 100);
     return e->createComponentSnapshot(e->getLocalBounds(), true, 2.0f);
 }
@@ -1226,18 +1318,20 @@ static const Golden sounds[] = {
     { 23, 2, "3dd38314799190f0b3a37c7cdacbc1465a9fc03864e2b7a1ba2d85def5c6e6e6" },
     { 24, 2, "4a59ca93339bccf65af8b3c5d2fead29d818041909037212529c3291d908666e" },
 };
-struct Shot { bool preFilter; int percent; const char* hash; };
+// Editor snapshots of the 0.2.0 grid UI (ASCII option 5), same environment gate as the audio.
+struct Shot { Variant variant; int percent; const char* hash; };
 static const Shot shots[] = {
-    { false, 100, "9e6312a8b8f03752026f0a487e7ac545ffe3a303c5cb7e938d6bdde3f6e1b0cf" },
-    { false, 50, "bfaba0c0d89ba92b722d2a3d060a328450335f9da4425a4c1efaf9e58532806c" },
-    { false, 200, "53f8e9e85d762fc2df2a31505e5185febaf843f968960837987600256b307e5f" },
-    { true, 100, "9acc73af7f75e832461afbb0a2113ec4ac944b8cb6c13a7a5174b9a9b84b74ea" },
+    { post, 100, "b100b189941d20ffa409232da8955960918c11767a381abb18628fc87cc014c9" },
+    { post, 50, "5e9c5d42353a06c06d83c3652e30eb02d6969a6b36bdfed642d30088523f77e7" },
+    { post, 200, "43cd70318cf5e1ce71c0776f64c55b554de8fcc863b9fdc4e59c0ca4b492551c" },
+    { pre, 100, "6f0c730ec5374758557178c9ad5aa45f8e9e0c8686c031e6da7da10e76cfb3cc" },
+    { off, 100, "8f310ef67770b2d9c350a0db10489da85001c0fbcfecf53a1c155caf88b959bc" },
 };
 static void testGoldens()
 {
-    const auto audio = render(-1, 2), image = pixels(snapshot(false, 100));
+    const auto audio = render(-1, 2), image = pixels(snapshot(post, 100));
     CHECK(audio == render(-1, 2));
-    CHECK(image == pixels(snapshot(false, 100)));
+    CHECK(image == pixels(snapshot(post, 100)));
     std::cout << "Checked audio and 100 % snapshot determinism\n";
 #if JUCE_LINUX && JUCE_INTEL && JUCE_64BIT
     // Independent probes: never use plug-in output as an environment fingerprint (that would hide regressions).
@@ -1270,18 +1364,17 @@ static void testGoldens()
                 CHECK(!"bit-exact render"), std::cerr << "  program " << s.program << ", " << s.channels << " ch\n";
     if (matchingMath && matchingRenderer && !ci) // snapshots also contain the audio-driven scopes and meters
         for (const auto& s : shots)
-            if (pixels(snapshot(s.preFilter, s.percent)) != s.hash)
-                CHECK(!"pixel-exact snapshot"), std::cerr << "  " << s.percent << " %" << (s.preFilter ? " pre" : "") << "\n";
+            if (const auto hash = pixels(snapshot(s.variant, s.percent)); hash != s.hash)
+                CHECK(!"pixel-exact snapshot"), std::cerr << "  " << s.percent << " % variant " << (int) s.variant << ": " << hash << "\n";
     std::cout << "Environment fingerprints: " << sha(math) << " / " << pixels(probe) << "\nChecked "
               << (matchingMath && !ci ? std::size(sounds) : 0) << " audio hashes and "
               << (matchingMath && matchingRenderer && !ci ? std::size(shots) : 0)
-              << " pixel hashes from 81593d3"
+              << " pixel hashes (audio from 81593d3, editor from 0.2.0)"
               << (ci ? " (skipped on GitHub Actions)\n" : " (matching environments only)\n");
 #endif
 }
 // CrumbTests --bench: processBlock ns per stereo sample frame (48 kHz, block 512, warmed; init = the defaults, the
-// settled 26.04 kHz 64-tap case; the sweep) and the editor's 30 Hz work: timerCallback, then painting the two screens'
-// region (24, 56, 976, 216) at 100 %; a full plate paint for comparison. Means over repeated runs.
+// settled 26.04 kHz 64-tap case; the sweep). Means over repeated runs. The editor: --bench-editor.
 static int bench()
 {
     using Clock = std::chrono::steady_clock;
@@ -1314,47 +1407,64 @@ static int bench()
         std::cout << (program == 0 ? "processBlock init/default (26.04 kHz, 64 taps, settled)" : "processBlock automation sweep")
                   << ": " << total * 1e6 / (5.0 * 938 * 512) << " ns/sample\n";
     }
-    Proc p;
-    auto e = fixture(p, false);
-    auto& plate = *e->getChildComponent(0);
-    juce::Image image(juce::Image::ARGB, 1024, 576, true);
-    double timer = 0, screens = 0, full = 0;
-    const int frames = 300;
-    for (int frame = -30; frame < frames; ++frame) // 30 warm-up frames
-    {
-        testMs += 1000.0 / 30;
-        run(p, 512, 2, 1600, [frame](int i) { return groove(60000 + frame * 1600 + i); });
-        const auto t0 = Clock::now();
-        dynamic_cast<juce::Timer&>(*e).timerCallback();
-        const auto t1 = Clock::now();
-        {
-            juce::Graphics g(image);
-            g.reduceClipRegion(24, 56, 976, 216);
-            plate.paintEntireComponent(g, false);
-        }
-        const auto t2 = Clock::now();
-        if (frame % 10 == 0)
-        {
-            juce::Graphics g(image);
-            plate.paintEntireComponent(g, false);
-        }
-        const auto t3 = Clock::now();
-        if (frame >= 0)
-            timer += ms(t0, t1), screens += ms(t1, t2), full += frame % 10 == 0 ? ms(t2, t3) : 0;
-    }
-    std::cout << "editor timerCallback: " << timer / frames << " ms\n"
-              << "editor 30 Hz screens paint (24, 56, 976, 216): " << screens / frames << " ms\n"
-              << "editor timer + screens paint: " << (timer + screens) / frames << " ms\n"
-              << "editor full plate paint: " << full / (frames / 10) << " ms\n";
     return 0;
 }
 
+// CrumbTests --bench-editor: the fixture with the groove running, 200 frames at 100 % and 200 %: timerCallback ms, the
+// paint of what it invalidated (1x pixels) and a full paint. Any editor: repaints are caught at the editor itself.
+static int benchEditor()
+{
+    using Clock = std::chrono::steady_clock;
+    const auto ms = [](Clock::time_point a, Clock::time_point b) { return std::chrono::duration<double, std::milli>(b - a).count(); };
+    for (int percent : { 100, 200 })
+    {
+        Proc p;
+        auto e = fixture(p);
+        e->setSize(1024 * percent / 100, 576 * percent / 100), e->setVisible(true);
+        auto* capture = new RepaintCapture(*e);
+        e->setCachedComponentImage(capture);
+        juce::Image image(juce::Image::ARGB, e->getWidth(), e->getHeight(), true);
+        double timer = 0, dirty = 0, full = 0;
+        for (int frame = -20; frame < 200; ++frame)
+        {
+            testMs += 1000.0 / 30;
+            run(p, 512, 2, 1600, [frame](int i) { return groove(60000 + frame * 1600 + i); });
+            const auto t0 = Clock::now();
+            dynamic_cast<juce::Timer&>(*e).timerCallback();
+            const auto t1 = Clock::now();
+            { juce::Graphics g(image); g.reduceClipRegion(capture->pending), capture->pending = {}, e->paintEntireComponent(g, false); }
+            const auto t2 = Clock::now();
+            { juce::Graphics g(image); e->paintEntireComponent(g, false); }
+            if (frame >= 0) timer += ms(t0, t1), dirty += ms(t1, t2), full += ms(t2, Clock::now());
+        }
+        std::cout << percent << " %: timerCallback " << timer / 200 << " ms, invalidated-region paint " << dirty / 200
+                  << " ms, full paint " << full / 200 << " ms\n";
+    }
+    return 0;
+}
+
+#if JUCE_LINUX
+#include <dlfcn.h>
+// JUCE ignores X errors only in its own apps (a host has them too); without that, Xlib's default handler exits on the
+// benign error a window raises on a bare Xvfb. The interaction tests open a real window, so ignore them the same way.
+static void ignoreXErrors()
+{
+    if (auto* x11 = dlopen("libX11.so.6", RTLD_NOW))
+        if (auto set = (void* (*) (int (*)(void*, void*))) dlsym(x11, "XSetErrorHandler"))
+            set([](void*, void*) { return 0; });
+}
+#endif
+
 int main(int argc, char** argv)
 {
+#if JUCE_LINUX
+    ignoreXErrors();
+#endif
     const juce::ScopedJuceInitialiser_GUI gui;
-    if ((argc == 3 || argc == 4) && juce::String(argv[1]) == "--screenshot") // optional 3rd argument "pre": filter order pre
-        return screenshot(juce::File::getCurrentWorkingDirectory().getChildFile(argv[2]), argc == 4 && juce::String(argv[3]) == "pre");
+    if ((argc == 3 || argc == 4) && juce::String(argv[1]) == "--screenshot") // optional 3rd argument: pre, off (see fixture)
+        return screenshot(juce::File::getCurrentWorkingDirectory().getChildFile(argv[2]), argc < 4 ? post : juce::String(argv[3]) == "pre" ? pre : off);
     if (argc == 2 && juce::String(argv[1]) == "--bench") return bench();
+    if (argc == 2 && juce::String(argv[1]) == "--bench-editor") return benchEditor();
     if (argc == 2 && juce::String(argv[1]) == "--golden-tests") { testGoldens(); return failures == 0 ? 0 : 1; }
     testGoldens();
     testIdentity();
@@ -1371,6 +1481,7 @@ int main(int argc, char** argv)
     testPresets();
     testScopeFifo();
     testScopeRepaints();
+    testInteraction();
     testMeter();
     testEditorState();
     std::cout << (failures == 0 ? "All Crumb tests passed\n" : "Crumb tests FAILED\n");

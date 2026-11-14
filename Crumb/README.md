@@ -1,6 +1,6 @@
 # crumb
 
-A vintage-sampler bit crusher by daveydidit. Version 0.1.0. Zero latency, mono or stereo, both channels share the
+A vintage-sampler bit crusher by daveydidit. Version 0.2.0. Zero latency, mono or stereo, both channels share the
 settings. One screen, no menus: 25 factory presets, user presets, A/B, a live scope and a stereo VU meter.
 
 Signal path: preamp (0 … +48 dB) into a soft ADC clip (tanh shoulder above 0.5, antiderivative antialiasing) →
@@ -38,17 +38,24 @@ At rate = host rate (no jitter) the sample & hold is the identity.
 
 ## Editor
 
-- **Top bar:** preset number and name, ◀ ▶ step through the factory presets and then your saved ones, **save** writes the
-  current sound as a new user preset, **A / B** keep two complete sounds and switch between them.
-- **Scope:** the rate and resolution in large type, the converter / resampler / filter status top right, and 20 ms of
-  the input (grey) and the crushed output (orange), triggered on the input so it stands still.
-- **VU:** two needles (L / R) with VU ballistics (99 % in 300 ms; 0 VU = −12 dBFS RMS, as K-12), a clip LED per channel that
-  lights above 0 dBFS and holds for 1 s, and the output setting.
-- **Rail and modules**, left to right in signal order: **in** (PREAMP, DITHER) · pre dock · **quantize** (− / + step the
-  bits, 0 = off; **dc shift** = mid-tread) · **approx** (anti-alias lowpass, DEVIATE) · **resample** (FREQ, JITTER) ·
-  **images** (reconstruction lowpass, SHIFT) · **filter** (pre / post, off / lp / bp / hp / br, CUTOFF, RESO) · **mix**
-  (FX, OUTPUT). With the filter set to **pre** the filter module docks in the pre slot and the rail dot moves with it.
-  Stages that do nothing are dimmed.
+One monospace character grid (120 × 34 cells, black with white and red), drawn as text plus vector braille, line and
+block glyphs.
+
+- **Top line:** crumb, ‹ › step through the factory presets and then your saved ones (number and name between them),
+  **save** writes the current sound as a new user preset, **A / B** keep two complete sounds and switch between them.
+- **One wave:** 20 ms of the input crosses the whole panel, triggered so it stands still, and every stage shows its own
+  output under its controls: smooth at **in**, stepped at **quantize**, softened by **approx**, held at **resample**, smoothed by
+  **images** and **filter**, red at **mix**. The input stays as a grey ghost where the wave leaves it. The editor reruns a
+  simplified copy of the chain on that snapshot and magnifies it so the crush is visible at dot resolution (steps counted
+  on screen, rates and cutoffs ÷ 16); the audio is not affected.
+- **Stages,** left to right in signal order: **in** (preamp, dither) · pre dock · **quantize** (− / + step the bits,
+  0 = off; **dc shift** = mid-tread) · **approx** (anti-alias lowpass, deviate) · **resample** (freq, jitter) · **images**
+  (reconstruction lowpass, shift) · **filter** (off / lp / bp / hp / br, pre / post, cutoff, reso) · **mix** (fx, output).
+  With the filter set to **pre** (or a click on the empty dock) the filter moves into the dock. Stages that do nothing
+  are dimmed.
+- **Meters:** L / R columns from 20 to +3 VU with VU ballistics (99 % in 300 ms; 0 VU = −12 dBFS RMS, as K-12), a falling
+  peak mark, a clip light per channel that lights above 0 dBFS and holds for 1 s, and the output setting.
+- **Status line:** rate, resolution, converter mode, dither, approx, images, filter, the scope span and the version.
 - **Knobs:** drag up/down, **double-click = default**, **click the value under a knob to type** one (`9.2k`, `-3`, `35`).
 - The window scales from 50 % to 200 % (drag the corner; the aspect is fixed) and remembers its size per instance.
 
@@ -77,7 +84,8 @@ if macOS blocks them, run `xattr -dr com.apple.quarantine` on the bundle. Logic 
 cmake -S Crumb -B Crumb/build -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build Crumb/build --target Crumb_VST3 Crumb_Standalone CrumbTests
 xvfb-run -a Crumb/build/CrumbTests        # Linux; run it directly on macOS
-xvfb-run -a Crumb/build/CrumbTests --screenshot editor.png   # the editor at 100 % (2x pixels) after a drum + bass loop
+xvfb-run -a Crumb/build/CrumbTests --screenshot editor.png [pre|off]  # the editor at 100 % (2x pixels) after a drum + bass loop
+xvfb-run -a Crumb/build/CrumbTests --bench-editor   # editor timer and paint ms at 100 % and 200 %
 ```
 
 On macOS, use `-G Xcode` and build `Crumb_AU` and `Crumb_VST3`. `auval -v aufx Crmb Dwks` validates the AU.
