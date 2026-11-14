@@ -1052,10 +1052,11 @@ static void testInteraction()
                                    juce::MouseInputSource::defaultPressure, juce::MouseInputSource::defaultOrientation, now += 20);
         };
         const auto click = [&](juce::Point<float> at, int clicks = 1) {
+            now = juce::jmax(now, juce::Time::currentTimeMillis()) + 2000; // past the double-click time of any earlier down, synthetic or real
             mouse(at, false);
             for (int k = 0; k < clicks; ++k)
                 mouse(at, true), mouse(at, false);
-            now += 2000, timer.timerCallback(); // past the double-click time
+            timer.timerCallback();
         };
         const auto centre = [&](juce::Component& c, juce::Rectangle<int> area) { return e->getLocalArea(&c, area).toFloat().getCentre(); };
         const auto at = [&](const char* id) { auto* c = find(*e, id); CHECK(c != nullptr); return centre(*c, c->getLocalBounds()); };
@@ -1086,11 +1087,11 @@ static void testInteraction()
             CHECK(box != nullptr);
             const auto dial = centre(*slider, slider->getLocalBounds().withTrimmedTop(box->getY() == 0 ? box->getHeight() : 0).withTrimmedBottom(box->getY() == 0 ? 0 : box->getHeight()));
             param->setValueNotifyingHost(0.3f);
+            now = juce::jmax(now, juce::Time::currentTimeMillis()) + 2000;
             mouse(dial, false), mouse(dial, true);
             for (int k = 1; k <= 10; ++k) // 50 design px up = 0.2 of the range
                 mouse(dial - juce::Point<float>(0, 5.0f * (float) k * (float) percent / 100), true);
             mouse(dial - juce::Point<float>(0, 50.0f * (float) percent / 100), false);
-            now += 2000;
             CHECK(std::abs(param->getValue() - 0.5f) < 0.01f);
             click(dial, 2);
             CHECK(param->getValue() == param->getDefaultValue());
