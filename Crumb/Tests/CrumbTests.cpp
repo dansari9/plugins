@@ -1025,7 +1025,7 @@ static void testEditorEdges()
     dir.deleteRecursively();
 }
 
-// Real mouse events through a window at 100 % and 200 %: every control reacts at its hit region of cells, the regions
+// Peer mouse events at 100 % and 200 %: every control reacts at its hit region of cells, the regions
 // do not overlap, dials drag with the slider's 250 px sensitivity, double-click resets, and clicking a value types one.
 static void testInteraction()
 {
@@ -1037,13 +1037,18 @@ static void testInteraction()
         std::unique_ptr<juce::AudioProcessorEditor> e(p.createEditor());
         auto& timer = dynamic_cast<juce::Timer&>(*e);
         e->setSize(1024 * percent / 100, 576 * percent / 100);
-        e->addToDesktop(0), e->setVisible(true);
+        juce::Component window;
+        window.setSize(512, 384), window.addAndMakeVisible(*e);
+        window.addToDesktop(0), window.setVisible(true);
         auto* peer = e->getPeer();
         CHECK(peer != nullptr);
         if (peer == nullptr) return;
         juce::int64 now = 1000000;
         const auto mouse = [&](juce::Point<float> at, bool down) {
-            peer->handleMouseEvent(juce::MouseInputSource::InputSourceType::mouse, at, down ? juce::ModifierKeys::leftButtonModifier : juce::ModifierKeys(),
+            // macOS hit-tests the actual on-screen window. Reveal each target, then let the window become visible.
+            if (!down && !juce::Desktop::getInstance().getMainMouseSource().isDragging())
+                e->setTopLeftPosition(window.getLocalBounds().getCentre() - at.roundToInt()), pump();
+            peer->handleMouseEvent(juce::MouseInputSource::InputSourceType::mouse, window.getLocalPoint(e.get(), at), down ? juce::ModifierKeys::leftButtonModifier : juce::ModifierKeys(),
                                    juce::MouseInputSource::defaultPressure, juce::MouseInputSource::defaultOrientation, now += 20);
         };
         const auto click = [&](juce::Point<float> at, int clicks = 1) {
@@ -1115,7 +1120,7 @@ static void testInteraction()
         click(at("A")), CHECK(p.abSlot() == 0);
         const int files = folder.getNumberOfChildFiles(juce::File::findFiles);
         click(at("save")), CHECK(folder.getNumberOfChildFiles(juce::File::findFiles) == files + 1 && p.preset == -1);
-        e->removeFromDesktop();
+        window.removeFromDesktop();
     }
     folder.deleteRecursively();
 }
