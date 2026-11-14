@@ -7,3 +7,4 @@ cmake-build-*/
 .idea/
 .vscode/
 compile_commands.json
+Crumb/build*/

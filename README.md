@@ -5,6 +5,7 @@ Audio effect plugins. Each plugin is a separate directory with its own CMake pro
 | Plugin | Directory | Formats |
 | --- | --- | --- |
 | Spring Tank | [SpringReverb](SpringReverb/) | AU, VST3, Standalone, AAX when the Avid SDK is present |
+| Crumb | [Crumb](Crumb/) | AU, VST3, Standalone |
 
 ## Spring Tank
 
@@ -15,6 +16,10 @@ cd SpringReverb
 ```
 
 Run the commands in that README from inside `SpringReverb/`.
+
+## Crumb
+
+Vintage-sampler bit crusher (milestone 1: DSP, parameters, state and tests). See [Crumb/README.md](Crumb/README.md); the commands there run from the repository root.
 
 ## Continuous integration
 
