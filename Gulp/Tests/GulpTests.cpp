@@ -794,6 +794,8 @@ static void testEditorSizes()
         {
             if (frame < 30) r.offset = 24000 + 1600 * frame, run(p, 1600, 512, r);
             if (frame == 10) set(p, { { "curve", 3 }, { "band", 2 }, { "tempoSync", 0 } });
+            if (frame == 15) set(p, { { "shift", -7 }, { "depth", 23 }, { "freeHz", 10.1f }, { "tone", 100 }, { "output", -2 } });
+            if (frame == 20) set(p, { { "shift", 0 }, { "depth", 9 }, { "freeHz", 2 }, { "tone", 50 }, { "output", 0 } });
             timer.timerCallback();
             const bool painted = capture->consume(image, scale);
             paints += painted;
@@ -838,7 +840,7 @@ static void testTelemetry()
         return v;
     };
     const auto before = controls();
-    const juce::Rectangle<int> scope = cellArea(25, 19, 70, 2), scMeter = cellArea(25, 30, 18, 1), outMeter = cellArea(98, 30, 15, 1);
+    const juce::Rectangle<int> scope = cellArea(25, 18, 70, 2), scMeter = cellArea(25, 29, 15, 1), outMeter = cellArea(101, 29, 15, 1);
     int offset = 0;
     const auto frame = [&] {
         r.offset = offset, offset += 24000, run(p, 24000, 512, r);
@@ -903,6 +905,9 @@ static void testInteraction()
             return false;
         };
         CHECK(!overlaps());
+        for (auto [id, x, y] : { std::tuple { "shift", 66, 24 }, { "thresh", 76, 24 }, { "tone", 86, 24 },
+                                { "depth", 104, 3 }, { "split", 104, 13 }, { "output", 104, 23 } })
+            CHECK(find(*e, id)->getBounds() == cellArea(x, y, 10, 6));
         const auto dial = [&](const char* id) {
             auto* slider = dynamic_cast<juce::Slider*>(find(*e, id));
             auto* param = p.apvts.getParameter(id);
@@ -935,9 +940,17 @@ static void testInteraction()
         set(p, "slope", 0), timer.timerCallback();
         CHECK(!find(*e, "freeHz")->isVisible());
         press("free"), CHECK(get(p, "tempoSync") == 0 && !find(*e, "rate 0")->isVisible() && !find(*e, "rate-")->isVisible());
+        press("free"), CHECK(get(p, "tempoSync") == 0); // choices are idempotent, not toggles
         CHECK(!overlaps());
         dial("freeHz");
-        press("free"), CHECK(get(p, "tempoSync") == 1 && !find(*e, "freeHz")->isVisible());
+        press("sync"), CHECK(get(p, "tempoSync") == 1 && !find(*e, "freeHz")->isVisible());
+        press("sync"), CHECK(get(p, "tempoSync") == 1);
+        set(p, "tempoSync", 0), timer.timerCallback();
+        CHECK(dynamic_cast<juce::Button*>(find(*e, "free"))->getToggleState() && !dynamic_cast<juce::Button*>(find(*e, "sync"))->getToggleState());
+        press("sync");
+        CHECK(dynamic_cast<juce::Button*>(find(*e, "sync"))->getToggleState() && !dynamic_cast<juce::Button*>(find(*e, "free"))->getToggleState());
+        CHECK(find(*e, "sync")->getBounds() == cellArea(60, 26, 4, 2) && find(*e, "free")->getBounds() == cellArea(60, 28, 4, 2));
+        CHECK(find(*e, "loop")->getY() == find(*e, "rate-")->getY() && find(*e, "loop")->getX() == find(*e, "trigger sync")->getX());
         const std::pair<const char*, juce::StringArray> choices[] = {
             { "curve", { "classic", "tight", "punch", "round", "long", "slam", "sub", "sub long", "trim", "suck", "wave", "double" } },
             { "color", { "level", "bottom", "top", "dark", "thin", "pinch", "hollow", "grit" } },
@@ -949,12 +962,21 @@ static void testInteraction()
             press(id), CHECK(get(p, id) == 1), press(id), CHECK(get(p, id) == 0);
         set(p, "rate", 8), timer.timerCallback();
         press("rate 0"), CHECK(get(p, "rate") == 7);
-        press("rate 3"), CHECK(get(p, "rate") == 10);
-        press("rate+"), CHECK(get(p, "rate") == 11);
+        press("rate 2"), CHECK(get(p, "rate") == 9);
+        press("rate+"), CHECK(get(p, "rate") == 10);
         for (int k = 0; k < 14; ++k) press("rate-");
         CHECK(get(p, "rate") == 0), press("rate 1"), CHECK(get(p, "rate") == 1);
-        for (int k = 0; k < 20; ++k) press("rate+");
-        CHECK(get(p, "rate") == 15 && !overlaps()), press("rate 0"), CHECK(get(p, "rate") == 12);
+        for (int k = 0; k < 20; ++k)
+        {
+            press("rate+");
+            CHECK(get(p, "rate") == (float) juce::jmin(15, k + 2) && !overlaps());
+            CHECK(find(*e, "rate 0")->getX() == find(*e, "rate-")->getX());
+            int gaps[3];
+            for (int j = 0; j < 3; ++j)
+                gaps[j] = find(*e, j == 2 ? "sync" : "rate " + juce::String(j + 1))->getX() - find(*e, "rate " + juce::String(j))->getRight();
+            CHECK(*std::min_element(gaps, gaps + 3) >= 8 && *std::max_element(gaps, gaps + 3) - *std::min_element(gaps, gaps + 3) <= 10);
+        }
+        CHECK(get(p, "rate") == 15), press("rate 0"), CHECK(get(p, "rate") == 13);
         p.setCurrentProgram(3);
         press("next"), CHECK(p.getCurrentProgram() == 4);
         press("prev"), press("prev"), CHECK(p.getCurrentProgram() == 2);
@@ -1031,9 +1053,9 @@ static const Golden sounds[] = {
     { 0, 7, "7d71e0e690854b84b833c4ce0dcd2b108e8c60f2f40898cc1c44112155713e48" },
 };
 struct Shot { int percent; const char* hash; };
-static const Shot shots[] = { { 100, "3c1338fb53bafbbe63779a861aa321eedd943827ff287f22e97066c77a3164f1" },
-                              { 50, "f5c30c0a0d6cda414155608229387d3cd6a94ae0f81c8067373023ddf2ae8ee0" },
-                              { 200, "709930b94f50db67a5e6b4d2ff5acc24f9125ee56edbc8712bc29fa0dabc3dab" } };
+static const Shot shots[] = { { 100, "2f487809608e8ac290dbeded9ac053ca279f1bb440e6cb2982b023c28927ed68" },
+                              { 50, "fc0fb80f680a91ca3912cb69a8bc4940503e74eefbce5948df4e4759f0323f04" },
+                              { 200, "087cfdf4577421fd20e5f9604649dcbff71c9ccb4455f97d95a872f7a83678c8" } };
 static void testGoldens()
 {
     CHECK(render(0, 0) == render(0, 0) && pixels(snapshot(100)) == pixels(snapshot(100)));

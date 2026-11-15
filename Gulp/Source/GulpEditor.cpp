@@ -13,7 +13,8 @@ using namespace juce;
 
 namespace
 {
-constexpr int C = 120, R = 34, W = 1024, H = 576, L = 22, AX = 25, AW = 70, AT = 5, AH = 12, RX = 98, CY = 21, B = 25;
+constexpr int C = 120, R = 34, W = 1024, H = 576, L = 22, AX = 25, AW = 70, AT = 5, AH = 11, RX = 98, CY = 21, B = 24;
+constexpr int rateX = AX + 18, syncX = rateX + 17, rateCount = 3, wordsY = B + 2, secondaryY = B + 4, readoutY = B + 5;
 constexpr float cw = (float) W / C, ch = (float) H / R;
 const Colour page { 0xff0d0d0d }, white { 0xffececec }, grey { 0xff7a7a7a }, rule { 0xff2c2c2c }, dark { 0xff454545 }, red { 0xffff3d1f }, kick { 0xff5a5a5a };
 String u(const char* s) { return String::fromUTF8(s); }
@@ -37,7 +38,8 @@ struct Cell
     juce_wchar c = ' ';
     Colour fg, bg; // bg transparent: the page
     bool bold = false;
-    bool operator!=(const Cell& o) const { return c != o.c || fg != o.fg || bg != o.bg || bold != o.bold; }
+    juce_wchar left = 0; // nonzero: half-cell centring, with the previous glyph's right half clipped to this cell
+    bool operator!=(const Cell& o) const { return c != o.c || fg != o.fg || bg != o.bg || bold != o.bold || left != o.left; }
 };
 enum Mode { merge, under, over }; // braille onto braille: or the dots, keep the old cell, replace it (grid.py)
 using Dots = std::vector<Point<int>>;
@@ -50,7 +52,15 @@ struct Grid
             if (const auto c = p.getAndAdvance(); isPositiveAndBelow(x, C) && isPositiveAndBelow(y, R))
                 at[y][x] = { c, fg, bg, bold };
     }
-    void centre(int x, int w, int y, String s, Colour fg, bool bold = false) { s = s.substring(0, w), put(x + (w - s.length()) / 2, y, s, fg, bold); }
+    void centre(int x, int w, int y, String s, Colour fg, bool bold = false)
+    {
+        s = s.substring(0, w), x += (w - s.length()) / 2;
+        put(x, y, s, fg, bold);
+        if ((w - s.length()) % 2 != 0)
+            for (int k = 0; k <= s.length(); ++k)
+                if (isPositiveAndBelow(x + k, C) && isPositiveAndBelow(y, R))
+                    at[y][x + k] = { k < s.length() ? s[k] : ' ', fg, {}, bold, k > 0 ? s[k - 1] : ' ' };
+    }
     void right(int x, int y, const String& s, Colour fg) { put(x - s.length() + 1, y, s, fg); }
     void braille(int x, int y, int w, int h, const Dots& dots, Colour fg, Mode mode = merge) // dots in a 2w x 4h space
     {
@@ -112,8 +122,8 @@ struct Key : Button
 };
 
 struct KnobSpec { const char* id; int x, y; bool centred; };
-const KnobSpec knobSpecs[] = { { "shift", AX + 39, B + 1, true }, { "thresh", AX + 51, B + 1, false }, { "tone", AX + 63, B + 1, false },
-                               { "depth", RX + 3, 5, false },     { "split", RX + 3, 17, false },     { "output", RX + 3, 25, false } };
+const KnobSpec knobSpecs[] = { { "shift", AX + 42, B + 1, true }, { "thresh", AX + 52, B + 1, false }, { "tone", AX + 62, B + 1, false },
+                               { "depth", RX + 7, 4, false },     { "split", RX + 7, 14, false },     { "output", RX + 7, 24, false } };
 
 struct Editor : AudioProcessorEditor, Timer
 {
@@ -121,13 +131,13 @@ struct Editor : AudioProcessorEditor, Timer
     Look look;
     Component layer; // the controls, in design pixels
     Slider knobs[6], slope, freeHz;
-    Key prev { "prev" }, next { "next" }, save { "save" }, slotA { "A" }, slotB { "B" }, invert { "invert" }, loop { "loop" }, free { "free" }, down { "rate-" }, up { "rate+" };
+    Key prev { "prev" }, next { "next" }, save { "save" }, slotA { "A" }, slotB { "B" }, invert { "invert" }, loop { "loop" }, free { "free" }, sync { "sync" }, down { "rate-" }, up { "rate+" };
     OwnedArray<Key> curves, colours, stereos, triggers, bands, rates;
     // Attachments after the components they drive, so they are destroyed first.
     std::vector<std::unique_ptr<AudioProcessorValueTreeState::SliderAttachment>> sliderAtt;
     std::vector<std::unique_ptr<ParameterAttachment>> keyAtt;
     ParameterAttachment* rateAtt = nullptr;
-    int windowStart = 0; // the first of the four rate words shown
+    int windowStart = 0; // the first of the three rate words shown
     Grid shown;
     std::vector<float> drawnFrom; // what the shown grid was built from: the same again means idle
     String drawnName;
@@ -154,7 +164,7 @@ struct Editor : AudioProcessorEditor, Timer
             setup(knobs[i], knobSpecs[i].id, cells(knobSpecs[i].x - 1, knobSpecs[i].y - 1, 10, 6));
         slope.getProperties().set("box", Rectangle<int>().toString());
         setup(slope, "slope", cells(AX + 2, AT, AW - 4, AH));
-        setup(freeHz, "freeHz", cells(AX + 19, B, 10, 3)); // drag the rows above the value, click the value to type
+        setup(freeHz, "freeHz", cells(rateX, B, 10, 3)); // drag the rows above the value, click the value to type
 
         prev.onClick = [this] { proc.stepPreset(-1); };
         next.onClick = [this] { proc.stepPreset(1); };
@@ -186,14 +196,13 @@ struct Editor : AudioProcessorEditor, Timer
             bind(id, list);
         };
         row(curves, "curve", curveWords, 0, 0, true);
-        row(colours, "color", colourWords, AX + 6, CY), row(stereos, "stereo", stereoWords, AX + 56, CY);
-        row(triggers, "trigger", triggerWords, AX, B + 2), row(bands, "band", bandWords, RX + 1, 13);
+        row(colours, "color", colourWords, AX + 6, CY), row(stereos, "stereo", stereoWords, AX + 57, CY);
+        row(triggers, "trigger", triggerWords, AX, wordsY), row(bands, "band", bandWords, RX + 3, 11);
         bind("invert", { &invert }), bind("loop", { &loop });
-        auto* tempo = bind("tempoSync", { &free }); // free is the inverse of tempoSync
-        free.onClick = [this, tempo] { tempo->setValueAsCompleteGesture(free.getToggleState() ? 0.0f : 1.0f); };
+        bind("tempoSync", { &free, &sync }); // explicit choices: free = 0, sync = 1, including repeated clicks
         keyAtt.push_back(std::make_unique<ParameterAttachment>(*p.apvts.getParameter("rate"), [](float) {}));
         rateAtt = keyAtt.back().get();
-        for (int k = 0; k < 4; ++k)
+        for (int k = 0; k < rateCount; ++k)
         {
             auto* key = rates.add(new Key("rate " + String(k)));
             key->onClick = [this, k] { rateAtt->setValueAsCompleteGesture((float) (windowStart + k)); };
@@ -201,10 +210,11 @@ struct Editor : AudioProcessorEditor, Timer
         }
         down.onClick = [this] { rateAtt->setValueAsCompleteGesture((float) jmax(0, rate() - 1)); };
         up.onClick = [this] { rateAtt->setValueAsCompleteGesture((float) jmin(gulp::numRates - 1, rate() + 1)); };
-        for (auto [key, r] : { std::pair { &invert, cells(12, 3, 8, 1) }, { &loop, cells(AX, B + 4, 6, 1) }, { &free, cells(AX + 29, B + 4, 6, 1) },
-                               { &down, cells(AX + 19, B + 4, 1, 1) }, { &up, cells(AX + 26, B + 4, 1, 1) } })
+        for (auto [key, r] : { std::pair { &invert, cells(12, 3, 8, 1) }, { &loop, cells(AX, secondaryY, 6, 1) },
+                               { &sync, cells(syncX, wordsY, 4, 2) }, { &free, cells(syncX, secondaryY, 4, 2) },
+                               { &down, cells(rateX, secondaryY, 1, 1) }, { &up, cells(rateX + 7, secondaryY, 1, 1) } })
             layer.addAndMakeVisible(*key), key->setBounds(r);
-        windowStart = jlimit(0, gulp::numRates - 4, rate() - 1);
+        windowStart = jlimit(0, gulp::numRates - rateCount, rate() - 1);
 
         const int stored = proc.editorWidth; // read first: setting the limits already resizes
         setResizable(true, false);
@@ -368,25 +378,31 @@ struct Editor : AudioProcessorEditor, Timer
         g.braille(AX, AT + AH + 2, AW, 2, scope, grey);
 
         // Colour and stereo row; the bottom strip: trigger, rate, shift / thresh / tone.
-        g.put(AX, CY, "color", grey), g.words(AX + 6, CY, colourWords, colour), g.words(AX + 56, CY, stereoWords, stereo);
+        g.put(AX, CY, "color", grey), g.words(AX + 6, CY, colourWords, colour), g.words(AX + 57, CY, stereoWords, stereo);
         g.put(L + 1, B - 1, String::repeatedString(u("─"), RX - L - 2), rule);
-        g.put(AX, B, "trigger", grey), g.words(AX, B + 2, triggerWords, trigger), g.toggle(AX, B + 4, "loop", value("loop") > 0.5f, trigger == 0);
-        g.put(AX + 19, B, "rate", grey), g.toggle(AX + 29, B + 4, "free", isFree);
-        windowStart = jlimit(r - 3, r, windowStart);
+        g.put(AX, B, "trigger", grey), g.words(AX, wordsY, triggerWords, trigger), g.toggle(AX, secondaryY, "loop", value("loop") > 0.5f, trigger == 0);
+        g.put(rateX, B, "rate", grey);
+        g.words(syncX, wordsY, { "sync" }, isFree ? -1 : 0), g.words(syncX, secondaryY, { "free" }, isFree ? 0 : -1);
+        windowStart = jlimit(r - rateCount + 1, r, windowStart);
         StringArray window;
-        for (int k = 0; k < 4; ++k)
+        for (int k = 0; k < rateCount; ++k)
             window.add(gulp::rateNames[windowStart + k]);
-        const int x0 = AX + 19 - jmax(0, window.joinIntoString(" ").length() - 18); // the widest window stays clear of shift
-        for (int k = 0, x = x0; k < 4; x += window[k].length() + 1, ++k)
-            rates[k]->setBounds(cells(x, B + 2, window[k].length(), 2)), rates[k]->setVisible(!isFree), rates[k]->setToggleState(windowStart + k == r, dontSendNotification);
+        // Share all spare cells between the three word gaps, with at most one cell of rounding; sync stays fixed.
+        const int gaps = syncX - rateX - window.joinIntoString("").length();
+        for (int k = 0, used = 0; k < rateCount; used += window[k++].length())
+        {
+            const int x = rateX + used + gaps * k / rateCount;
+            rates[k]->setBounds(cells(x, wordsY, window[k].length(), 2)), rates[k]->setVisible(!isFree), rates[k]->setToggleState(windowStart + k == r, dontSendNotification);
+            if (!isFree) g.words(x, wordsY, { window[k] }, windowStart + k == r ? 0 : -1);
+        }
         freeHz.setVisible(isFree), down.setVisible(!isFree), up.setVisible(!isFree);
         if (isFree)
-            g.centre(AX + 19, 10, B + 2, text("freeHz"), red, true), g.centre(AX + 19, 10, B + 3, String::repeatedString(u("▔"), text("freeHz").length()), red);
+            g.centre(rateX, 10, wordsY, text("freeHz"), red, true), g.centre(rateX, 10, wordsY + 1, String::repeatedString(u("▔"), text("freeHz").length()), red);
         else
-            g.words(x0, B + 2, window, r - windowStart), g.put(AX + 19, B + 4, u("◁"), grey), g.put(AX + 21, B + 4, "more", dark), g.put(AX + 26, B + 4, u("▷"), grey);
+            g.put(rateX, secondaryY, u("◁"), grey), g.put(rateX + 2, secondaryY, "more", dark), g.put(rateX + 7, secondaryY, u("▷"), grey);
         for (const auto& k : knobSpecs)
             knob(g, k.x, k.y, proc.apvts.getParameter(k.id)->getValue(), k.id, text(k.id), k.centred, std::strcmp(k.id, "thresh") == 0 && trigger != 2);
-        g.put(RX + 1, 12, "band", grey), g.words(RX + 1, 13, bandWords, band);
+        g.centre(RX + 4, 14, 10, "band", grey), g.words(RX + 3, 11, bandWords, band);
         // Dotted meters, two steps per cell: the sidechain follower against the threshold (a full-height tick, white
         // when the audio trigger listens; the bar red above it) under the trigger, -60..0 dB; the output peak under its
         // trim, -54..0 dBFS, red at 0. Unlit steps are the dark track.
@@ -399,12 +415,12 @@ struct Editor : AudioProcessorEditor, Timer
         };
         const float sc = proc.feed.scLevel.load(), thresh = value("thresh"), out = proc.feed.outLevel.load();
         const bool listening = trigger == 2;
-        g.put(AX, B + 5, "sc", grey);
-        bar(AX + 3, B + 5, 15, Decibels::gainToDecibels(sc, -100.0f), -60, Decibels::gainToDecibels(sc) > thresh && listening ? red : grey);
-        const int tick = jlimit(0, 29, (int) ((thresh + 60) / 2));
-        g.braille(AX + 3, B + 5, 15, 1, { { tick, 0 }, { tick, 1 }, { tick, 2 }, { tick, 3 } }, listening ? white : dark);
-        g.put(RX + 1, B + 5, "out", grey);
-        bar(RX + 5, B + 5, 9, Decibels::gainToDecibels(out, -100.0f), -54, out >= 1 ? red : white);
+        g.put(AX, readoutY, "sc", grey);
+        bar(AX + 3, readoutY, 12, Decibels::gainToDecibels(sc, -100.0f), -60, Decibels::gainToDecibels(sc) > thresh && listening ? red : grey);
+        const int tick = jlimit(0, 23, roundToInt((thresh + 60) * 23 / 60));
+        g.braille(AX + 3, readoutY, 12, 1, { { tick, 0 }, { tick, 1 }, { tick, 2 }, { tick, 3 } }, listening ? white : dark);
+        g.put(RX + 3, readoutY, "out", grey);
+        bar(RX + 7, readoutY, 11, Decibels::gainToDecibels(out, -100.0f), -54, out >= 1 ? red : white);
 
         // Footer: rate, sync | free, depth, the summary, gain reduction bar.
         int at = 2;
@@ -414,13 +430,13 @@ struct Editor : AudioProcessorEditor, Timer
         const double cycle = isFree ? 1 / value("freeHz") : 240.0 * gulp::rateNum[r] / gulp::rateDen[r] / bpm;
         const double shiftMs = 10 * cycle * (trigger == 0 ? value("shift") : jmax(0.0f, value("shift"))); // a trigger delay is never negative
         const String dot = u(" · ");
-        g.put(at + 1, R - 2, curveWords[curve] + dot + colourWords[colour] + dot + stereoWords[stereo] + dot
+        g.put(at + 1, R - 2, (curveWords[curve] + dot + colourWords[colour] + dot + stereoWords[stereo] + dot
                                  + (band == 0 ? String("full") : bandWords[band] + (band == 1 ? " < " : " > ") + text("split")) + dot
-                                 + String(roundToInt(bpm)) + " bpm" + dot + minus(String(roundToInt(shiftMs))) + " ms", dark);
+                                 + String(roundToInt(bpm)) + " bpm" + dot + minus(String(roundToInt(shiftMs))) + " ms").substring(0, RX - at - 2), dark);
         const int halves = roundToInt(jlimit(0.0f, 1.0f, -Decibels::gainToDecibels(1.0f - duck, -100.0f) / 40) * 18);
-        g.put(RX + 1, R - 2, "gr", grey);
+        g.put(RX + 3, R - 2, "gr", grey);
         for (int k = 0; k < 9; ++k)
-            g.put(RX + 4 + k, R - 2, u(halves >= 2 * k + 2 ? "█" : halves == 2 * k + 1 ? "▌" : "·"), halves > 2 * k ? red : dark);
+            g.put(RX + 6 + k, R - 2, u(halves >= 2 * k + 2 ? "█" : halves == 2 * k + 1 ? "▌" : "·"), halves > 2 * k ? red : dark);
         show(g);
     }
 
@@ -468,7 +484,7 @@ struct Editor : AudioProcessorEditor, Timer
         const auto py = [this](int k) { return roundToInt((float) k * (float) image.getHeight() / R); };
         const auto r = Rectangle<int>::leftTopRightBottom(px(i), py(j), px(i + 1), py(j + 1));
         g.setColour(c.bg.isTransparent() ? page : c.bg), g.fillRect(r);
-        if (c.c == ' ') return;
+        if (c.c == ' ' && c.left <= ' ') return;
         Graphics::ScopedSaveState state(g);
         g.reduceClipRegion(r), g.setColour(c.fg); // nothing spills into a neighbour, which may be redrawn alone
         const float w = (float) image.getWidth() / C, h = (float) image.getHeight() / R, x = (float) r.getX(), y = (float) r.getY();
@@ -478,6 +494,19 @@ struct Editor : AudioProcessorEditor, Timer
             g.fillRect(Rectangle<int>::leftTopRightBottom(roundToInt(x + l * (float) r.getWidth()), roundToInt(y + tp * (float) r.getHeight()),
                                                           roundToInt(x + rt * (float) r.getWidth()), roundToInt(y + bt * (float) r.getHeight())));
         };
+        const auto glyph = [&](juce_wchar code, float offset) {
+            const float gx = (c.left != 0 ? (float) i * w : x + ((float) r.getWidth() - w) / 2) + offset;
+            if (code == 0x2594) g.fillRect(Rectangle<float>(gx, y, w, h * 0.125f));
+            else if (const auto id = fonts[c.bold ? 1 : 0].getTypefacePtr()->getNominalGlyphForCodepoint(code))
+            {
+                const float size = w / 0.6f; // Geist Mono: advance 0.6 em, ascent 1.005 + descent 0.295 em
+                const uint16_t index = (uint16_t) *id;
+                const Point<float> at { gx, y + (h - 1.3f * size) / 2 + 1.005f * size };
+                g.setFont(fonts[c.bold ? 1 : 0]);
+                g.getInternalContext().drawGlyphs({ &index, 1 }, { &at, 1 }, {});
+            }
+        };
+        if (c.left != 0) { glyph(c.left, -w / 2), glyph(c.c, w / 2); return; }
         const int arms = c.c == 0x2500 ? 10 : c.c == 0x2502 ? 5 : c.c == 0x2534 ? 11 : c.c == 0x252c ? 14 : 0; // ─ │ ┴ ┬: up 1 right 2 down 4 left 8
         if (arms != 0)
         {
@@ -520,14 +549,7 @@ struct Editor : AudioProcessorEditor, Timer
             p.startNewSubPath(cx + d * 0.14f * w, cy - 0.14f * h), p.lineTo(cx - d * 0.14f * w, cy + 0.02f * h), p.lineTo(cx + d * 0.14f * w, cy + 0.18f * h);
             g.strokePath(p, PathStrokeType(lw));
         }
-        else if (const auto glyph = fonts[c.bold ? 1 : 0].getTypefacePtr()->getNominalGlyphForCodepoint(c.c))
-        {
-            const float size = w / 0.6f; // Geist Mono: advance 0.6 em, line box ascent 1.005 + descent 0.295 em
-            const uint16_t id = (uint16_t) *glyph;
-            const Point<float> at { x + ((float) r.getWidth() - w) / 2, y + (h - 1.3f * size) / 2 + 1.005f * size };
-            g.setFont(fonts[c.bold ? 1 : 0]);
-            g.getInternalContext().drawGlyphs({ &id, 1 }, { &at, 1 }, {});
-        }
+        else glyph(c.c, 0);
     }
 };
 } // namespace
