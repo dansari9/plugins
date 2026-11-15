@@ -14,7 +14,7 @@ using namespace juce;
 namespace
 {
 constexpr int C = 120, R = 34, W = 1024, H = 576, L = 22, AX = 25, AW = 70, AT = 5, AH = 11, RX = 98, CY = 21, B = 24;
-constexpr int rateX = AX + 18, syncX = rateX + 17, rateCount = 3, wordsY = B + 2, secondaryY = B + 4, readoutY = B + 5;
+constexpr int rateX = AX + 18, syncX = rateX + 17, rateCount = 3, wordsY = B + 2, secondaryY = B + 4, readoutY = B + 5, bandY = 12;
 constexpr float cw = (float) W / C, ch = (float) H / R;
 const Colour page { 0xff0d0d0d }, white { 0xffececec }, grey { 0xff7a7a7a }, rule { 0xff2c2c2c }, dark { 0xff454545 }, red { 0xffff3d1f }, kick { 0xff5a5a5a };
 String u(const char* s) { return String::fromUTF8(s); }
@@ -123,7 +123,7 @@ struct Key : Button
 
 struct KnobSpec { const char* id; int x, y; bool centred; };
 const KnobSpec knobSpecs[] = { { "shift", AX + 42, B + 1, true }, { "thresh", AX + 52, B + 1, false }, { "tone", AX + 62, B + 1, false },
-                               { "depth", RX + 7, 4, false },     { "split", RX + 7, 14, false },     { "output", RX + 7, 24, false } };
+                               { "depth", RX + 7, 4, false },     { "split", RX + 7, 16, false },     { "output", RX + 7, 24, false } };
 
 struct Editor : AudioProcessorEditor, Timer
 {
@@ -197,7 +197,7 @@ struct Editor : AudioProcessorEditor, Timer
         };
         row(curves, "curve", curveWords, 0, 0, true);
         row(colours, "color", colourWords, AX + 6, CY), row(stereos, "stereo", stereoWords, AX + 57, CY);
-        row(triggers, "trigger", triggerWords, AX, wordsY), row(bands, "band", bandWords, RX + 3, 11);
+        row(triggers, "trigger", triggerWords, AX, wordsY), row(bands, "band", bandWords, RX + 3, bandY);
         bind("invert", { &invert }), bind("loop", { &loop });
         bind("tempoSync", { &free, &sync }); // explicit choices: free = 0, sync = 1, including repeated clicks
         keyAtt.push_back(std::make_unique<ParameterAttachment>(*p.apvts.getParameter("rate"), [](float) {}));
@@ -402,7 +402,7 @@ struct Editor : AudioProcessorEditor, Timer
             g.put(rateX, secondaryY, u("◁"), grey), g.put(rateX + 2, secondaryY, "more", dark), g.put(rateX + 7, secondaryY, u("▷"), grey);
         for (const auto& k : knobSpecs)
             knob(g, k.x, k.y, proc.apvts.getParameter(k.id)->getValue(), k.id, text(k.id), k.centred, std::strcmp(k.id, "thresh") == 0 && trigger != 2);
-        g.centre(RX + 4, 14, 10, "band", grey), g.words(RX + 3, 11, bandWords, band);
+        g.centre(RX + 4, 14, bandY - 1, "band", grey), g.words(RX + 3, bandY, bandWords, band);
         // Dotted meters, two steps per cell: the sidechain follower against the threshold (a full-height tick, white
         // when the audio trigger listens; the bar red above it) under the trigger, -60..0 dB; the output peak under its
         // trim, -54..0 dBFS, red at 0. Unlit steps are the dark track.

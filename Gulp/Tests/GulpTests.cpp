@@ -906,7 +906,7 @@ static void testInteraction()
         };
         CHECK(!overlaps());
         for (auto [id, x, y] : { std::tuple { "shift", 66, 24 }, { "thresh", 76, 24 }, { "tone", 86, 24 },
-                                { "depth", 104, 3 }, { "split", 104, 13 }, { "output", 104, 23 } })
+                                { "depth", 104, 3 }, { "split", 104, 15 }, { "output", 104, 23 } })
             CHECK(find(*e, id)->getBounds() == cellArea(x, y, 10, 6));
         const auto dial = [&](const char* id) {
             auto* slider = dynamic_cast<juce::Slider*>(find(*e, id));
@@ -1053,9 +1053,9 @@ static const Golden sounds[] = {
     { 0, 7, "7d71e0e690854b84b833c4ce0dcd2b108e8c60f2f40898cc1c44112155713e48" },
 };
 struct Shot { int percent; const char* hash; };
-static const Shot shots[] = { { 100, "2f487809608e8ac290dbeded9ac053ca279f1bb440e6cb2982b023c28927ed68" },
-                              { 50, "fc0fb80f680a91ca3912cb69a8bc4940503e74eefbce5948df4e4759f0323f04" },
-                              { 200, "087cfdf4577421fd20e5f9604649dcbff71c9ccb4455f97d95a872f7a83678c8" } };
+static const Shot shots[] = { { 100, "ea0d7ba202b441d991fd035d36570bf61d110495f66e8050284257b375446b76" },
+                              { 50, "df7a6e754a46c40b487ae453baba50156bc2af48d7152f1d44bf5571cbc88f54" },
+                              { 200, "8273464045f1029bd4264771f9716a6feca60810a98fd914aacfe7ee2c61c0d1" } };
 static void testGoldens()
 {
     CHECK(render(0, 0) == render(0, 0) && pixels(snapshot(100)) == pixels(snapshot(100)));
