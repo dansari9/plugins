@@ -70,3 +70,21 @@ target_link_libraries(Gulp
         juce::juce_recommended_warning_flags
 )
 
+# One test executable that drives the real processor and editor without a host.
+add_executable(GulpTests Tests/GulpTests.cpp)
+target_include_directories(GulpTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/Source)
+target_link_libraries(GulpTests
+    PRIVATE
+        GulpFonts
+        juce::juce_cryptography
+        Gulp
+        juce::juce_audio_utils
+        juce::juce_recommended_config_flags
+        juce::juce_recommended_warning_flags
+)
+# The tests compare floats bit-exactly on purpose and replace the global operator new.
+if(NOT MSVC)
+    set_source_files_properties(Tests/GulpTests.cpp PROPERTIES COMPILE_OPTIONS "-Wno-float-equal;-Wno-mismatched-new-delete")
+endif()
+set_target_properties(GulpTests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
+target_compile_definitions(GulpTests PRIVATE JUCE_MODAL_LOOPS_PERMITTED=1) # public message pump for the editor tests
