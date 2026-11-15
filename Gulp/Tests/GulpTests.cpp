@@ -7,6 +7,7 @@
 #include <cstring>
 #include <functional>
 #include <iomanip>
+#include <limits>
 #include <iostream>
 #include <new>
 
@@ -243,8 +244,8 @@ static void testState()
         CHECK(m == save(b) && params(a) == params(b) && a.presetName() == b.presetName() && a.abSlot() == b.abSlot());
         if (a.abSlot() == 1) a.selectAb(0), b.selectAb(0), CHECK(params(a) == params(b));
         CHECK(juce::AudioProcessor::getXmlFromBinary(m.getData(), (int) m.getSize())->getIntAttribute("stateVersion") == 1);
-        if (n < 8) // bass + kick sidechain + MIDI + moving host ppq: bit-identical
-        {
+        { // bass + kick sidechain + MIDI + moving host ppq: bit-identical
+
             Proc c;
             load(c, save(a));
             prepare(a, 48000, 256), prepare(c, 48000, 256);
@@ -350,6 +351,123 @@ static void testSync()
     CHECK(*std::min_element(y.begin() + 50000, y.end()) < 0.01f);
 }
 
+// Host edge cases: a non-finite or non-positive tempo freewheels at 120 bpm; a non-finite ppq counts as no position
+// (freewheel at the reported tempo); huge finite ppqs stay in range. Output and phase finite, no invalid conversion
+// (UBSan's float-cast-overflow). period: one quarter in samples to check, 0 = only finite.
+static void testHostEdges()
+{
+    const double nan = std::numeric_limits<double>::quiet_NaN(), inf = std::numeric_limits<double>::infinity();
+    struct Case { double bpm, ppq; bool playing; int period; };
+    for (const auto& c : { Case { nan, 0, false, 24000 }, Case { inf, 0, false, 24000 }, Case { -inf, 0, false, 24000 }, Case { 0, 0, false, 24000 },
+                           Case { -5, 0, false, 24000 }, Case { 96, nan, true, 30000 }, Case { 96, inf, true, 30000 }, Case { 96, -inf, true, 30000 },
+                           Case { nan, nan, true, 24000 }, Case { nan, 3, true, 0 }, Case { 124, 1e300, true, 0 }, Case { 124, -1e300, true, 0 } })
+        for (int trigger : { 0, 1 })
+        {
+            Proc p;
+            set(p, { { "curve", 0 }, { "trigger", (float) trigger }, { "loop", 1 }, { "shift", 20 } });
+            prepare(p, 48000, 512);
+            Host h;
+            Run r = dc(1);
+            r.host = &h, r.notes.push_back(10), r.perBlock = [&](int) { h.bpm = c.bpm, h.ppq = c.ppq, h.playing = c.playing; }; // held
+            const auto y = run(p, 110000, 0, r);
+            const float phase = p.feed.phase.load();
+            CHECK(std::all_of(y.begin(), y.end(), [](float v) { return std::isfinite(v); }) && phase >= 0 && phase <= 1);
+            if (c.period > 0 && trigger == 0)
+            {
+                for (int i = 50000; i < 72000; i += 97) CHECK(std::abs(y[(size_t) i] - y[(size_t) (i + c.period)]) < 1e-3f);
+                CHECK(*std::min_element(y.begin() + 50000, y.end()) < 0.01f);
+            }
+        }
+}
+
+// Lifecycle: stopped with the ppq held freewheels at the reported tempo; no playhead at all = 120 bpm; playing again
+// snaps to the ppq; a state restored after prepareToPlay renders as a fresh instance; re-preparing at 44.1 / 48 / 96 kHz
+// (with delayed triggers pending) resets; zero-length, changing and oversized blocks; offline renders the same.
+static void testLifecycle()
+{
+    for (bool head : { true, false })
+    {
+        Proc p;
+        set(p, "curve", 0);
+        prepare(p, 48000, 512);
+        Host h;
+        h.bpm = 90, h.playing = false;
+        Run r = dc(1);
+        r.host = head ? &h : nullptr, r.perBlock = [&](int) { h.ppq = 7.3; };
+        const auto y = run(p, 120000, 0, r);
+        const int period = head ? 32000 : 24000;
+        for (int i = 50000; i < 80000; i += 97) CHECK(std::abs(y[(size_t) i] - y[(size_t) (i + period)]) < 1e-3f);
+        CHECK(*std::min_element(y.begin() + 50000, y.end()) < 0.01f);
+    }
+    {
+        Proc p;
+        set(p, "curve", 5);
+        prepare(p, 48000, 512);
+        Host h;
+        std::vector<double> ppq;
+        const int n = 6 * 48000;
+        int resumed = -1, checked = 0;
+        Run r = dc(0.5f);
+        r.host = &h, r.ppqs = &ppq, r.perBlock = [&](int start) {
+            h.playing = start >= n / 2;
+            if (!h.playing) h.ppq = 4.6;
+            else if (resumed < 0) resumed = start;
+        };
+        const auto y = run(p, n, 0, r);
+        for (int i = resumed + 144; i < n; ++i)
+        {
+            const double ph = ppq[(size_t) i] - std::floor(ppq[(size_t) i]);
+            if (ph > 0.02 && ph < 0.28) CHECK(y[(size_t) i] < 0.005f), ++checked;
+            if (ph > 0.4 && ph < 0.98) CHECK(y[(size_t) i] > 0.4995f), ++checked;
+        }
+        CHECK(resumed > 0 && checked > n / 3);
+    }
+    const auto render = [](Proc& p, int samples, const std::function<void()>& between = {}) {
+        Host h;
+        Run r;
+        r.host = &h, r.notes = std::vector<int> { 300, 9000, 20000 };
+        if (between) r.perBlock = [&](int) { between(); };
+        return run(p, samples, 0, r);
+    };
+    juce::Random rnd(17);
+    for (int k = 0; k < 6; ++k)
+    {
+        Proc a, b, c;
+        randomise(a, rnd), set(a, { { "trigger", (float) (k % 3) }, { "shift", 30 } });
+        const auto state = save(a);
+        prepare(b, 48000, 256), load(b, state); // restored after prepareToPlay
+        load(c, state), prepare(c, 48000, 256);
+        CHECK(render(b, 30000) == render(c, 30000));
+    }
+    {
+        const Settings s { { "trigger", 1 }, { "shift", 40 }, { "loop", 1 }, { "color", 3 }, { "band", 1 } };
+        Proc p;
+        set(p, s);
+        for (double fs : { 44100.0, 48000.0, 96000.0 })
+        {
+            prepare(p, 48000, 512), render(p, 16000); // notes at 9000 and 20000 still pending
+            prepare(p, fs, 512);
+            Proc q;
+            set(q, s), prepare(q, fs, 512);
+            CHECK(render(p, 30000) == render(q, 30000));
+        }
+    }
+    {
+        const Settings s { { "trigger", 2 }, { "shift", 10 }, { "color", 7 }, { "band", 2 }, { "stereo", 1 } };
+        Proc a, b, c;
+        set(a, s), set(b, s), set(c, s);
+        c.setNonRealtime(true);
+        prepare(a, 48000, 64), prepare(b, 48000, 64), prepare(c, 48000, 64); // blocks of up to 2048 exceed the prepared 64
+        juce::AudioBuffer<float> empty(4, 0);
+        juce::MidiBuffer none;
+        const auto zero = [&] { onAudioThread = true, b.processBlock(empty, none), onAudioThread = false; };
+        const auto y = render(a, 48000);
+        CHECK(y == render(b, 48000, zero) && y == render(c, 48000));
+        CHECK(std::all_of(y.begin(), y.end(), [](float v) { return std::isfinite(v); }));
+    }
+    CHECK(audioAllocations.load() == 0);
+}
+
 // MIDI and audio triggers, loop, shift as a trigger delay.
 static void testTriggers()
 {
@@ -394,6 +512,51 @@ static void testTriggers()
     }
 }
 
+// One shots rest at full level, exactly: before the first trigger and once the cycle has run (loop off), for every
+// curve, both inverts and the slope extremes; MIDI, and audio with and without a sidechain. The trigger at 6000 ducks.
+static void testIdle()
+{
+    for (auto [trigger, sc] : { std::pair { 1, 2 }, { 2, 2 }, { 2, 0 } })
+        for (int curve = 0; curve < 12; ++curve)
+            for (float invert : { 0.0f, 1.0f })
+                for (float slope : { -100.0f, 100.0f })
+                {
+                    Proc p;
+                    set(p, { { "trigger", (float) trigger }, { "curve", (float) curve }, { "invert", invert }, { "slope", slope }, { "rate", 0 } });
+                    prepare(p, 48000, 512, 2, sc);
+                    Run r = dc(1); // no playhead: 120 bpm, 1/32 = 3000 samples
+                    r.notes.push_back(6000), r.sc = [](int i) { return i >= 6000 && i < 6048 ? 0.9f : 0.0f; };
+                    const auto y = run(p, 12000, 0, r);
+                    const bool fired = sc > 0;
+                    CHECK(std::all_of(y.begin(), y.begin() + 6000, [](float v) { return v == 1; }));
+                    CHECK(std::all_of(y.begin() + 9600, y.end(), [](float v) { return v == 1; })); // + 600 samples of slew
+                    CHECK((*std::min_element(y.begin() + 6000, y.begin() + 9000) < 0.9f) == fired);
+                    CHECK(maxStep(y) < 0.081);
+                }
+}
+
+// Trigger delay longer than the hits' spacing: free 2 Hz (24000 samples), shift +50 % = 12000 samples, a hit every
+// 6000: each fires at its own due sample (suck: full duck at its start), across random and fixed block boundaries.
+static void testDelayedTriggers()
+{
+    for (int trigger : { 1, 2 })
+        for (int block : { 0, 512 })
+        {
+            Proc p;
+            set(p, { { "trigger", (float) trigger }, { "tempoSync", 0 }, { "freeHz", 2 }, { "shift", 50 }, { "curve", 9 }, { "slope", -100 }, { "thresh", -6 } });
+            prepare(p, 48000, 512);
+            std::vector<int> hits;
+            for (int t = 1000; t <= 55000; t += 6000) hits.push_back(t);
+            Run r = dc(0.5f);
+            r.notes = hits, r.sc = [](int i) { return i >= 1000 && i < 55048 && (i - 1000) % 6000 < 48 ? 0.9f : 0.0f; };
+            const auto y = run(p, 80000, block, r);
+            int first = 0;
+            while (first < (int) y.size() && y[(size_t) first] == 0.5f) ++first;
+            CHECK(first == 13000);
+            for (int t : hits) CHECK(y[(size_t) t + 11999] > 0.1f && y[(size_t) t + 12080] < 0.01f);
+        }
+}
+
 // Clicks: the per-sample gain step stays under the 0.25 ms slew's bound (0.08 at 48 kHz) on a retrigger mid-duck and
 // curve swaps; a retrigger never goes up before it goes down; band and colour switches are crossfaded.
 static void testClicks()
@@ -435,6 +598,10 @@ static void testClicks()
     }
 }
 
+// A MIDI note at sample 0 starts slam stretched to 4.8 s of a 4/1 cycle: duck 1 for the whole of a short render.
+static const Settings plateau { { "trigger", 1 }, { "curve", 5 }, { "slope", 100 }, { "rate", 15 } };
+static Settings operator+(Settings a, const Settings& b) { a.insert(a.end(), b.begin(), b.end()); return a; }
+
 // Band split: depth 0 full is the dry signal bit for bit; lows at 100 % leaves 2 kHz alone and ducks 50 Hz; the LR4
 // lows + highs sum is flat.
 static void testBands()
@@ -463,27 +630,27 @@ static void testBands()
         prepare(p, 48000, 512);
         Host h;
         Run r;
-        r.in = [hz](int i, int) { return (float) (0.5 * std::sin(2 * pi * hz * i / 48000)); }, r.host = &h;
+        r.in = [hz](int i, int) { return (float) (0.5 * std::sin(2 * pi * hz * i / 48000)); }, r.host = &h, r.notes.push_back(0);
         return rmsDb(run(p, 96000, 512, r), 24000) - 10 * std::log10(0.125);
     };
-    const Settings pumping { { "band", 1 } }, lows { { "band", 1 }, { "trigger", 1 }, { "invert", 1 } }, highs { { "band", 2 }, { "trigger", 1 }, { "invert", 1 } };
+    const Settings pumping { { "band", 1 } }, lows { { "band", 1 } }, highs { { "band", 2 } };
     CHECK(std::abs(level(pumping, 2000)) < 0.05 && level(pumping, 50) < -1);
-    CHECK(std::abs(level(lows, 2000)) < 0.05 && level(lows, 50) < -30); // duck 1 throughout (as in testColours)
-    CHECK(std::abs(level(highs, 20)) < 0.05 && level(highs, 5000) < -30); // LR4 at a sixth of the split: -0.007 dB
+    CHECK(std::abs(level(lows + plateau, 2000)) < 0.05 && level(lows + plateau, 50) < -30); // duck 1 throughout (as in testColours)
+    CHECK(std::abs(level(highs + plateau, 20)) < 0.05 && level(highs + plateau, 5000) < -30); // LR4 at a sixth of the split: -0.007 dB
     for (double hz : { 30.0, 120.0, 500.0, 4000.0 })
         CHECK(std::abs(level({ { "band", 1 }, { "depth", 0 } }, hz)) < 0.01);
 }
 
-// Colour modes: near dry at a = 0 (exact for level, bottom, top, hollow, grit); at a = 1 (MIDI trigger waiting with
-// the curve inverted: duck 1 throughout) each does what it says. Mid / side leave the other component bit-exact.
+// Colour modes: near dry at a = 0 (exact for level, bottom, top, hollow, grit); at a = 1 (the slam plateau: duck 1
+// throughout) each does what it says. Mid / side leave the other component bit-exact.
 static void testColours()
 {
     const auto render = [](int colour, float depth, std::function<float(int)> in, Settings extra = {}) {
         Proc p;
-        set(p, { { "trigger", 1 }, { "invert", 1 }, { "color", (float) colour }, { "depth", depth } }), set(p, extra);
+        set(p, plateau + Settings { { "color", (float) colour }, { "depth", depth } }), set(p, extra);
         prepare(p, 48000, 512);
         Run r;
-        r.in = [in](int i, int) { return in(i); };
+        r.in = [in](int i, int) { return in(i); }, r.notes.push_back(0);
         return run(p, 72000, 512, r);
     };
     const auto sine = [](double hz) { return [hz](int i) { return (float) (0.5 * std::sin(2 * pi * hz * i / 48000)); }; };
@@ -644,6 +811,60 @@ static void testEditorSizes()
     }
 }
 
+// Telemetry: the input level, the output trim and the sidechain level move the output scope and meters and the
+// sidechain meter; the threshold moves its mark. No control moves, and none covers the scope or the meters.
+static juce::Rectangle<int> cellArea(int x, int y, int w, int h) // the editor's cells() at 100 %
+{
+    const auto px = [](int k) { return juce::roundToInt(1024.0f / 120 * (float) k); };
+    const auto py = [](int k) { return juce::roundToInt(576.0f / 34 * (float) k); };
+    return juce::Rectangle<int>::leftTopRightBottom(px(x), py(y), px(x + w), py(y + h));
+}
+static void testTelemetry()
+{
+    Proc p;
+    set(p, { { "trigger", 2 }, { "depth", 0 } });
+    prepare(p, 48000, 512);
+    Host h;
+    float in = 1, sc = 1;
+    Run r;
+    r.host = &h, r.in = [&](int i, int c) { return in * bass(i) * (c == 0 ? 1.0f : 0.7f); }, r.sc = [&](int i) { return sc * kick(i); };
+    std::unique_ptr<juce::AudioProcessorEditor> e(p.createEditor());
+    auto& timer = dynamic_cast<juce::Timer&>(*e);
+    timer.stopTimer();
+    auto* layer = find(*e, "prev")->getParentComponent();
+    const auto controls = [&] {
+        std::vector<juce::Rectangle<int>> v;
+        for (auto* c : layer->getChildren()) if (c->isVisible()) v.push_back(c->getBounds());
+        return v;
+    };
+    const auto before = controls();
+    const juce::Rectangle<int> scope = cellArea(25, 19, 70, 2), scMeter = cellArea(25, 30, 18, 1), outMeter = cellArea(98, 30, 15, 1);
+    int offset = 0;
+    const auto frame = [&] {
+        r.offset = offset, offset += 24000, run(p, 24000, 512, r);
+        timer.timerCallback();
+        return e->createComponentSnapshot(e->getLocalBounds(), true, 1.0f);
+    };
+    const auto look = [](const juce::Image& image, juce::Rectangle<int> area) { return pixels(image.getClippedImage(area)); };
+    const auto loud = frame();
+    const float out0 = p.feed.outLevel, sc0 = p.feed.scLevel;
+    in = 0.1f;
+    const auto quiet = frame();
+    const float out1 = p.feed.outLevel;
+    CHECK(out0 > 0.3f && out1 < 0.5f * out0 && look(quiet, outMeter) != look(loud, outMeter) && look(quiet, scope) != look(loud, scope));
+    set(p, "output", -12);
+    const auto trimmed = frame();
+    CHECK(p.feed.outLevel < 0.5f * out1 && look(trimmed, outMeter) != look(quiet, outMeter));
+    sc = 0.1f;
+    const auto soft = frame();
+    CHECK(sc0 > 0.01f && p.feed.scLevel < 0.5f * sc0 && look(soft, scMeter) != look(trimmed, scMeter));
+    set(p, "thresh", -6), timer.timerCallback();
+    CHECK(look(e->createComponentSnapshot(e->getLocalBounds(), true, 1.0f), scMeter) != look(soft, scMeter));
+    CHECK(controls() == before);
+    for (const auto& c : controls())
+        for (const auto& area : { scope, scMeter, outMeter }) CHECK(!c.intersects(area));
+}
+
 // Every control through the component tree and JUCE's handlers (not peer hit-testing): knobs, the slope area and the
 // free rate drag with the Slider's 250 px sensitivity, reset on Slider::mouseDoubleClick and type on Label::showEditor;
 // words, toggles, curve rows and the header are Button clicks. Visible controls never overlap.
@@ -798,21 +1019,21 @@ static juce::String render(int trigger, int colour)
 struct Golden { int trigger, colour; const char* hash; };
 // Captured on Debian 13 x86-64, GCC 14.2, glibc 2.41, JUCE's software renderer (enforced only where the probes match).
 static const Golden sounds[] = {
-    { 0, 0, "33debc2515dd7f1f84f31226e442f897ce4331bc144050126d81e1f95aea1308" },
+    { 0, 0, "c7b229c3a57632920e0fa841a4c117377342fe461478f56e67b545b3d23b959e" },
     { 1, 0, "2fbf5f15b256e0590bbfd6847bd8b68ccefbb1e2abd5faf65653ee8b27b9a436" },
     { 2, 0, "b77f5685ee4c16e8e30543ededa8361e18702c13a8fefef8ffe62175272b3063" },
-    { 0, 1, "926639b082848ad4a2b68a47bd4d22fb87269ee1a65da4391704ac89f7c576b8" },
+    { 0, 1, "f44916789ec6453ddb1a4a885cc13b4277576503cc7375aa609c37f07b5723a1" },
     { 0, 2, "6318eb73d7dfd7cb662f100bf639489c6b41a25c309200710c12ecf532e85e8b" },
-    { 0, 3, "9d50a5fc92ea982aa680174da4564b8ee7f1469992c47617a3e385c4896c109a" },
-    { 0, 4, "061e5aa1109a1e38096a65ce9b488d67829aa4b89babe5e42089a68b40451345" },
-    { 0, 5, "0123385a3dea511d438a1d42016ead4633a485c24ec9c6d6e633bd116dcf0d1d" },
+    { 0, 3, "bd49f8faf600a17e7a2a9781f6a9b6c9a854d7a61a00b6ef432e318d40de51b1" },
+    { 0, 4, "850f2bdb67d1f4e3af6e4f530a807b5d0195468a0e7f2c3ec61b638c9c7fb75b" },
+    { 0, 5, "870f3ebabe67575d8b523519eb6104c53f09f99d722d1f28ecbc6e0d19d7e9bb" },
     { 0, 6, "5613e509889f1ad83fba9eeb8402575351241443d04d17499c5efbe04843d753" },
     { 0, 7, "7d71e0e690854b84b833c4ce0dcd2b108e8c60f2f40898cc1c44112155713e48" },
 };
 struct Shot { int percent; const char* hash; };
-static const Shot shots[] = { { 100, "b5967e602e97d754b01e8a83a495d4761a441c4399b7187cefd5f65fad8ca84a" },
-                              { 50, "fb17c38573f4d22b32f7d6ecd4b311a251cc19d196cf8a12b4984cb24f8b99ab" },
-                              { 200, "c36faadaa8ab7e7f06e20e5304bb10c57d7273f9153277ff91cfc68b831702df" } };
+static const Shot shots[] = { { 100, "3c1338fb53bafbbe63779a861aa321eedd943827ff287f22e97066c77a3164f1" },
+                              { 50, "f5c30c0a0d6cda414155608229387d3cd6a94ae0f81c8067373023ddf2ae8ee0" },
+                              { 200, "709930b94f50db67a5e6b4d2ff5acc24f9125ee56edbc8712bc29fa0dabc3dab" } };
 static void testGoldens()
 {
     CHECK(render(0, 0) == render(0, 0) && pixels(snapshot(100)) == pixels(snapshot(100)));
@@ -874,12 +1095,17 @@ int main(int argc, char** argv)
     testState();
     testPresets();
     testSync();
+    testHostEdges();
     testTriggers();
+    testIdle();
+    testDelayedTriggers();
     testClicks();
     testBands();
     testColours();
+    testLifecycle();
     testRealtime();
     testEditorSizes();
+    testTelemetry();
     testInteraction();
     std::cout << (failures == 0 ? "All Gulp tests passed\n" : "Gulp tests FAILED\n");
     return failures == 0 ? 0 : 1;

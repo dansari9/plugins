@@ -17,13 +17,14 @@ inline constexpr int rateDen[numRates] { 32, 24, 16, 32, 12, 8, 16, 6, 4, 8, 3, 
 // The 12 curves: duck amount at phase 0..1 (0 = full level, 1 = silent); s scales the release (0.5 .. 2).
 double duck(int curve, double phase, double s);
 
-// Audio thread -> editor, relaxed atomics: where the cycle is, the duck amount, and one cycle of the sidechain folded
-// into `bins` columns (signed min and max), so the kick shows as a ghost under the curve.
+// Audio thread -> editor, relaxed atomics: where the cycle is, the duck amount, the peak (linear, per block) of the
+// sidechain follower the threshold sees and of the output, and one cycle of the sidechain and of the post-trim output
+// folded into `bins` columns (signed min and max): the kick ghost under the curve and the output scope.
 struct Feed
 {
     static constexpr int bins = 140;
-    std::atomic<float> phase { 0 }, duck { 0 }, bpm { 120 };
-    std::array<std::atomic<float>, bins> lo {}, hi {};
+    std::atomic<float> phase { 0 }, duck { 0 }, bpm { 120 }, scLevel { 0 }, outLevel { 0 };
+    std::array<std::atomic<float>, bins> lo {}, hi {}, outLo {}, outHi {};
 };
 
 struct Preset

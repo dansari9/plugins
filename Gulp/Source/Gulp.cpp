@@ -143,9 +143,14 @@ struct GulpProcessor::Dsp
     Svf cross[2][4];                  // per channel: two lowpass, two highpass sections (LR4)
     ColourState state[2][3][gulp::numColors]; // per channel, band (full, lows, highs) and colour mode
     Coefs k;
-    double cycle = 1, aim = 0, a = 0, hold = 0, env = 0, lo = 0, hi = 0;
+    double cycle = 1, aim = 0, a = 0, hold = 0, env = 0, lo = 0, hi = 0, outEnv = 0, outLo = 0, outHi = 0;
     bool armed = false, scArmed = true;
-    int holdoff = 0, pending = -1, bin = 0, tick = 0;
+    int holdoff = 0, bin = 0;
+    unsigned tick = 0; // only its low bits are used: wraps, never overflows
+    // Delayed triggers: one flag per sample, a ring as long as the longest delay (50 % of 4/1 at 20 bpm = 24 s), so
+    // every hit fires at its own due sample however close together they come. Sized in prepare, never on the audio thread.
+    std::vector<bool> due;
+    size_t now = 0;
 
     void prepare(double sr)
     {
@@ -157,10 +162,12 @@ struct GulpProcessor::Dsp
             s->reset(fs, 0.01);
         for (auto& s : colours)
             s.reset(fs, 0.01);
+        due.assign((size_t) std::ceil(24 * fs) + 2, false);
     }
     void reset()
     {
-        cycle = 1, aim = a = hold = env = lo = hi = 0, armed = false, scArmed = true, holdoff = 0, pending = -1, bin = tick = 0;
+        cycle = 1, aim = a = hold = env = lo = hi = outEnv = outLo = outHi = 0, armed = false, scArmed = true, holdoff = bin = 0, tick = 0;
+        std::fill(due.begin(), due.end(), false), now = 0;
         tableKey[0] = -1;
         for (auto& c : cross) for (auto& s : c) s = {};
         for (auto& c : state) for (auto& b : c) for (auto& s : b) s = {};
@@ -223,6 +230,7 @@ GulpProcessor::GulpProcessor(File directory)
 {
     for (int i = 0; i < gulp::numParams; ++i)
         dsp->raw[(size_t) i] = apvts.getRawParameterValue(ids[i]);
+    dsp->prepare(48000); // usable even if a host processes before prepareToPlay
 }
 
 GulpProcessor::~GulpProcessor() = default;
@@ -254,21 +262,26 @@ void GulpProcessor::processBlock(AudioBuffer<float>& buffer, MidiBuffer& midi)
     const bool loop = p(Loop) > 0.5f, tempo = p(TempoSync) > 0.5f;
 
     // Sync: the phase comes from the host's ppq at every block start and advances per sample, so tempo changes and
-    // loop jumps land on the grid. Stopped or without a position it freewheels at the host tempo (120 if unknown).
+    // loop jumps land on the grid. Stopped or without a usable position it freewheels at the host tempo (120 if the
+    // host reports none, or a non-finite or non-positive one). A non-finite ppq counts as no position.
     double bpm = 120, ppq = 0;
     bool playing = false;
     if (auto* head = getPlayHead())
         if (const auto pos = head->getPosition())
         {
-            bpm = jlimit(20.0, 999.0, pos->getBpm().orFallback(120.0));
-            if (const auto q = pos->getPpqPosition(); q && pos->getIsPlaying())
+            if (const auto b = pos->getBpm(); b && std::isfinite(*b) && *b > 0)
+                bpm = jlimit(20.0, 999.0, *b);
+            if (const auto q = pos->getPpqPosition(); q && std::isfinite(*q) && pos->getIsPlaying())
                 playing = true, ppq = *q;
         }
     const double quarters = 4.0 * gulp::rateNum[rate] / gulp::rateDen[rate];
+    // bpm 20..999, freeHz 0.1..20 and fs sanitized in prepare: inc is always finite and positive.
     const double inc = (tempo ? bpm / 60 / quarters : (double) p(FreeHz)) / d.fs, shift = p(Shift) / 100.0;
-    if (trigger == 0)
-        d.cycle = playing && tempo ? ppq / quarters : d.cycle - std::floor(d.cycle);
-    const int delay = trigger == 0 ? 0 : (int) std::lround(jmax(0.0, shift) / inc); // positive shift delays a trigger
+    if (trigger == 0) // the cycle stays in [0, 1) whatever the ppq (fmod is exact; ppq / quarters could overflow)
+        d.cycle = playing && tempo ? std::fmod(ppq, quarters) / quarters : d.cycle, d.cycle -= std::floor(d.cycle);
+    const size_t ring = d.due.size(); // positive shift delays a trigger
+    const size_t delay = trigger == 0 ? 0 : (size_t) jmin((long) ring - 1, std::lround(jmax(0.0, shift) / inc));
+    double scPeak = d.env, outPeak = d.outEnv; // the meters: the followers' peaks over the block
     const double threshold = Decibels::decibelsToGain((double) p(Thresh)), rearm = threshold * Decibels::decibelsToGain(-3.0);
     auto event = midi.cbegin();
     double phase = 0;
@@ -290,32 +303,30 @@ void GulpProcessor::processBlock(AudioBuffer<float>& buffer, MidiBuffer& midi)
         else if (d.env < rearm)
             d.scArmed = true;
         if (hit)
-            d.pending = delay;
-        if (d.pending == 0) // a retrigger starts its attack from where the duck is: no up-then-down step
+            d.due[(d.now + delay) % ring] = true;
+        const bool fire = d.due[d.now];
+        d.due[d.now] = false, d.now = (d.now + 1) % ring;
+        if (fire && trigger != 0) // a retrigger starts its attack from where the duck is: no up-then-down step
             d.cycle = 0, d.armed = true, d.hold = jmax(d.aim, d.a);
-        d.pending = jmax(-1, d.pending - 1);
+        bool idle = false;
         if (trigger == 0)
             phase = d.cycle - shift, phase -= std::floor(phase), d.cycle += inc;
-        else // one shot: holds at phase 1 until the next trigger
+        else // before the first trigger, and after a one shot has run (loop off): full level until the next trigger
         {
             phase = !d.armed ? 1 : loop ? d.cycle - std::floor(d.cycle) : jmin(d.cycle, 1.0);
+            idle = !d.armed || (!loop && phase >= 1);
             d.cycle = loop ? phase + inc : jmin(d.cycle + inc, 1.0);
         }
 
         const double x = phase * 1024;
         const int j = jmin(1023, (int) x);
-        const double aim = d.depth.getNextValue() * (d.table[(size_t) j] + (x - j) * (d.table[(size_t) j + 1] - d.table[(size_t) j]));
-        if (d.hold > 0 && (aim >= d.hold || d.table[(size_t) j + 1] <= d.table[(size_t) j]))
+        const double depth = d.depth.getNextValue();
+        const double aim = idle ? 0.0 : depth * (d.table[(size_t) j] + (x - j) * (d.table[(size_t) j + 1] - d.table[(size_t) j]));
+        if (idle || (d.hold > 0 && (aim >= d.hold || d.table[(size_t) j + 1] <= d.table[(size_t) j])))
             d.hold = 0;
         d.aim = jmax(aim, d.hold);
         // 0.25 ms: inaudible on attacks, removes steps from curve swaps. Lands exactly (the one-pole alone stalls an ulp short).
         d.a = std::abs(d.aim - d.a) < 1e-9 ? d.aim : d.a + (d.aim - d.a) * d.slew;
-
-        const int b = jmin(gulp::Feed::bins - 1, (int) (phase * gulp::Feed::bins)); // fold the sidechain into the cycle
-        if (b != d.bin)
-            feed.lo[(size_t) d.bin].store((float) d.lo, std::memory_order_relaxed), feed.hi[(size_t) d.bin].store((float) d.hi, std::memory_order_relaxed), d.bin = b, d.lo = d.hi = s;
-        else
-            d.lo = jmin(d.lo, s), d.hi = jmax(d.hi, s);
 
         const double splitLog2 = d.split.getNextValue(), tone = d.tone.getNextValue(), out = d.gain.getNextValue(), wMid = d.mid.getNextValue(), wSide = d.side.getNextValue();
         double wBand[3], wColour[gulp::numColors];
@@ -348,12 +359,33 @@ void GulpProcessor::processBlock(AudioBuffer<float>& buffer, MidiBuffer& midi)
         if (channels == 1)
             change[1] = change[0];
         const double m = 0.5 * wMid * (change[0] + change[1]), sd = 0.5 * wSide * (change[0] - change[1]);
+        double o = 0, peak = 0;
         for (int c = 0; c < channels; ++c)
-            buffer.setSample(c, i, (float) ((in[c] + m + (c == 0 ? sd : -sd)) * out));
+        {
+            const double y = (in[c] + m + (c == 0 ? sd : -sd)) * out;
+            buffer.setSample(c, i, (float) y);
+            o += y / channels, peak = jmax(peak, std::abs(y));
+        }
+
+        // Telemetry: the followers (instant attack, 50 ms release) for the meters; the sidechain and the output folded
+        // into the cycle for the kick ghost and the output scope.
+        d.outEnv = jmax(peak, d.outEnv * d.envRelease);
+        scPeak = jmax(scPeak, d.env), outPeak = jmax(outPeak, d.outEnv);
+        const int b = jmin(gulp::Feed::bins - 1, (int) (phase * gulp::Feed::bins));
+        if (b != d.bin)
+        {
+            const auto k = (size_t) d.bin;
+            feed.lo[k].store((float) d.lo, std::memory_order_relaxed), feed.hi[k].store((float) d.hi, std::memory_order_relaxed);
+            feed.outLo[k].store((float) d.outLo, std::memory_order_relaxed), feed.outHi[k].store((float) d.outHi, std::memory_order_relaxed);
+            d.bin = b, d.lo = d.hi = s, d.outLo = d.outHi = o;
+        }
+        else
+            d.lo = jmin(d.lo, s), d.hi = jmax(d.hi, s), d.outLo = jmin(d.outLo, o), d.outHi = jmax(d.outHi, o);
     }
     for (int c = channels; c < getTotalNumOutputChannels(); ++c)
         buffer.clear(c, 0, n);
     feed.phase.store((float) phase, std::memory_order_relaxed), feed.duck.store((float) d.a, std::memory_order_relaxed), feed.bpm.store((float) bpm, std::memory_order_relaxed);
+    feed.scLevel.store((float) scPeak, std::memory_order_relaxed), feed.outLevel.store((float) outPeak, std::memory_order_relaxed);
 }
 
 // ================================ State, presets, A/B ================================

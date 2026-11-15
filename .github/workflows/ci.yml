@@ -159,8 +159,8 @@ jobs:
 
       - name: Universal binary check
         run: |
-          lipo -archs Gulp/build/Gulp_artefacts/Release/AU/gulp.component/Contents/MacOS/gulp | tee /dev/stderr | grep -q "x86_64 arm64"
-          lipo -archs Gulp/build/Gulp_artefacts/Release/VST3/gulp.vst3/Contents/MacOS/gulp | grep -q "x86_64 arm64"
+          lipo -verify_arch x86_64 arm64 Gulp/build/Gulp_artefacts/Release/AU/gulp.component/Contents/MacOS/gulp
+          lipo -verify_arch x86_64 arm64 Gulp/build/Gulp_artefacts/Release/VST3/gulp.vst3/Contents/MacOS/gulp
 
       - name: auval
         run: |
@@ -170,6 +170,14 @@ jobs:
           sleep 3
           auval -a | grep -i Dwks || true
           auval -v aumf Gulp Dwks
+
+      - name: pluginval (strictness 10, AU + VST3)
+        run: |
+          curl -sL -o pluginval.zip https://github.com/Tracktion/pluginval/releases/latest/download/pluginval_macOS.zip
+          unzip -q pluginval.zip
+          PV=pluginval.app/Contents/MacOS/pluginval
+          $PV --strictness-level 10 --validate-in-process --validate ~/Library/Audio/Plug-Ins/Components/gulp.component
+          $PV --strictness-level 10 --validate-in-process --validate Gulp/build/Gulp_artefacts/Release/VST3/gulp.vst3
 
       - name: Package (zip keeps bundle permissions)
         run: cd Gulp/build/Gulp_artefacts/Release && ditto -c -k --keepParent AU/gulp.component "$GITHUB_WORKSPACE/Gulp-AU-macos.zip" && ditto -c -k --keepParent VST3/gulp.vst3 "$GITHUB_WORKSPACE/Gulp-VST3-macos.zip"

@@ -232,9 +232,10 @@ struct Editor : AudioProcessorEditor, Timer
         std::vector<float> now;
         for (auto* param : proc.getParameters())
             now.push_back(param->getValue());
-        now.insert(now.end(), { proc.feed.phase.load(), proc.feed.duck.load(), proc.feed.bpm.load(), (float) proc.preset.load(), (float) proc.abSlot() });
-        for (int k = 0; k < gulp::Feed::bins; ++k)
-            now.insert(now.end(), { proc.feed.lo[(size_t) k].load(), proc.feed.hi[(size_t) k].load() });
+        const auto& f = proc.feed;
+        now.insert(now.end(), { f.phase.load(), f.duck.load(), f.bpm.load(), f.scLevel.load(), f.outLevel.load(), (float) proc.preset.load(), (float) proc.abSlot() });
+        for (size_t k = 0; k < gulp::Feed::bins; ++k)
+            now.insert(now.end(), { f.lo[k].load(), f.hi[k].load(), f.outLo[k].load(), f.outHi[k].load() });
         if (now == drawnFrom && proc.presetName() == drawnName)
             return;
         drawnFrom = std::move(now), drawnName = proc.presetName();
@@ -358,6 +359,13 @@ struct Editor : AudioProcessorEditor, Timer
             g.centre(AX + (int) std::nearbyint(i * (AW - 1) / 4.0) - 3, 7, AT + AH + 1, t, dark);
         }
         g.put(ph, AT + AH, u("▲"), red);
+        // The output scope: the post-trim output over the same cycle, full scale = the strip's height.
+        Dots scope;
+        const auto level = [](float v) { return (int) std::nearbyint((1 - (jlimit(-1.0f, 1.0f, v) + 1) / 2) * 7); };
+        for (size_t k = 0; k < gulp::Feed::bins; ++k)
+            for (int t = level(proc.feed.outHi[k].load()); t <= level(proc.feed.outLo[k].load()); ++t)
+                scope.push_back({ (int) k, t });
+        g.braille(AX, AT + AH + 2, AW, 2, scope, grey);
 
         // Colour and stereo row; the bottom strip: trigger, rate, shift / thresh / tone.
         g.put(AX, CY, "color", grey), g.words(AX + 6, CY, colourWords, colour), g.words(AX + 56, CY, stereoWords, stereo);
@@ -379,6 +387,24 @@ struct Editor : AudioProcessorEditor, Timer
         for (const auto& k : knobSpecs)
             knob(g, k.x, k.y, proc.apvts.getParameter(k.id)->getValue(), k.id, text(k.id), k.centred, std::strcmp(k.id, "thresh") == 0 && trigger != 2);
         g.put(RX + 1, 12, "band", grey), g.words(RX + 1, 13, bandWords, band);
+        // Dotted meters, two steps per cell: the sidechain follower against the threshold (a full-height tick, white
+        // when the audio trigger listens; the bar red above it) under the trigger, -60..0 dB; the output peak under its
+        // trim, -54..0 dBFS, red at 0. Unlit steps are the dark track.
+        const auto bar = [&g](int x, int y, int cells, float db, float floorDb, Colour on) {
+            const int halves = roundToInt(jlimit(0.0f, 1.0f, (db - floorDb) / -floorDb) * (float) (2 * cells));
+            Dots lit, track;
+            for (int k = 0; k < 2 * cells; ++k)
+                for (int t : { 1, 2 }) (k < halves ? lit : track).push_back({ k, t });
+            g.braille(x, y, cells, 1, track, rule), g.braille(x, y, cells, 1, lit, on, over);
+        };
+        const float sc = proc.feed.scLevel.load(), thresh = value("thresh"), out = proc.feed.outLevel.load();
+        const bool listening = trigger == 2;
+        g.put(AX, B + 5, "sc", grey);
+        bar(AX + 3, B + 5, 15, Decibels::gainToDecibels(sc, -100.0f), -60, Decibels::gainToDecibels(sc) > thresh && listening ? red : grey);
+        const int tick = jlimit(0, 29, (int) ((thresh + 60) / 2));
+        g.braille(AX + 3, B + 5, 15, 1, { { tick, 0 }, { tick, 1 }, { tick, 2 }, { tick, 3 } }, listening ? white : dark);
+        g.put(RX + 1, B + 5, "out", grey);
+        bar(RX + 5, B + 5, 9, Decibels::gainToDecibels(out, -100.0f), -54, out >= 1 ? red : white);
 
         // Footer: rate, sync | free, depth, the summary, gain reduction bar.
         int at = 2;
