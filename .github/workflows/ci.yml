@@ -159,8 +159,8 @@ jobs:
 
       - name: Universal binary check
         run: |
-          lipo -verify_arch x86_64 arm64 Gulp/build/Gulp_artefacts/Release/AU/gulp.component/Contents/MacOS/gulp
-          lipo -verify_arch x86_64 arm64 Gulp/build/Gulp_artefacts/Release/VST3/gulp.vst3/Contents/MacOS/gulp
+          lipo Gulp/build/Gulp_artefacts/Release/AU/gulp.component/Contents/MacOS/gulp -verify_arch arm64 x86_64
+          lipo Gulp/build/Gulp_artefacts/Release/VST3/gulp.vst3/Contents/MacOS/gulp -verify_arch arm64 x86_64
 
       - name: auval
         run: |
