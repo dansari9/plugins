@@ -1,5 +1,6 @@
 // GulpTests: drives the real processor and editor without a host. Exit code 1 on failure.
-//   GulpTests --screenshot a.png   render the editor (100 %, 2x pixels) after a few cycles of bass + kick at preset 03
+//   GulpTests --screenshot a.png [id=value ...]   render the editor (100 %, 2x pixels) after a few cycles of bass + kick
+//   at preset 03, with any parameters changed (the design mock: shift=20 soothe=40)
 #include "Gulp.h"
 #include "BinaryData.h"
 #include <juce_cryptography/juce_cryptography.h>
@@ -55,7 +56,7 @@ using Settings = std::vector<std::pair<const char*, float>>;
 constexpr double pi = juce::MathConstants<double>::pi;
 // FROZEN: this list is the contract with every saved session. The test fails if the plug-in's list changes.
 static const juce::StringArray ids { "trigger", "tempoSync", "rate", "freeHz", "curve", "slope", "invert", "depth", "shift",
-                                     "loop",    "thresh",    "band", "split",  "output", "color", "tone",  "stereo" };
+                                     "loop",    "thresh",    "band", "split",  "output", "color", "tone",  "stereo", "soothe" };
 
 static void set(Proc& p, const char* id, float v) { auto* q = p.apvts.getParameter(id); q->setValueNotifyingHost(q->convertTo0to1(v)); }
 static void set(Proc& p, const Settings& s) { for (auto& [id, v] : s) set(p, id, v); }
@@ -178,7 +179,7 @@ static void testIdentity()
     CHECK(JucePlugin_ManufacturerCode == 0x44776b73); // 'Dwks'
     CHECK(juce::String(JUCE_STRINGIFY(JucePlugin_AUMainType)) == "'aumf'");
     CHECK(juce::String(JUCE_STRINGIFY(JucePlugin_CFBundleIdentifier)) == "com.dripworks.gulp");
-    CHECK(juce::String(JucePlugin_Name) == "gulp" && juce::String(JucePlugin_Manufacturer) == "daveydidit" && juce::String(JucePlugin_VersionString) == "0.1.0");
+    CHECK(juce::String(JucePlugin_Name) == "gulp" && juce::String(JucePlugin_Manufacturer) == "daveydidit" && juce::String(JucePlugin_VersionString) == "0.2.0");
     static_assert(JUCE_VST3_CAN_REPLACE_VST2 == 0 && JUCE_FORCE_USE_LEGACY_PARAM_IDS == 0, "frozen host-facing IDs");
     CHECK(!JucePlugin_IsSynth && JucePlugin_WantsMidiInput && !JucePlugin_ProducesMidiOutput);
     // Golden: id -> range and default (floats), item list and default (choices), default (switches).
@@ -191,15 +192,16 @@ static void testIdentity()
                               { "slope", -100, 100, 0, nullptr }, { "invert", 0, 1, 0, "" }, { "depth", 0, 100, 100, nullptr },
                               { "shift", -50, 50, 0, nullptr }, { "loop", 0, 1, 0, "" }, { "thresh", -60, 0, -24, nullptr },
                               { "band", 0, 2, 0, "full,lows,highs" }, { "split", 20, 5120, 120, nullptr }, { "output", -24, 12, 0, nullptr },
-                              { "color", 0, 7, 0, "level,bottom,top,dark,thin,pinch,hollow,grit" }, { "tone", 0, 100, 50, nullptr },
-                              { "stereo", 0, 2, 0, "both,mid,side" } };
+                              { "color", 0, 7, 0, "vol,lows,highs,dark,thin,pinch,hollow,grit" }, { "tone", 0, 100, 50, nullptr },
+                              { "stereo", 0, 2, 0, "both,mid,side" }, { "soothe", 0, 100, 0, nullptr } };
     Proc p;
-    CHECK(p.getParameters().size() == 17 && p.getName() == "gulp" && p.acceptsMidi() && p.getNumPrograms() == 10);
+    CHECK(p.getParameters().size() == 18 && p.getName() == "gulp" && p.acceptsMidi() && p.getNumPrograms() == 10);
     for (int i = 0; i < p.getParameters().size(); ++i)
     {
         auto* q = dynamic_cast<juce::RangedAudioParameter*>(p.getParameters()[i]);
         const auto& g = golden[i];
-        CHECK(q != nullptr && q->paramID == ids[i] && q->paramID == g.id && q->getVersionHint() == 1);
+        CHECK(q != nullptr && q->paramID == ids[i] && q->paramID == g.id && q->getVersionHint() == (i < 17 ? 1 : 2));
+        CHECK(q->isAutomatable() == (q->paramID != "band" && q->paramID != "tone") && !q->isMetaParameter()); // legacy: inert, kept
         const auto& r = q->getNormalisableRange();
         CHECK(r.start == g.lo && r.end == g.hi && get(p, g.id) == g.def); if (!(r.start == g.lo && r.end == g.hi && get(p, g.id) == g.def)) std::cerr << std::setprecision(10) << g.id << " " << r.start << " " << r.end << " " << get(p, g.id) << "\n";
         if (auto* c = dynamic_cast<juce::AudioParameterChoice*>(q)) CHECK(g.items != nullptr && c->choices.joinIntoString(",") == g.items);
@@ -243,7 +245,7 @@ static void testState()
         load(b, m);
         CHECK(m == save(b) && params(a) == params(b) && a.presetName() == b.presetName() && a.abSlot() == b.abSlot());
         if (a.abSlot() == 1) a.selectAb(0), b.selectAb(0), CHECK(params(a) == params(b));
-        CHECK(juce::AudioProcessor::getXmlFromBinary(m.getData(), (int) m.getSize())->getIntAttribute("stateVersion") == 1);
+        CHECK(juce::AudioProcessor::getXmlFromBinary(m.getData(), (int) m.getSize())->getIntAttribute("stateVersion") == 2);
         { // bass + kick sidechain + MIDI + moving host ppq: bit-identical
 
             Proc c;
@@ -276,9 +278,20 @@ static void testState()
     CHECK(get(p, "trigger") == 2 && get(p, "tempoSync") == 0 && get(p, "rate") == 5 && get(p, "freeHz") == 3.5f && get(p, "curve") == 7
           && get(p, "slope") == -40 && get(p, "invert") == 1 && get(p, "depth") == 62.5f && get(p, "shift") == 12.5f && get(p, "loop") == 1
           && get(p, "thresh") == -30 && get(p, "band") == 2 && get(p, "split") == 250 && get(p, "output") == -3.5f && get(p, "color") == 5
-          && get(p, "tone") == 75 && get(p, "stereo") == 1);
+          && get(p, "tone") == 75 && get(p, "stereo") == 1 && get(p, "soothe") == 0); // band highs with pinch: just pinch
     CHECK(p.presetName() == "user 07" && p.abSlot() == 1 && p.editorWidth == 1536);
-    p.selectAb(0), CHECK(p.getCurrentProgram() == 3 && get(p, "rate") == 8 && get(p, "band") == 1);
+    // Slot A is 0.1.0's preset 03 (band lows, level): it comes back as the lows mode, soothe off.
+    p.selectAb(0), CHECK(p.getCurrentProgram() == 3 && get(p, "rate") == 8 && get(p, "band") == 1 && get(p, "color") == 1 && get(p, "soothe") == 0);
+    p.selectAb(1), CHECK(get(p, "color") == 5 && get(p, "trigger") == 2);
+    // Ducking only the lows / highs (band + level) becomes that mode; other modes on a band, and a full band, keep theirs.
+    for (auto [band, colour, now] : { std::tuple { 1, 0, 1 }, { 2, 0, 2 }, { 0, 0, 0 }, { 1, 3, 3 }, { 0, 6, 6 } })
+    {
+        const auto xml = juce::String(R"(<GULP stateVersion="1"><PARAM id="band" value="B"/><PARAM id="color" value="C"/><PARAM id="soothe" value="50"/></GULP>)");
+        set(p, "soothe", 30), load(p, blob(xml.replace("B", juce::String(band)).replace("C", juce::String(colour))));
+        CHECK(get(p, "color") == (float) now && get(p, "band") == (float) band && get(p, "soothe") == 50);
+    }
+    load(p, blob(R"(<GULP stateVersion="2"><PARAM id="band" value="1"/><PARAM id="color" value="0"/></GULP>)")); // v2: band is inert
+    CHECK(get(p, "color") == 0 && get(p, "soothe") == 0);
 }
 
 // Presets: names, prev/next through factory then user files, save, A/B (a fresh B starts as a copy of A).
@@ -290,13 +303,17 @@ static void testPresets()
     for (int k = 0; k < 10; ++k) names.add(p.getProgramName(k));
     CHECK(names[0] == "init" && names[3] == juce::String::fromUTF8("house \xc2\xb7 classic pump") && p.getProgramName(10).isEmpty());
     p.setCurrentProgram(3);
-    CHECK(get(p, "band") == 1 && get(p, "split") == 120 && get(p, "curve") == 0 && p.presetName() == names[3]);
+    CHECK(get(p, "color") == 1 && get(p, "split") == 120 && get(p, "curve") == 0 && p.presetName() == names[3]);
     p.stepPreset(-1), CHECK(p.getCurrentProgram() == 2);
     set(p, "depth", 33);
     const auto file = p.saveUserPreset();
     CHECK(file.existsAsFile() && p.preset == -1 && p.presetName() == "user 01");
     p.setCurrentProgram(9), p.stepPreset(1), CHECK(p.presetName() == "user 01" && get(p, "depth") == 33 && get(p, "curve") == 7);
     p.stepPreset(1), CHECK(p.getCurrentProgram() == 0 && p.preset == 0);
+    // A 0.1.0 user file (no stateVersion) is migrated like a session: band lows + level -> the lows mode.
+    dir.getChildFile("user 02.xml").replaceWithText(R"(<GULP><PARAM id="band" value="2"/><PARAM id="color" value="0"/></GULP>)");
+    p.setCurrentProgram(9), p.stepPreset(2), CHECK(p.presetName() == "user 02" && get(p, "color") == 2);
+    CHECK(juce::parseXML(file)->getIntAttribute("stateVersion") == 2);
     p.setCurrentProgram(5);
     p.selectAb(1), CHECK(p.abSlot() == 1 && get(p, "trigger") == 2); // B starts as a copy
     p.setCurrentProgram(7), p.selectAb(0), CHECK(get(p, "trigger") == 2 && p.getCurrentProgram() == 5);
@@ -440,7 +457,7 @@ static void testLifecycle()
         CHECK(render(b, 30000) == render(c, 30000));
     }
     {
-        const Settings s { { "trigger", 1 }, { "shift", 40 }, { "loop", 1 }, { "color", 3 }, { "band", 1 } };
+        const Settings s { { "trigger", 1 }, { "shift", 40 }, { "loop", 1 }, { "color", 3 }, { "soothe", 30 } };
         Proc p;
         set(p, s);
         for (double fs : { 44100.0, 48000.0, 96000.0 })
@@ -453,7 +470,7 @@ static void testLifecycle()
         }
     }
     {
-        const Settings s { { "trigger", 2 }, { "shift", 10 }, { "color", 7 }, { "band", 2 }, { "stereo", 1 } };
+        const Settings s { { "trigger", 2 }, { "shift", 10 }, { "color", 2 }, { "stereo", 1 }, { "soothe", 100 } };
         Proc a, b, c;
         set(a, s), set(b, s), set(c, s);
         c.setNonRealtime(true);
@@ -582,27 +599,109 @@ static void testClicks()
         r.host = &h, r.perBlock = [&](int) { set(p, "curve", (float) rnd.nextInt(12)), set(p, "invert", (float) rnd.nextInt(2)); };
         CHECK(maxStep(run(p, 96000, 512, r)) < 0.081);
     }
-    for (const char* id : { "band", "color" })
+    for (bool sine : { false, true }) // every mode on DC; vol / lows / highs (the crossover in and out) on a 100 Hz sine
     {
         Proc p;
-        set(p, { { "split", 120 }, { "tone", 50 } });
         prepare(p, 48000, 500);
         Host h;
         int k = 0;
-        Run r = std::strcmp(id, "band") == 0 ? Run {} : dc(0.5f);
-        if (std::strcmp(id, "band") == 0) r.in = [](int i, int) { return (float) (0.5 * std::sin(2 * pi * 100 * i / 48000)); };
-        r.host = &h, r.perBlock = [&](int start) { if (start % 2000 == 0) set(p, id, (float) (std::strcmp(id, "band") == 0 ? ++k % 3 : (k += 3) % 8)); };
+        Run r = dc(0.5f);
+        if (sine) r.in = [](int i, int) { return (float) (0.5 * std::sin(2 * pi * 100 * i / 48000)); };
+        r.host = &h, r.perBlock = [&](int start) { if (start % 2000 == 0) set(p, "color", (float) (sine ? ++k % 3 : (k += 3) % 8)); };
         const double step = maxStep(run(p, 96000, 500, r), 4000);
-        std::cout << id << " switch: max step " << step << "\n";
+        std::cout << "mode switch: max step " << step << "\n";
         CHECK(step < 0.02);
     }
+}
+
+static juce::Rectangle<int> cellArea(int x, int y, int w, int h);
+static juce::String pixels(const juce::Image& image);
+
+// Soothe: the same rounded table in the DSP and the graph. On DC the gain's largest step per sample shrinks as soothe
+// rises (a stronger soothe also takes more off the bottom of a short duck), in sync and on MIDI hits (whose eased attack
+// starts at the hit, never stepping up first); at 0 the table is the
+// curve itself, so 0.1.0's sound (goldens below) is untouched. Automating it never clicks.
+static void testSoothe()
+{
+    gulp::Table plain, soft;
+    gulp::shape(plain, 0, 0, false, 0), gulp::shape(soft, 0, 0, false, 0.4);
+    for (size_t j = 0; j < plain.size(); ++j) CHECK(plain[j] == gulp::duck(0, j / 1024.0, 1));
+    const auto steepest = [](const gulp::Table& t) { double m = 0; for (size_t j = 1; j < t.size(); ++j) m = juce::jmax(m, std::abs(t[j] - t[j - 1])); return m; };
+    CHECK(steepest(soft) < 0.2 * steepest(plain) && soft[1024] == soft[0] && *std::max_element(soft.begin(), soft.end()) > 0.75);
+    for (int trigger : { 0, 1 })
+    {
+        double last = 1;
+        for (float soothe : { 0.0f, 20.0f, 60.0f, 100.0f })
+        {
+            Proc p;
+            set(p, { { "trigger", (float) trigger }, { "soothe", soothe }, { "rate", 5 } });
+            prepare(p, 48000, 512);
+            Host h;
+            Run r = dc(1);
+            r.host = &h, r.notes = { 100, 12100, 24100, 36100 };
+            const auto y = run(p, 48000, 0, r);
+            const double step = maxStep(y, 2000); // after the first beat (a start inside a duck steps in, as without soothe)
+            CHECK(step < (soothe > 0 ? 0.75 * last : 0.081) && *std::min_element(y.begin() + 2000, y.end()) < (soothe > 0 ? 0.6f : 0.02f));
+            if (trigger == 1)
+            {
+                CHECK(std::all_of(y.begin(), y.begin() + 100, [](float v) { return v == 1; }));
+                for (int n : r.notes) for (int i = n; i < n + 100; ++i) CHECK(y[(size_t) i + 1] <= y[(size_t) i]);
+            }
+            last = step;
+        }
+    }
+    Proc p;
+    prepare(p, 48000, 256);
+    Host h;
+    juce::Random rnd(4);
+    Run r = dc(1);
+    r.host = &h, r.perBlock = [&](int) { set(p, "soothe", rnd.nextFloat() * 100); };
+    CHECK(maxStep(run(p, 48000, 256, r)) < 0.081);
+}
+
+// The host's transport: stopped, the graph's telemetry (cycle, duck, its held peak, the bins) holds still while the audio
+// still runs and the meters move; starting again zeroes the held peak. No transport at all (standalone): it all runs.
+static void testTransport()
+{
+    Proc p;
+    prepare(p, 48000, 512);
+    Host h;
+    Run r = dc(0.5f);
+    r.host = &h;
+    run(p, 48000, 512, r);
+    CHECK(p.feed.live && p.feed.held > 0.9f);
+    const auto frozen = [&] {
+        std::vector<float> v { p.feed.phase, p.feed.duck, p.feed.held };
+        for (size_t k = 0; k < gulp::Feed::bins; ++k) v.push_back(p.feed.outLo[k]), v.push_back(p.feed.lo[k]);
+        return v;
+    };
+    h.playing = false;
+    run(p, 512, 512, r);
+    const auto still = frozen();
+    r.in = [](int i, int) { return bass(i); }, r.offset = 777;
+    set(p, "depth", 0); // the audio still follows it (below): a = 0 by the time the transport starts
+    run(p, 30000, 0, r);
+    CHECK(!p.feed.live && frozen() == still && p.feed.outLevel > 0.1f);
+    std::unique_ptr<juce::AudioProcessorEditor> e(p.createEditor());
+    const auto image = [&] { dynamic_cast<juce::Timer&>(*e).timerCallback(); return pixels(e->createComponentSnapshot(cellArea(25, 3, 70, 17), true, 1.0f)); }; // the graph
+    const auto shown = image();
+    run(p, 9000, 0, r), CHECK(image() == shown);
+    h.playing = true, r.in = [](int, int) { return 0.5f; };
+    run(p, 256, 256, r), CHECK(p.feed.live && p.feed.held == 0 && image() != shown);
+    Proc q;
+    prepare(q, 48000, 512);
+    Run none = dc(1); // no playhead
+    run(q, 1000, 512, none);
+    const float phase = q.feed.phase;
+    run(q, 7000, 512, none);
+    CHECK(q.feed.live && q.feed.phase != phase);
 }
 
 // A MIDI note at sample 0 starts slam stretched to 4.8 s of a 4/1 cycle: duck 1 for the whole of a short render.
 static const Settings plateau { { "trigger", 1 }, { "curve", 5 }, { "slope", 100 }, { "rate", 15 } };
 static Settings operator+(Settings a, const Settings& b) { a.insert(a.end(), b.begin(), b.end()); return a; }
 
-// Band split: depth 0 full is the dry signal bit for bit; lows at 100 % leaves 2 kHz alone and ducks 50 Hz; the LR4
+// Split: depth 0 vol is the dry signal bit for bit; lows at 100 % leaves 2 kHz alone and ducks 50 Hz; the LR4
 // lows + highs sum is flat.
 static void testBands()
 {
@@ -612,7 +711,7 @@ static void testBands()
         {
             Proc p;
             randomise(p, r);
-            set(p, { { "depth", 0 }, { "band", 0 }, { "color", 0 }, { "output", 0 } });
+            set(p, { { "depth", 0 }, { "color", 0 }, { "output", 0 } });
             prepare(p, 48000, 512);
             Host h;
             std::vector<float> right;
@@ -633,15 +732,15 @@ static void testBands()
         r.in = [hz](int i, int) { return (float) (0.5 * std::sin(2 * pi * hz * i / 48000)); }, r.host = &h, r.notes.push_back(0);
         return rmsDb(run(p, 96000, 512, r), 24000) - 10 * std::log10(0.125);
     };
-    const Settings pumping { { "band", 1 } }, lows { { "band", 1 } }, highs { { "band", 2 } };
+    const Settings pumping { { "color", 1 } }, lows { { "color", 1 } }, highs { { "color", 2 } };
     CHECK(std::abs(level(pumping, 2000)) < 0.05 && level(pumping, 50) < -1);
     CHECK(std::abs(level(lows + plateau, 2000)) < 0.05 && level(lows + plateau, 50) < -30); // duck 1 throughout (as in testColours)
     CHECK(std::abs(level(highs + plateau, 20)) < 0.05 && level(highs + plateau, 5000) < -30); // LR4 at a sixth of the split: -0.007 dB
     for (double hz : { 30.0, 120.0, 500.0, 4000.0 })
-        CHECK(std::abs(level({ { "band", 1 }, { "depth", 0 } }, hz)) < 0.01);
+        CHECK(std::abs(level({ { "color", 1 }, { "depth", 0 } }, hz)) < 0.01);
 }
 
-// Colour modes: near dry at a = 0 (exact for level, bottom, top, hollow, grit); at a = 1 (the slam plateau: duck 1
+// Modes: near dry at a = 0 (exact for vol, hollow, grit; lows and highs are an allpass); at a = 1 (the slam plateau: duck 1
 // throughout) each does what it says. Mid / side leave the other component bit-exact.
 static void testColours()
 {
@@ -660,7 +759,7 @@ static void testColours()
         const auto y = render(m, 0, sine(1000));
         bool exact = true;
         for (int i = 0; i < 72000; ++i) exact = exact && y[(size_t) i] == sine(1000)(i);
-        CHECK(m == 3 || m == 4 || m == 5 ? std::abs(rmsDb(y, 24000) - 10 * std::log10(0.125)) < 0.1 : exact);
+        CHECK(m >= 1 && m <= 5 ? std::abs(rmsDb(y, 24000) - 10 * std::log10(0.125)) < 0.1 : exact);
     }
     const auto silent = render(0, 100, sine(1000));
     CHECK(std::all_of(silent.begin() + 24000, silent.end(), [](float v) { return v == 0; }));
@@ -679,7 +778,7 @@ static void testColours()
         for (int m = 0; m < 8; ++m)
         {
             Proc p;
-            set(p, { { "color", (float) m }, { "stereo", (float) stereo }, { "band", (float) (m % 3) } });
+            set(p, { { "color", (float) m }, { "stereo", (float) stereo }, { "soothe", (float) (10 * m) } });
             prepare(p, 48000, 512);
             Host h;
             std::vector<float> right;
@@ -793,9 +892,9 @@ static void testEditorSizes()
         for (int frame = 0; frame < 40; ++frame)
         {
             if (frame < 30) r.offset = 24000 + 1600 * frame, run(p, 1600, 512, r);
-            if (frame == 10) set(p, { { "curve", 3 }, { "band", 2 }, { "tempoSync", 0 } });
-            if (frame == 15) set(p, { { "shift", -7 }, { "depth", 23 }, { "freeHz", 10.1f }, { "tone", 100 }, { "output", -2 } });
-            if (frame == 20) set(p, { { "shift", 0 }, { "depth", 9 }, { "freeHz", 2 }, { "tone", 50 }, { "output", 0 } });
+            if (frame == 10) set(p, { { "curve", 3 }, { "color", 2 }, { "tempoSync", 0 } });
+            if (frame == 15) set(p, { { "shift", -7 }, { "depth", 23 }, { "freeHz", 10.1f }, { "soothe", 100 }, { "output", -2 } });
+            if (frame == 20) set(p, { { "shift", 0 }, { "depth", 9 }, { "freeHz", 2 }, { "soothe", 30 }, { "output", 0 } });
             timer.timerCallback();
             const bool painted = capture->consume(image, scale);
             paints += painted;
@@ -840,7 +939,7 @@ static void testTelemetry()
         return v;
     };
     const auto before = controls();
-    const juce::Rectangle<int> scope = cellArea(25, 18, 70, 2), scMeter = cellArea(25, 29, 15, 1), outMeter = cellArea(101, 29, 15, 1);
+    const juce::Rectangle<int> scope = cellArea(25, 18, 70, 2), scMeter = cellArea(25, 29, 15, 1), outMeter = cellArea(101, 28, 16, 2);
     int offset = 0;
     const auto frame = [&] {
         r.offset = offset, offset += 24000, run(p, 24000, 512, r);
@@ -867,9 +966,10 @@ static void testTelemetry()
         for (const auto& area : { scope, scMeter, outMeter }) CHECK(!c.intersects(area));
 }
 
-// Every control through the component tree and JUCE's handlers (not peer hit-testing): knobs, the slope area and the
-// free rate drag with the Slider's 250 px sensitivity, reset on Slider::mouseDoubleClick and type on Label::showEditor;
-// words, toggles, curve rows and the header are Button clicks. Visible controls never overlap.
+// Every control through the component tree and JUCE's handlers (not peer hit-testing): knobs and the free rate drag
+// with the Slider's 250 px sensitivity, reset on Slider::mouseDoubleClick and type on Label::showEditor; the slope's
+// handle (found by getComponentAt) drags sideways and stays under the cursor; words, toggles, curve rows, the rate
+// stepper, the held peak and the header are Button clicks. Visible controls never overlap.
 static void testInteraction()
 {
     const auto folder = juce::File::getSpecialLocation(juce::File::tempDirectory).getNonexistentChildFile("gulp-ui", "", false);
@@ -880,6 +980,7 @@ static void testInteraction()
         std::unique_ptr<juce::AudioProcessorEditor> e(p.createEditor());
         auto& timer = dynamic_cast<juce::Timer&>(*e);
         e->setSize(1024 * percent / 100, 576 * percent / 100), e->setVisible(true);
+        auto* layer = find(*e, "prev")->getParentComponent();
         const auto centre = [&](juce::Component& c, juce::Rectangle<int> area) { return e->getLocalArea(&c, area).toFloat().getCentre(); };
         const auto at = [&](const juce::String& id) { auto* c = find(*e, id); CHECK(c != nullptr && c->isVisible()); return centre(*c, c->getLocalBounds()); };
         const auto click = [&](juce::Point<float> where) {
@@ -897,7 +998,7 @@ static void testInteraction()
         const auto press = [&](const juce::String& id) { click(at(id)); };
         const auto overlaps = [&] {
             std::vector<juce::Component*> visible;
-            for (auto* c : find(*e, "prev")->getParentComponent()->getChildren())
+            for (auto* c : layer->getChildren())
                 if (c->isVisible()) visible.push_back(c);
             for (size_t i = 0; i < visible.size(); ++i)
                 for (size_t j = i + 1; j < visible.size(); ++j)
@@ -905,43 +1006,92 @@ static void testInteraction()
             return false;
         };
         CHECK(!overlaps());
-        for (auto [id, x, y] : { std::tuple { "shift", 66, 24 }, { "thresh", 76, 24 }, { "tone", 86, 24 },
-                                { "depth", 104, 3 }, { "split", 104, 15 }, { "output", 104, 23 } })
+        for (auto [id, x, y] : { std::tuple { "shift", 60, 24 }, { "thresh", 73, 24 }, { "soothe", 86, 24 },
+                                { "depth", 104, 3 }, { "split", 104, 12 }, { "output", 104, 21 } })
             CHECK(find(*e, id)->getBounds() == cellArea(x, y, 10, 6));
+        const auto time = juce::Time::getCurrentTime();
+        const auto mouse = [&](juce::Component* c, juce::Point<float> pos, juce::Point<float> down, int clicks = 1) {
+            return juce::MouseEvent(juce::Desktop::getInstance().getMainMouseSource(), pos, juce::ModifierKeys::leftButtonModifier, 1, 0, 0, 0, 0,
+                                    c, c, time, down, time, clicks, pos != down);
+        };
+        const auto box = [](juce::Component* slider) {
+            juce::Label* l = nullptr;
+            for (auto* child : slider->getChildren()) l = l != nullptr ? l : dynamic_cast<juce::Label*>(child);
+            return l;
+        };
+        const auto type = [&](const char* id, float normalised) { // click the value, type a value
+            auto* label = box(find(*e, id));
+            auto* param = p.apvts.getParameter(id);
+            click(centre(*label, label->getLocalBounds()));
+            CHECK(label->isBeingEdited());
+            const auto typed = param->getText(normalised, 0);
+            if (auto* editor = label->getCurrentTextEditor()) editor->setText(typed);
+            label->hideEditor(false);
+            CHECK(param->getCurrentValueAsText() == typed);
+        };
         const auto dial = [&](const char* id) {
             auto* slider = dynamic_cast<juce::Slider*>(find(*e, id));
             auto* param = p.apvts.getParameter(id);
-            juce::Label* box = nullptr;
-            for (auto* child : slider->getChildren()) box = box != nullptr ? box : dynamic_cast<juce::Label*>(child);
-            CHECK(box != nullptr && slider->isVisible());
-            juce::Point<float> grab = slider->getLocalBounds().toFloat().getCentre(); // a point off the value box
-            for (int y = 0; box->getBounds().toFloat().contains(grab); y += 4) grab = { 2.0f, (float) y };
+            CHECK(box(slider) != nullptr && slider->isVisible());
+            juce::Point<float> grab = slider->getLocalBounds().toFloat().getCentre(); // a point off the value box, if any
+            for (int y = 0; box(slider)->getBounds().toFloat().contains(grab) && y < slider->getHeight(); y += 4) grab = { 2.0f, (float) y };
             param->setValueNotifyingHost(0.3f);
             const auto to = grab - juce::Point<float>(0, 50.0f); // 50 design px up = 0.2 of the range
-            const auto time = juce::Time::getCurrentTime();
-            const auto event = [&](juce::Point<float> pos, int clicks = 1) {
-                return juce::MouseEvent(juce::Desktop::getInstance().getMainMouseSource(), pos, juce::ModifierKeys::leftButtonModifier, 1, 0, 0, 0, 0,
-                                        slider, slider, time, grab, time, clicks, pos != grab);
-            };
-            slider->mouseDown(event(grab)), slider->mouseDrag(event(to)), slider->mouseUp(event(to));
+            slider->mouseDown(mouse(slider, grab, grab)), slider->mouseDrag(mouse(slider, to, grab)), slider->mouseUp(mouse(slider, to, grab));
             CHECK(std::abs(param->getValue() - 0.5f) < 0.01f);
-            slider->mouseDoubleClick(event(grab, 2));
+            slider->mouseDoubleClick(mouse(slider, grab, grab, 2));
             CHECK(param->getValue() == param->getDefaultValue());
             timer.timerCallback();
-            click(centre(*box, box->getLocalBounds()));
-            CHECK(box->isBeingEdited());
-            const auto typed = param->getText(0.7f, 0);
-            if (auto* editor = box->getCurrentTextEditor()) editor->setText(typed);
-            box->hideEditor(false);
-            CHECK(param->getCurrentValueAsText() == typed);
+            type(id, 0.7f);
         };
-        for (auto* id : { "shift", "thresh", "tone", "depth", "split", "output", "slope" })
+        for (auto* id : { "shift", "thresh", "soothe", "depth", "split", "output" })
             dial(id);
+
+        // The slope: getComponentAt finds the handle on the ◆ (and nothing in the open graph); a sideways drag of a
+        // quarter cycle from 0.3 to 0.6 is slope +100 % and the ◆ is under the cursor again; double-click resets.
+        set(p, { { "slope", 0 }, { "shift", 0 }, { "soothe", 0 }, { "curve", 0 } }), timer.timerCallback();
+        auto* slope = find(*e, "slope");
+        const auto diamond = [&] { return slope->getPosition().toFloat() + juce::Point<float>(3.5f, 1.5f) * juce::Point<float>(1024.0f / 120, 576.0f / 34); }; // in the layer
+        const auto onEditor = [&](juce::Point<float> inLayer) { return e->getLocalPoint(layer, inLayer); };
+        CHECK(e->getComponentAt(onEditor(diamond()).roundToInt()) == slope && std::abs(diamond().x - (25 + 0.3f * 70) * 1024 / 120 - 4) < 6);
+        CHECK(e->getComponentAt(onEditor({ (25 + 0.8f * 70) * 1024 / 120, (5 + 8) * 576 / 34.0f }).roundToInt()) != slope);
+        const auto start = diamond();
+        const auto grab = slope->getLocalPoint(layer, start);
+        const float cycle = 70 * 1024 / 120.0f;
+        slope->mouseDown(mouse(slope, grab, grab));
+        slope->mouseDrag(mouse(slope, grab + juce::Point<float>(0.1f * cycle, 0), grab));
+        CHECK(std::abs(get(p, "slope") - 100 * std::log2(0.4 / 0.3)) < 0.2f);
+        timer.timerCallback(); // the handle moves under the drag: the drag still measures from where it began
+        const auto down = slope->getLocalPoint(layer, start); // as JUCE reports it on the moved component
+        slope->mouseDrag(mouse(slope, down + juce::Point<float>(0.3f * cycle, 0), down));
+        slope->mouseUp(mouse(slope, down + juce::Point<float>(0.3f * cycle, 0), down));
+        CHECK(std::abs(get(p, "slope") - 100) < 0.01f), timer.timerCallback();
+        CHECK(std::abs(diamond().x - (25 + 0.6f * 70) * 1024 / 120 - 4) < 6 && e->getComponentAt(onEditor(diamond()).roundToInt()) == slope);
+        slope->mouseDoubleClick(mouse(slope, grab, grab, 2)), CHECK(get(p, "slope") == 0);
+        timer.timerCallback();
+        CHECK(e->getComponentAt(onEditor(diamond()).roundToInt()) == slope);
+        type("slope", 0.25f), CHECK(get(p, "slope") == -50);
         set(p, "slope", 0), timer.timerCallback();
+
+        // Rate: ◁ ▷ step the 16 rates (clamped); in free they walk the ladder of round Hz and the value drags and types.
         CHECK(!find(*e, "freeHz")->isVisible());
-        press("free"), CHECK(get(p, "tempoSync") == 0 && !find(*e, "rate 0")->isVisible() && !find(*e, "rate-")->isVisible());
+        set(p, "rate", 8), timer.timerCallback();
+        press("rate+"), CHECK(get(p, "rate") == 9);
+        for (int k = 0; k < 14; ++k) press("rate-");
+        CHECK(get(p, "rate") == 0), press("rate+"), CHECK(get(p, "rate") == 1);
+        for (int k = 0; k < 20; ++k) press("rate+"), CHECK(!overlaps());
+        CHECK(get(p, "rate") == 15 && find(*e, "rate+")->getBounds() == cellArea(82, 3, 1, 1) && find(*e, "rate-")->getBounds() == cellArea(74, 3, 1, 1));
+        press("free"), CHECK(get(p, "tempoSync") == 0 && find(*e, "freeHz")->isVisible() && get(p, "rate") == 15);
         press("free"), CHECK(get(p, "tempoSync") == 0); // choices are idempotent, not toggles
         CHECK(!overlaps());
+        set(p, "freeHz", 2), timer.timerCallback();
+        press("rate+"), CHECK(get(p, "freeHz") == 3);
+        press("rate-"), press("rate-"), CHECK(get(p, "freeHz") == 1.5f);
+        set(p, "freeHz", 2.2f), timer.timerCallback(), press("rate-"), CHECK(get(p, "freeHz") == 2);
+        for (int k = 0; k < 20; ++k) press("rate+"), CHECK(!overlaps() && find(*e, "rate-")->getRight() <= find(*e, "freeHz")->getX());
+        CHECK(get(p, "freeHz") == 20 && get(p, "rate") == 15);
+        for (int k = 0; k < 20; ++k) press("rate-");
+        CHECK(std::abs(get(p, "freeHz") - 0.1f) < 1e-6f);
         dial("freeHz");
         press("sync"), CHECK(get(p, "tempoSync") == 1 && !find(*e, "freeHz")->isVisible());
         press("sync"), CHECK(get(p, "tempoSync") == 1);
@@ -949,34 +1099,28 @@ static void testInteraction()
         CHECK(dynamic_cast<juce::Button*>(find(*e, "free"))->getToggleState() && !dynamic_cast<juce::Button*>(find(*e, "sync"))->getToggleState());
         press("sync");
         CHECK(dynamic_cast<juce::Button*>(find(*e, "sync"))->getToggleState() && !dynamic_cast<juce::Button*>(find(*e, "free"))->getToggleState());
-        CHECK(find(*e, "sync")->getBounds() == cellArea(60, 26, 4, 2) && find(*e, "free")->getBounds() == cellArea(60, 28, 4, 2));
-        CHECK(find(*e, "loop")->getY() == find(*e, "rate-")->getY() && find(*e, "loop")->getX() == find(*e, "trigger sync")->getX());
+        CHECK(find(*e, "sync")->getBounds() == cellArea(85, 3, 4, 2) && find(*e, "free")->getBounds() == cellArea(91, 3, 4, 2));
+        CHECK(find(*e, "loop")->getBounds() == cellArea(25, 28, 6, 1) && find(*e, "loop")->getX() == find(*e, "trigger sync")->getX());
+
+        // The held peak: click the number to zero it.
+        p.feed.held = 0.6f, timer.timerCallback();
+        CHECK(e->getComponentAt(onEditor(cellArea(42, 3, 1, 1).toFloat().getCentre()).roundToInt()) == find(*e, "peak"));
+        click(onEditor(cellArea(42, 3, 1, 1).toFloat().getCentre())), CHECK(p.feed.held == 0);
+
+        // The modes spread evenly from the graph's left edge to its right edge.
+        const juce::StringArray modes { "vol", "lows", "highs", "dark", "thin", "pinch", "hollow", "grit" };
+        CHECK(find(*e, "color vol")->getX() == cellArea(25, 0, 1, 1).getX() && find(*e, "color grit")->getRight() == cellArea(25, 0, 70, 1).getRight());
+        for (int k = 1; k < modes.size(); ++k) // equal gaps (5 cells, give or take a pixel of rounding)
+            CHECK(std::abs(find(*e, "color " + modes[k])->getX() - find(*e, "color " + modes[k - 1])->getRight() - cellArea(0, 0, 5, 1).getWidth()) <= 1);
         const std::pair<const char*, juce::StringArray> choices[] = {
             { "curve", { "classic", "tight", "punch", "round", "long", "slam", "sub", "sub long", "trim", "suck", "wave", "double" } },
-            { "color", { "level", "bottom", "top", "dark", "thin", "pinch", "hollow", "grit" } },
-            { "stereo", { "both", "mid", "side" } }, { "trigger", { "sync", "midi", "audio" } }, { "band", { "full", "lows", "highs" } } };
+            { "color", modes }, { "stereo", { "both", "mid", "side" } }, { "trigger", { "sync", "midi", "audio" } } };
         for (auto& [id, items] : choices)
             for (int k = items.size(); --k >= 0;)
                 press(juce::String(id) + " " + items[k]), CHECK(get(p, id) == (float) k);
+        CHECK(find(*e, "curve double")->getBottom() == cellArea(0, 0, 1, 31).getBottom() && find(*e, "curve classic")->getY() == cellArea(0, 5, 1, 1).getY());
         for (auto* id : { "invert", "loop" })
             press(id), CHECK(get(p, id) == 1), press(id), CHECK(get(p, id) == 0);
-        set(p, "rate", 8), timer.timerCallback();
-        press("rate 0"), CHECK(get(p, "rate") == 7);
-        press("rate 2"), CHECK(get(p, "rate") == 9);
-        press("rate+"), CHECK(get(p, "rate") == 10);
-        for (int k = 0; k < 14; ++k) press("rate-");
-        CHECK(get(p, "rate") == 0), press("rate 1"), CHECK(get(p, "rate") == 1);
-        for (int k = 0; k < 20; ++k)
-        {
-            press("rate+");
-            CHECK(get(p, "rate") == (float) juce::jmin(15, k + 2) && !overlaps());
-            CHECK(find(*e, "rate 0")->getX() == find(*e, "rate-")->getX());
-            int gaps[3];
-            for (int j = 0; j < 3; ++j)
-                gaps[j] = find(*e, j == 2 ? "sync" : "rate " + juce::String(j + 1))->getX() - find(*e, "rate " + juce::String(j))->getRight();
-            CHECK(*std::min_element(gaps, gaps + 3) >= 8 && *std::max_element(gaps, gaps + 3) - *std::min_element(gaps, gaps + 3) <= 10);
-        }
-        CHECK(get(p, "rate") == 15), press("rate 0"), CHECK(get(p, "rate") == 13);
         p.setCurrentProgram(3);
         press("next"), CHECK(p.getCurrentProgram() == 4);
         press("prev"), press("prev"), CHECK(p.getCurrentProgram() == 2);
@@ -984,15 +1128,16 @@ static void testInteraction()
         press("A"), CHECK(p.abSlot() == 0);
         const int files = folder.getNumberOfChildFiles(juce::File::findFiles);
         press("save"), CHECK(folder.getNumberOfChildFiles(juce::File::findFiles) == files + 1 && p.preset == -1);
+        CHECK(!overlaps());
     }
     folder.deleteRecursively();
 }
 
 // ================================ Screenshot and goldens ================================
 // Preset 03 with the bass on the input and the kick on the sidechain at 124 bpm, a few cycles, then 30 editor frames.
-static std::unique_ptr<juce::AudioProcessorEditor> fixture(Proc& p, Host& h)
+static std::unique_ptr<juce::AudioProcessorEditor> fixture(Proc& p, Host& h, const Settings& extra = {})
 {
-    p.setCurrentProgram(3);
+    p.setCurrentProgram(3), set(p, extra);
     prepare(p, 48000, 512);
     Run r;
     r.host = &h, r.sc = [](int i) { // a kick on every quarter at 124 bpm
@@ -1006,17 +1151,23 @@ static std::unique_ptr<juce::AudioProcessorEditor> fixture(Proc& p, Host& h)
     }
     return e;
 }
-static juce::Image snapshot(int percent)
+static juce::Image snapshot(int percent, const Settings& extra = {})
 {
     Proc p;
     Host h;
-    auto e = fixture(p, h);
+    auto e = fixture(p, h, extra);
     e->setSize(1024 * percent / 100, 576 * percent / 100);
     return e->createComponentSnapshot(e->getLocalBounds(), true, 2.0f);
 }
-static int screenshot(const juce::File& file)
+static int screenshot(const juce::File& file, const juce::StringArray& changes)
 {
-    const auto image = snapshot(100);
+    Settings extra;
+    for (auto& c : changes)
+        if (const int i = ids.indexOf(c.upToFirstOccurrenceOf("=", false, false)); i >= 0)
+            extra.push_back({ ids[i].toRawUTF8(), c.fromFirstOccurrenceOf("=", false, false).getFloatValue() });
+        else
+            return std::cerr << "unknown parameter in " << c << "\n", 1;
+    const auto image = snapshot(100, extra);
     file.deleteFile();
     juce::FileOutputStream out(file);
     return out.openedOk() && juce::PNGImageFormat().writeImageToStream(image, out) ? 0 : 1;
@@ -1040,22 +1191,25 @@ static juce::String render(int trigger, int colour)
 }
 struct Golden { int trigger, colour; const char* hash; };
 // Captured on Debian 13 x86-64, GCC 14.2, glibc 2.41, JUCE's software renderer (enforced only where the probes match).
+// soothe 0 is 0.1.0's sound bit for bit: the lows hashes are 0.1.0's for band lows + level (preset 03 then), and the
+// vol, dark .. grit hashes are 0.1.0's for band full at tone 50 (checked against a 0.1.0 build). Only the golden list
+// changed: 0.1.0 rendered every colour on preset 03's band lows, which no longer exists.
 static const Golden sounds[] = {
-    { 0, 0, "c7b229c3a57632920e0fa841a4c117377342fe461478f56e67b545b3d23b959e" },
-    { 1, 0, "2fbf5f15b256e0590bbfd6847bd8b68ccefbb1e2abd5faf65653ee8b27b9a436" },
-    { 2, 0, "b77f5685ee4c16e8e30543ededa8361e18702c13a8fefef8ffe62175272b3063" },
-    { 0, 1, "f44916789ec6453ddb1a4a885cc13b4277576503cc7375aa609c37f07b5723a1" },
-    { 0, 2, "6318eb73d7dfd7cb662f100bf639489c6b41a25c309200710c12ecf532e85e8b" },
-    { 0, 3, "bd49f8faf600a17e7a2a9781f6a9b6c9a854d7a61a00b6ef432e318d40de51b1" },
-    { 0, 4, "850f2bdb67d1f4e3af6e4f530a807b5d0195468a0e7f2c3ec61b638c9c7fb75b" },
-    { 0, 5, "870f3ebabe67575d8b523519eb6104c53f09f99d722d1f28ecbc6e0d19d7e9bb" },
-    { 0, 6, "5613e509889f1ad83fba9eeb8402575351241443d04d17499c5efbe04843d753" },
-    { 0, 7, "7d71e0e690854b84b833c4ce0dcd2b108e8c60f2f40898cc1c44112155713e48" },
+    { 0, 1, "c7b229c3a57632920e0fa841a4c117377342fe461478f56e67b545b3d23b959e" },
+    { 1, 1, "2fbf5f15b256e0590bbfd6847bd8b68ccefbb1e2abd5faf65653ee8b27b9a436" },
+    { 2, 1, "b77f5685ee4c16e8e30543ededa8361e18702c13a8fefef8ffe62175272b3063" },
+    { 0, 0, "7583bb28246ea674a1b934274b33b03cfefd14cc0b83ad79c935f111c053e450" },
+    { 0, 2, "b3374ab8b411ae3833e81f4a3778b4089b408c77eba9278bfbc7b519fb017237" },
+    { 0, 3, "eae6f392095da1ebf1610e365b44f41a63abb9a508d0b4d51a5326833a18027e" },
+    { 0, 4, "f174fdcf3360201e29c4276771a534c663575f59ec02fc30aee237173139e600" },
+    { 0, 5, "0a2ec4453fdbd65e0451c7f89c36bdb618e941ab543000eebb32a32613ec8de4" },
+    { 0, 6, "03605e6dfe815adbeedede492bfc2cfe1c00a676c6571bcc58ebd23c2e0c87a3" },
+    { 0, 7, "f3ef30e486df5dfa2c033e2e2bb9cc182a3cf82a373247bb2527928ee56863f7" },
 };
 struct Shot { int percent; const char* hash; };
-static const Shot shots[] = { { 100, "ea0d7ba202b441d991fd035d36570bf61d110495f66e8050284257b375446b76" },
-                              { 50, "df7a6e754a46c40b487ae453baba50156bc2af48d7152f1d44bf5571cbc88f54" },
-                              { 200, "8273464045f1029bd4264771f9716a6feca60810a98fd914aacfe7ee2c61c0d1" } };
+static const Shot shots[] = { { 100, "deb605fd6dd6e4bc125ba9a88e4f01dadbb3955dd57a179183e69aa887bef9f2" },
+                              { 50, "3f5a17b87336a7da81ea5f05207c4bf2be4aeee096565a1bb883598a582a46c4" },
+                              { 200, "c3514a671b571848cb6593d85c3f04e5fa08e19f6c6e661922578f592dc10099" } };
 static void testGoldens()
 {
     CHECK(render(0, 0) == render(0, 0) && pixels(snapshot(100)) == pixels(snapshot(100)));
@@ -1110,8 +1264,8 @@ int main(int argc, char** argv)
     ignoreXErrors();
 #endif
     const juce::ScopedJuceInitialiser_GUI gui;
-    if (argc == 3 && juce::String(argv[1]) == "--screenshot")
-        return screenshot(juce::File::getCurrentWorkingDirectory().getChildFile(argv[2]));
+    if (argc >= 3 && juce::String(argv[1]) == "--screenshot")
+        return screenshot(juce::File::getCurrentWorkingDirectory().getChildFile(argv[2]), juce::StringArray(argv + 3, argc - 3));
     testGoldens();
     testIdentity();
     testState();
@@ -1122,6 +1276,8 @@ int main(int argc, char** argv)
     testIdle();
     testDelayedTriggers();
     testClicks();
+    testSoothe();
+    testTransport();
     testBands();
     testColours();
     testLifecycle();

@@ -1,9 +1,10 @@
-// gulp editor: ASCII design option 2b, "tide" (sidechain-design/ascii/option_2b.*, made by src/grid.py + opt2b.py).
+// gulp editor: ASCII design v2, "tide" (sidechain-design/ascii/v2/redesign2.*, made by src/redesign2.py), with the mode
+// words spread evenly across the graph.
 // One 120 x 34 cell grid scaled with the window (50-200 %, fixed aspect), as in crumb. Text is Geist Mono in its cells;
 // braille, box, block, shade and geometric glyphs are vectors per cell, so they join. At 30 Hz, when anything it shows
 // changed, the grid is rebuilt; only cells that changed are redrawn into a device-pixel image and repainted, so an idle
 // editor costs nothing. Controls are invisible Sliders and Buttons on their hit cells in a 1024 x 576 layer scaled with
-// the window: drag, double-click = default and click the value to type, exactly as crumb.
+// the window: drag, double-click = default and click the value to type, exactly as crumb. The slope's ◆ drags sideways.
 #include "BinaryData.h"
 #include "Gulp.h"
 #include <cstring>
@@ -14,7 +15,8 @@ using namespace juce;
 namespace
 {
 constexpr int C = 120, R = 34, W = 1024, H = 576, L = 22, AX = 25, AW = 70, AT = 5, AH = 11, RX = 98, CY = 21, B = 24;
-constexpr int rateX = AX + 18, syncX = rateX + 17, rateCount = 3, wordsY = B + 2, secondaryY = B + 4, readoutY = B + 5, bandY = 12;
+constexpr int TY = AT - 2, stepX = AX + AW - 13, syncX = stepX + 3, SX = 44, wordsY = B + 2, secondaryY = B + 4, readoutY = B + 5;
+constexpr int curveY[] { 5, 7, 9, 12, 14, 16, 19, 21, 23, 26, 28, 30 }; // groups of three fill the column
 constexpr float cw = (float) W / C, ch = (float) H / R;
 const Colour page { 0xff0d0d0d }, white { 0xffececec }, grey { 0xff7a7a7a }, rule { 0xff2c2c2c }, dark { 0xff454545 }, red { 0xffff3d1f }, kick { 0xff5a5a5a };
 String u(const char* s) { return String::fromUTF8(s); }
@@ -30,8 +32,9 @@ Font mono(float size, bool bold)
                                          Typeface::createSystemTypefaceFor(BinaryData::GeistMonoSemiBold_ttf, BinaryData::GeistMonoSemiBold_ttfSize) };
     return Font(FontOptions(faces[bold ? 1 : 0]).withPointHeight(size));
 }
-const StringArray triggerWords { "sync", "midi", "audio" }, bandWords { "full", "lows", "highs" }, stereoWords { "both", "mid", "side" };
+const StringArray triggerWords { "sync", "midi", "audio" }, stereoWords { "both", "mid", "side" };
 const StringArray curveWords(gulp::curveNames, gulp::numCurves), colourWords(gulp::colorNames, gulp::numColors);
+const int modeGap = (AW - colourWords.joinIntoString("").length()) / (gulp::numColors - 1); // first to last: the graph
 
 struct Cell
 {
@@ -78,14 +81,13 @@ struct Grid
                     cell = { (juce_wchar) (0x2800 + (v | (old && mode == merge ? (int) cell.c - 0x2800 : 0))), fg, {}, false };
                 }
     }
-    int words(int x, int y, const StringArray& items, int sel) // the selected word red and underlined; returns the end
+    void words(int x, int y, const StringArray& items, int sel, int gap = 1) // the selected word red and underlined
     {
-        for (int k = 0; k < items.size(); x += items[k].length() + 1, ++k)
+        for (int k = 0; k < items.size(); x += items[k].length() + gap, ++k)
         {
             put(x, y, items[k], k == sel ? red : grey, k == sel);
             if (k == sel) put(x, y + 1, String::repeatedString(u("▔"), items[k].length()), red);
         }
-        return x;
     }
     void toggle(int x, int y, const String& label, bool on, bool dim = false)
     {
@@ -121,23 +123,35 @@ struct Key : Button
     void paintButton(Graphics&, bool, bool) override {}
 };
 
-struct KnobSpec { const char* id; int x, y; bool centred; };
-const KnobSpec knobSpecs[] = { { "shift", AX + 42, B + 1, true }, { "thresh", AX + 52, B + 1, false }, { "tone", AX + 62, B + 1, false },
-                               { "depth", RX + 7, 4, false },     { "split", RX + 7, 16, false },     { "output", RX + 7, 24, false } };
+struct KnobSpec { const char *id, *name; int x, y; bool centred; };
+const KnobSpec knobSpecs[] = { { "shift", "nudge", 61, B + 1, true }, { "thresh", "thresh", 74, B + 1, false }, { "soothe", "soothe", 87, B + 1, false },
+                               { "depth", "depth", RX + 7, 4, false }, { "split", "split", RX + 7, 13, false }, { "output", "output", RX + 7, 22, false } };
+
+// The slope: only the ◆ (with its arrows and label) is a target. A sideways drag moves the handle with the cursor, in
+// design pixels from where it was grabbed, so the handle's own moves never feed back into the drag.
+struct Handle : Slider
+{
+    std::function<void(double dx)> drag;
+    void mouseDrag(const MouseEvent& e) override
+    {
+        const auto m = e.getEventRelativeTo(getParentComponent());
+        if (e.mouseWasDraggedSinceMouseDown()) drag(m.position.x - m.mouseDownPosition.x);
+    }
+};
 
 struct Editor : AudioProcessorEditor, Timer
 {
     GulpProcessor& proc;
     Look look;
     Component layer; // the controls, in design pixels
-    Slider knobs[6], slope, freeHz;
-    Key prev { "prev" }, next { "next" }, save { "save" }, slotA { "A" }, slotB { "B" }, invert { "invert" }, loop { "loop" }, free { "free" }, sync { "sync" }, down { "rate-" }, up { "rate+" };
-    OwnedArray<Key> curves, colours, stereos, triggers, bands, rates;
+    Slider knobs[6], freeHz;
+    Handle slope;
+    Key prev { "prev" }, next { "next" }, save { "save" }, slotA { "A" }, slotB { "B" }, invert { "invert" }, loop { "loop" }, free { "free" }, sync { "sync" }, down { "rate-" }, up { "rate+" }, peak { "peak" };
+    OwnedArray<Key> curves, colours, stereos, triggers;
     // Attachments after the components they drive, so they are destroyed first.
     std::vector<std::unique_ptr<AudioProcessorValueTreeState::SliderAttachment>> sliderAtt;
     std::vector<std::unique_ptr<ParameterAttachment>> keyAtt;
-    ParameterAttachment* rateAtt = nullptr;
-    int windowStart = 0; // the first of the three rate words shown
+    double grabbed = 0; // the handle's place in the cycle when the drag began
     Grid shown;
     std::vector<float> drawnFrom; // what the shown grid was built from: the same again means idle
     String drawnName;
@@ -162,15 +176,16 @@ struct Editor : AudioProcessorEditor, Timer
         };
         for (int i = 0; i < 6; ++i)
             setup(knobs[i], knobSpecs[i].id, cells(knobSpecs[i].x - 1, knobSpecs[i].y - 1, 10, 6));
-        slope.getProperties().set("box", Rectangle<int>().toString());
-        setup(slope, "slope", cells(AX + 2, AT, AW - 4, AH));
-        setup(freeHz, "freeHz", cells(rateX, B, 10, 3)); // drag the rows above the value, click the value to type
+        setup(slope, "slope", {}), setup(freeHz, "freeHz", {}); // placed by refresh(): their value box is all of them
+        slope.onDragStart = [this] { grabbed = 0.3 * std::exp2(slope.getValue() / 100); };
+        slope.drag = [this](double dx) { slope.setValue(100 * std::log2(jmax(0.01, grabbed + dx / (AW * cw)) / 0.3), sendNotificationSync); };
 
         prev.onClick = [this] { proc.stepPreset(-1); };
         next.onClick = [this] { proc.stepPreset(1); };
         save.onClick = [this] { proc.saveUserPreset(); };
         slotA.onClick = [this] { proc.selectAb(0); };
         slotB.onClick = [this] { proc.selectAb(1); };
+        peak.onClick = [this] { proc.feed.held = 0; };
         for (auto [key, x, w] : { std::tuple { &prev, 30, 2 }, { &next, 62, 2 }, { &save, 67, 4 }, { &slotA, 74, 1 }, { &slotB, 76, 1 } })
             layer.addAndMakeVisible(*key), key->setBounds(cells(x, 1, w, 1));
         // Keys never toggle themselves: the attachment sets them from the parameter, a click only asks for a value.
@@ -185,36 +200,40 @@ struct Editor : AudioProcessorEditor, Timer
             keyAtt.push_back(std::move(att));
             return keyAtt.back().get();
         };
-        const auto row = [&](OwnedArray<Key>& keys, const char* id, const StringArray& items, int x, int y, bool vertical = false) {
+        const auto row = [&](OwnedArray<Key>& keys, const char* id, const StringArray& items, int x, int y, int gap = 1) {
             std::vector<Key*> list;
             for (int k = 0; k < items.size(); ++k)
             {
                 auto* key = keys.add(new Key(String(id) + " " + items[k]));
-                key->setBounds(vertical ? cells(2, 5 + 2 * k, 19, 2) : cells(x, y, items[k].length(), 2));
-                layer.addAndMakeVisible(key), list.push_back(key), x += items[k].length() + 1;
+                key->setBounds(gap == 0 ? cells(2, curveY[k], 19, (k + 1 < items.size() ? curveY[k + 1] : R - 3) - curveY[k]) : cells(x, y, items[k].length(), 2));
+                layer.addAndMakeVisible(key), list.push_back(key), x += items[k].length() + gap;
             }
             bind(id, list);
         };
-        row(curves, "curve", curveWords, 0, 0, true);
-        row(colours, "color", colourWords, AX + 6, CY), row(stereos, "stereo", stereoWords, AX + 57, CY);
-        row(triggers, "trigger", triggerWords, AX, wordsY), row(bands, "band", bandWords, RX + 3, bandY);
+        row(curves, "curve", curveWords, 0, 0, 0);
+        row(colours, "color", colourWords, AX, CY, modeGap), row(stereos, "stereo", stereoWords, SX, wordsY);
+        row(triggers, "trigger", triggerWords, AX, wordsY);
         bind("invert", { &invert }), bind("loop", { &loop });
         bind("tempoSync", { &free, &sync }); // explicit choices: free = 0, sync = 1, including repeated clicks
-        keyAtt.push_back(std::make_unique<ParameterAttachment>(*p.apvts.getParameter("rate"), [](float) {}));
-        rateAtt = keyAtt.back().get();
-        for (int k = 0; k < rateCount; ++k)
-        {
-            auto* key = rates.add(new Key("rate " + String(k)));
-            key->onClick = [this, k] { rateAtt->setValueAsCompleteGesture((float) (windowStart + k)); };
-            layer.addChildComponent(key);
-        }
-        down.onClick = [this] { rateAtt->setValueAsCompleteGesture((float) jmax(0, rate() - 1)); };
-        up.onClick = [this] { rateAtt->setValueAsCompleteGesture((float) jmin(gulp::numRates - 1, rate() + 1)); };
-        for (auto [key, r] : { std::pair { &invert, cells(12, 3, 8, 1) }, { &loop, cells(AX, secondaryY, 6, 1) },
-                               { &sync, cells(syncX, wordsY, 4, 2) }, { &free, cells(syncX, secondaryY, 4, 2) },
-                               { &down, cells(rateX, secondaryY, 1, 1) }, { &up, cells(rateX + 7, secondaryY, 1, 1) } })
+        // ◁ ▷ step the rate, or in free a ladder of round frequencies.
+        auto* rate = bind("rate", {});
+        auto* hz = bind("freeHz", {});
+        const auto step = [this, rate, hz](int by) {
+            if (value("tempoSync") > 0.5f)
+                return rate->setValueAsCompleteGesture((float) jlimit(0, gulp::numRates - 1, index("rate") + by));
+            const float now = value("freeHz"), ladder[] { 0.1f, 0.2f, 0.25f, 0.5f, 0.75f, 1, 1.5f, 2, 3, 4, 5, 6, 8, 10, 12, 16, 20 };
+            float to = now; // the nearest rung past the value
+            for (size_t k = 0; k < std::size(ladder); ++k)
+                if (const float f = ladder[by > 0 ? std::size(ladder) - 1 - k : k]; by > 0 ? f > now * 1.001f : f < now * 0.999f)
+                    to = f;
+            hz->setValueAsCompleteGesture(to);
+        };
+        down.onClick = [step] { step(-1); };
+        up.onClick = [step] { step(1); };
+        for (auto [key, r] : { std::pair { &invert, cells(12, 3, 8, 1) }, { &loop, cells(AX, secondaryY, 6, 1) }, { &peak, cells(AX, TY, 20, 1) },
+                               { &sync, cells(syncX, TY, 4, 2) }, { &free, cells(syncX + 6, TY, 4, 2) }, { &up, cells(stepX, TY, 1, 1) } })
             layer.addAndMakeVisible(*key), key->setBounds(r);
-        windowStart = jlimit(0, gulp::numRates - rateCount, rate() - 1);
+        layer.addAndMakeVisible(down); // placed by refresh(): it moves out for a long value
 
         const int stored = proc.editorWidth; // read first: setting the limits already resizes
         setResizable(true, false);
@@ -229,12 +248,17 @@ struct Editor : AudioProcessorEditor, Timer
 
     float value(const char* id) const { return proc.apvts.getRawParameterValue(id)->load(); }
     int index(const char* id) const { return roundToInt(value(id)); }
-    int rate() const { return index("rate"); }
     String text(const char* id) const { return minus(proc.apvts.getParameter(id)->getCurrentValueAsText()); }
     void resized() override
     {
         layer.setTransform(AffineTransform::scale((float) getWidth() / W, (float) getHeight() / H));
         proc.editorWidth = getWidth();
+    }
+    // A slider whose value box is the given cells within its area; moved only when either changes.
+    static void place(Slider& s, Rectangle<int> area, Rectangle<int> box)
+    {
+        if (const auto b = (box - area.getPosition()).toString(); s.getBounds() != area || s.getProperties()["box"].toString() != b)
+            s.getProperties().set("box", b), s.setBounds(area), s.resized();
     }
 
     void timerCallback() override
@@ -243,7 +267,8 @@ struct Editor : AudioProcessorEditor, Timer
         for (auto* param : proc.getParameters())
             now.push_back(param->getValue());
         const auto& f = proc.feed;
-        now.insert(now.end(), { f.phase.load(), f.duck.load(), f.bpm.load(), f.scLevel.load(), f.outLevel.load(), (float) proc.preset.load(), (float) proc.abSlot() });
+        now.insert(now.end(), { f.phase.load(), f.duck.load(), f.held.load(), (float) f.live.load(), f.scLevel.load(), f.outLevel.load(),
+                                (float) proc.preset.load(), (float) proc.abSlot(), (float) slope.isMouseOverOrDragging(true) });
         for (size_t k = 0; k < gulp::Feed::bins; ++k)
             now.insert(now.end(), { f.lo[k].load(), f.hi[k].load(), f.outLo[k].load(), f.outHi[k].load() });
         if (now == drawnFrom && proc.presetName() == drawnName)
@@ -278,10 +303,21 @@ struct Editor : AudioProcessorEditor, Timer
     void refresh()
     {
         Grid g;
-        const int curve = index("curve"), trigger = index("trigger"), band = index("band"), colour = index("color"), stereo = index("stereo"), r = rate();
-        const bool isFree = value("tempoSync") < 0.5f, inverted = value("invert") > 0.5f;
-        const double s = std::exp2(value("slope") / 100.0), depth = value("depth") / 100.0, bpm = proc.feed.bpm.load();
-        const auto gain = [&](double p) { const double d = gulp::duck(curve, p, s); return 1 - depth * (inverted ? 1 - d : d); };
+        const auto& feed = proc.feed;
+        const int curve = index("curve"), trigger = index("trigger"), colour = index("color"), stereo = index("stereo"), r = index("rate");
+        const bool isFree = value("tempoSync") < 0.5f, inverted = value("invert") > 0.5f, live = feed.live.load();
+        const double s = std::exp2(value("slope") / 100.0), depth = value("depth") / 100.0, soothe = value("soothe") / 100.0;
+        // The graph is the time since the cycle began (the beat in sync): the nudge slides the curve along it in sync,
+        // and a trigger's softened attack starts where the hit is.
+        const double offset = trigger == 0 ? value("shift") / 100.0 : 3 * gulp::blur(soothe) / 1024.0;
+        gulp::Table table;
+        gulp::shape(table, curve, value("slope"), inverted, soothe);
+        const auto gain = [&](double p) {
+            p -= offset + std::floor(p - offset);
+            const double x = p * 1024;
+            const int j = jmin(1023, (int) x);
+            return 1 - depth * (table[(size_t) j] + (x - j) * (table[(size_t) j + 1] - table[(size_t) j]));
+        };
         // Header: name, preset number and name with prev / next, save, A / B, maker.
         g.put(2, 1, "gulp", white, true);
         g.put(30, 1, u("‹"), grey), g.put(63, 1, u("›"), grey), g.put(67, 1, "save", grey);
@@ -298,7 +334,7 @@ struct Editor : AudioProcessorEditor, Timer
         g.put(2, 3, "curve", grey), g.toggle(12, 3, "invert", inverted);
         for (int i = 0; i < gulp::numCurves; ++i)
         {
-            const int y = 5 + 2 * i;
+            const int y = curveY[i];
             const bool sel = i == curve;
             Dots thumb;
             for (int k = 0; k < 11; ++k)
@@ -313,11 +349,24 @@ struct Editor : AudioProcessorEditor, Timer
             if (sel) g.put(20, y, u("◀"), red);
         }
 
+        // Above the graph: gain reduction now (24 dB in half cells) and its held peak in whole dB; the rate stepper
+        // (or the free rate) and sync / free.
+        const float duck = live ? feed.duck.load() : 0.0f, held = feed.held.load();
+        const int halves = roundToInt(jlimit(0.0f, 1.0f, -Decibels::gainToDecibels(1.0f - duck, -100.0f) / 24) * 24);
+        g.put(AX, TY, "gr", grey);
+        for (int k = 0; k < 12; ++k)
+            g.put(AX + 3 + k, TY, u(halves >= 2 * k + 2 ? "█" : halves == 2 * k + 1 ? "▌" : "·"), halves > 2 * k ? red : dark);
+        const float heldDb = Decibels::gainToDecibels(1.0f - held, -100.0f);
+        g.put(AX + 17, TY, heldDb <= -100 ? u("−inf") : minus(String(roundToInt(heldDb))), heldDb < -0.5f ? red : grey, heldDb < -0.5f);
+        const String rateText = isFree ? text("freeHz") : String(gulp::rateNames[r]);
+        const int field = jmax(7, rateText.length() + 4), downX = stepX - field - 1;
+        g.put(downX, TY, u("◁"), grey), g.centre(downX + 1, field, TY, rateText, white, true), g.put(stepX, TY, u("▷"), grey);
+        g.words(syncX, TY, { "sync", "free" }, isFree ? 1 : 0, 2);
+        down.setBounds(cells(downX, TY, 1, 1));
+        place(freeHz, cells(downX + 1, TY, field, 1), cells(downX + 1, TY, field, 1));
+        freeHz.setVisible(isFree);
+
         // The tide: one cycle of gain, the water (audio that passes) under it, the sidechain's kick as a grey ghost.
-        const float duck = proc.feed.duck.load();
-        g.put(AX, AT - 2, "duck", grey);
-        g.put(AX + 5, AT - 2, duck > 0.999f ? u("−inf dB") : minus(String(Decibels::gainToDecibels(1.0f - duck), 1)) + " dB", red, true);
-        g.right(AX + AW - 1, AT - 2, "one cycle = " + (isFree ? minus(text("freeHz")) : String(gulp::rateNames[r])), dark);
         for (int i = 0; i < AW; ++i)
             for (int j = AT + (int) std::nearbyint((1 - gain((i + 0.5) / AW)) * AH) + 1; j < AT + AH; ++j)
                 g.put(AX + i, j, u("░"), rule);
@@ -333,26 +382,27 @@ struct Editor : AudioProcessorEditor, Timer
                     line.push_back({ k, t });
             }
         }
-        float peak = 0;
+        float loudest = 0;
         for (int k = 0; k < gulp::Feed::bins; ++k)
-            peak = jmax(peak, std::abs(proc.feed.lo[(size_t) k].load()), std::abs(proc.feed.hi[(size_t) k].load()));
-        const auto row = [peak](float v) { return (int) std::nearbyint((1 - (jlimit(-1.0f, 1.0f, v / jmax(0.05f, peak) * 0.6f) + 1) / 2) * (4 * AH - 1)); };
+            loudest = jmax(loudest, std::abs(feed.lo[(size_t) k].load()), std::abs(feed.hi[(size_t) k].load()));
+        const auto row = [loudest](float v) { return (int) std::nearbyint((1 - (jlimit(-1.0f, 1.0f, v / jmax(0.05f, loudest) * 0.6f) + 1) / 2) * (4 * AH - 1)); };
         for (int k = 0; k < gulp::Feed::bins; ++k)
-            if (const float lo = proc.feed.lo[(size_t) k].load(), hi = proc.feed.hi[(size_t) k].load(); jmax(-lo, hi) > 0.03f * peak)
+            if (const float lo = feed.lo[(size_t) k].load(), hi = feed.hi[(size_t) k].load(); jmax(-lo, hi) > 0.03f * loudest)
                 for (int t = row(hi); t <= row(lo); ++t)
                     ghost.push_back({ k, t });
         g.braille(AX, AT, AW, AH, line, red), g.braille(AX, AT, AW, AH, ghost, kick, under);
-        // Slope handle on the release (moves with the slope), its label is the value to type.
-        const double hp = jlimit(0.05, 0.9, 0.3 * s);
-        const int hx = AX + (int) (AW * hp), hy = jlimit(AT, AT + AH - 2, AT + (int) ((1 - gain(hp)) * AH));
+        // The slope handle rides the curve where the release is (it moves with the slope and the nudge); its label is
+        // the value to type. Hovered or dragged, its arrows light up.
+        const double hp = 0.3 * s + offset - std::floor(0.3 * s + offset);
+        const int hx = AX + (int) (AW * hp), hy = jlimit(AT, AT + AH - 2, AT + (int) std::nearbyint((1 - gain(hp)) * AH));
         const String label = "slope " + text("slope");
         const int lx = hx + 2 + label.length() <= AX + AW ? hx + 2 : hx - 1 - label.length(), ly = hy > AT ? hy - 1 : hy + 1;
-        g.put(hx, hy, u("◆"), white), g.put(hx - 3, hy + 1, u("◀ ▶"), grey), g.put(lx, ly, label, white, true);
-        if (const auto box = (cells(lx, ly, label.length(), 1) - cells(AX + 2, AT, 0, 0).getPosition()).toString(); slope.getProperties()["box"].toString() != box)
-            slope.getProperties().set("box", box), slope.resized();
-        // Playhead and ruler in fractions of the rate (or time when free).
-        const int ph = AX + jmin(AW - 1, (int) (AW * proc.feed.phase.load()));
-        for (int j = AT; j < AT + AH; ++j)
+        const bool hot = slope.isMouseOverOrDragging(true);
+        g.put(hx, hy, u("◆"), white), g.put(hx - 3, hy + 1, u("◀ ▶"), hot ? white : grey), g.put(lx, ly, label, white, true);
+        place(slope, cells(hx - 3, hy - 1, 7, 3).getUnion(cells(lx, ly, label.length(), 1)), cells(lx, ly, label.length(), 1));
+        // Playhead (only while the transport runs) and ruler in fractions of the rate (or time when free).
+        const int ph = AX + jmin(AW - 1, (int) (AW * feed.phase.load()));
+        for (int j = AT; j < AT + AH && live; ++j)
             if (g.at[j][ph].c == ' ' || g.at[j][ph].c == 0x2591) g.put(ph, j, u("┊"), red);
         for (int i = 0; i <= 16; ++i)
             g.put(AX + (int) std::nearbyint(i * (AW - 1) / 16.0), AT + AH, u(i % 4 == 0 ? "┴" : i % 2 == 0 ? "┬" : "·"), i % 4 == 0 ? grey : dark);
@@ -368,75 +418,40 @@ struct Editor : AudioProcessorEditor, Timer
             }
             g.centre(AX + (int) std::nearbyint(i * (AW - 1) / 4.0) - 3, 7, AT + AH + 1, t, dark);
         }
-        g.put(ph, AT + AH, u("▲"), red);
+        if (live) g.put(ph, AT + AH, u("▲"), red);
         // The output scope: the post-trim output over the same cycle, full scale = the strip's height.
         Dots scope;
         const auto level = [](float v) { return (int) std::nearbyint((1 - (jlimit(-1.0f, 1.0f, v) + 1) / 2) * 7); };
         for (size_t k = 0; k < gulp::Feed::bins; ++k)
-            for (int t = level(proc.feed.outHi[k].load()); t <= level(proc.feed.outLo[k].load()); ++t)
+            for (int t = level(feed.outHi[k].load()); t <= level(feed.outLo[k].load()); ++t)
                 scope.push_back({ (int) k, t });
         g.braille(AX, AT + AH + 2, AW, 2, scope, grey);
 
-        // Colour and stereo row; the bottom strip: trigger, rate, shift / thresh / tone.
-        g.put(AX, CY, "color", grey), g.words(AX + 6, CY, colourWords, colour), g.words(AX + 57, CY, stereoWords, stereo);
+        // The modes across the graph's width; the bottom strip: trigger, loop, stereo, nudge / thresh / soothe.
+        g.words(AX, CY, colourWords, colour, modeGap);
         g.put(L + 1, B - 1, String::repeatedString(u("─"), RX - L - 2), rule);
         g.put(AX, B, "trigger", grey), g.words(AX, wordsY, triggerWords, trigger), g.toggle(AX, secondaryY, "loop", value("loop") > 0.5f, trigger == 0);
-        g.put(rateX, B, "rate", grey);
-        g.words(syncX, wordsY, { "sync" }, isFree ? -1 : 0), g.words(syncX, secondaryY, { "free" }, isFree ? 0 : -1);
-        windowStart = jlimit(r - rateCount + 1, r, windowStart);
-        StringArray window;
-        for (int k = 0; k < rateCount; ++k)
-            window.add(gulp::rateNames[windowStart + k]);
-        // Share all spare cells between the three word gaps, with at most one cell of rounding; sync stays fixed.
-        const int gaps = syncX - rateX - window.joinIntoString("").length();
-        for (int k = 0, used = 0; k < rateCount; used += window[k++].length())
-        {
-            const int x = rateX + used + gaps * k / rateCount;
-            rates[k]->setBounds(cells(x, wordsY, window[k].length(), 2)), rates[k]->setVisible(!isFree), rates[k]->setToggleState(windowStart + k == r, dontSendNotification);
-            if (!isFree) g.words(x, wordsY, { window[k] }, windowStart + k == r ? 0 : -1);
-        }
-        freeHz.setVisible(isFree), down.setVisible(!isFree), up.setVisible(!isFree);
-        if (isFree)
-            g.centre(rateX, 10, wordsY, text("freeHz"), red, true), g.centre(rateX, 10, wordsY + 1, String::repeatedString(u("▔"), text("freeHz").length()), red);
-        else
-            g.put(rateX, secondaryY, u("◁"), grey), g.put(rateX + 2, secondaryY, "more", dark), g.put(rateX + 7, secondaryY, u("▷"), grey);
+        g.put(SX, B, "stereo", grey), g.words(SX, wordsY, stereoWords, stereo);
         for (const auto& k : knobSpecs)
-            knob(g, k.x, k.y, proc.apvts.getParameter(k.id)->getValue(), k.id, text(k.id), k.centred, std::strcmp(k.id, "thresh") == 0 && trigger != 2);
-        g.centre(RX + 4, 14, bandY - 1, "band", grey), g.words(RX + 3, bandY, bandWords, band);
+            knob(g, k.x, k.y, proc.apvts.getParameter(k.id)->getValue(), k.name, text(k.id), k.centred,
+                 (std::strcmp(k.id, "thresh") == 0 && trigger != 2) || (std::strcmp(k.id, "split") == 0 && colour != 1 && colour != 2));
         // Dotted meters, two steps per cell: the sidechain follower against the threshold (a full-height tick, white
         // when the audio trigger listens; the bar red above it) under the trigger, -60..0 dB; the output peak under its
-        // trim, -54..0 dBFS, red at 0. Unlit steps are the dark track.
-        const auto bar = [&g](int x, int y, int cells, float db, float floorDb, Colour on) {
-            const int halves = roundToInt(jlimit(0.0f, 1.0f, (db - floorDb) / -floorDb) * (float) (2 * cells));
-            Dots lit, track;
+        // knob, 2 rows of a 4-dot bar, -54..0 dBFS, red at 0. Unlit steps are the dark track.
+        const auto bar = [&g](int x, int y, int cells, int rows, int from, int to, float db, float floorDb, Colour on) {
+            const int lit = roundToInt(jlimit(0.0f, 1.0f, (db - floorDb) / -floorDb) * (float) (2 * cells));
+            Dots on_, track;
             for (int k = 0; k < 2 * cells; ++k)
-                for (int t : { 1, 2 }) (k < halves ? lit : track).push_back({ k, t });
-            g.braille(x, y, cells, 1, track, rule), g.braille(x, y, cells, 1, lit, on, over);
+                for (int t = from; t < to; ++t) (k < lit ? on_ : track).push_back({ k, t });
+            g.braille(x, y, cells, rows, track, rule), g.braille(x, y, cells, rows, on_, on, over);
         };
-        const float sc = proc.feed.scLevel.load(), thresh = value("thresh"), out = proc.feed.outLevel.load();
+        const float sc = feed.scLevel.load(), thresh = value("thresh"), out = feed.outLevel.load();
         const bool listening = trigger == 2;
         g.put(AX, readoutY, "sc", grey);
-        bar(AX + 3, readoutY, 12, Decibels::gainToDecibels(sc, -100.0f), -60, Decibels::gainToDecibels(sc) > thresh && listening ? red : grey);
+        bar(AX + 3, readoutY, 12, 1, 1, 3, Decibels::gainToDecibels(sc, -100.0f), -60, Decibels::gainToDecibels(sc) > thresh && listening ? red : grey);
         const int tick = jlimit(0, 23, roundToInt((thresh + 60) * 23 / 60));
         g.braille(AX + 3, readoutY, 12, 1, { { tick, 0 }, { tick, 1 }, { tick, 2 }, { tick, 3 } }, listening ? white : dark);
-        g.put(RX + 3, readoutY, "out", grey);
-        bar(RX + 7, readoutY, 11, Decibels::gainToDecibels(out, -100.0f), -54, out >= 1 ? red : white);
-
-        // Footer: rate, sync | free, depth, the summary, gain reduction bar.
-        int at = 2;
-        const auto word = [&](const String& t, Colour c, bool bold = false) { g.put(at, R - 2, t, c, bold), at += t.length() + 1; };
-        word(isFree ? minus(text("freeHz")) : String(gulp::rateNames[r]), white, true), word(isFree ? "free" : "sync", grey);
-        word(String(roundToInt(depth * 100)), white, true), word("%", grey);
-        const double cycle = isFree ? 1 / value("freeHz") : 240.0 * gulp::rateNum[r] / gulp::rateDen[r] / bpm;
-        const double shiftMs = 10 * cycle * (trigger == 0 ? value("shift") : jmax(0.0f, value("shift"))); // a trigger delay is never negative
-        const String dot = u(" · ");
-        g.put(at + 1, R - 2, (curveWords[curve] + dot + colourWords[colour] + dot + stereoWords[stereo] + dot
-                                 + (band == 0 ? String("full") : bandWords[band] + (band == 1 ? " < " : " > ") + text("split")) + dot
-                                 + String(roundToInt(bpm)) + " bpm" + dot + minus(String(roundToInt(shiftMs))) + " ms").substring(0, RX - at - 2), dark);
-        const int halves = roundToInt(jlimit(0.0f, 1.0f, -Decibels::gainToDecibels(1.0f - duck, -100.0f) / 40) * 18);
-        g.put(RX + 3, R - 2, "gr", grey);
-        for (int k = 0; k < 9; ++k)
-            g.put(RX + 6 + k, R - 2, u(halves >= 2 * k + 2 ? "█" : halves == 2 * k + 1 ? "▌" : "·"), halves > 2 * k ? red : dark);
+        bar(RX + 3, B + 4, 16, 2, 2, 6, Decibels::gainToDecibels(out, -100.0f), -54, out >= 1 ? red : white);
         show(g);
     }
 

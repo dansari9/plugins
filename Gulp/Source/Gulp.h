@@ -3,11 +3,11 @@
 #include <array>
 
 // gulp: sidechain pumping / ducking by daveydidit (clean room: original curves and UI, textbook DSP).
-// FROZEN: the 17 parameter IDs in Gulp.cpp (order, ranges, choice lists, ParameterID version 1) and the state format
-// (APVTS XML <GULP stateVersion="1"> plus additive root attributes). Never rename, remove or reorder; only append.
+// FROZEN: the 18 parameter IDs in Gulp.cpp (order, ranges, choice indices, ParameterID versions) and the state format
+// (APVTS XML <GULP stateVersion="2"> plus additive root attributes). Never rename, remove or reorder; only append.
 namespace gulp
 {
-inline constexpr int numCurves = 12, numRates = 16, numColors = 8, numPresets = 10, numParams = 17;
+inline constexpr int numCurves = 12, numRates = 16, numColors = 8, numPresets = 10, numParams = 18;
 extern const char* const curveNames[numCurves];
 extern const char* const rateNames[numRates];
 extern const char* const colorNames[numColors];
@@ -16,14 +16,23 @@ inline constexpr int rateNum[numRates] { 1, 1, 1, 3, 1, 1, 3, 1, 1, 3, 1, 1, 3, 
 inline constexpr int rateDen[numRates] { 32, 24, 16, 32, 12, 8, 16, 6, 4, 8, 3, 2, 4, 1, 1, 1 };
 // The 12 curves: duck amount at phase 0..1 (0 = full level, 1 = silent); s scales the release (0.5 .. 2).
 double duck(int curve, double phase, double s);
+// One cycle of the duck in 1024 steps (+ the end point): the curve with its slope % and invert, rounded by soothe 0..1
+// (three circular box blurs of radius blur(soothe) steps, so it reaches 3 * blur steps either side). The DSP and the
+// graph both read it.
+using Table = std::array<double, 1025>;
+inline int blur(double soothe) { return (int) std::lround(80 * soothe); }
+void shape(Table&, int curve, double slope, bool invert, double soothe);
 
-// Audio thread -> editor, relaxed atomics: where the cycle is, the duck amount, the peak (linear, per block) of the
-// sidechain follower the threshold sees and of the output, and one cycle of the sidechain and of the post-trim output
-// folded into `bins` columns (signed min and max): the kick ghost under the curve and the output scope.
+// Audio thread -> editor, relaxed atomics: where the cycle is (the beat in sync, the time since the trigger otherwise),
+// the duck amount and its held peak (the editor may zero it), the peak (linear, per block) of the sidechain follower the
+// threshold sees and of the output, and one cycle of the sidechain and of the post-trim output folded into `bins`
+// columns (signed min and max): the kick ghost and the output scope. live: false while the host's transport is
+// stopped; the cycle, the duck, the peak and the bins then hold still.
 struct Feed
 {
     static constexpr int bins = 140;
-    std::atomic<float> phase { 0 }, duck { 0 }, bpm { 120 }, scLevel { 0 }, outLevel { 0 };
+    std::atomic<float> phase { 0 }, duck { 0 }, held { 0 }, scLevel { 0 }, outLevel { 0 };
+    std::atomic<bool> live { true };
     std::array<std::atomic<float>, bins> lo {}, hi {}, outLo {}, outHi {};
 };
 
@@ -38,7 +47,7 @@ extern const Preset presets[numPresets];
 class GulpProcessor : public juce::AudioProcessor
 {
 public:
-    static constexpr int stateVersion = 1;
+    static constexpr int stateVersion = 2;
 
     explicit GulpProcessor(juce::File presetDirectory = {});
     ~GulpProcessor() override;
@@ -78,7 +87,7 @@ public:
 
 private:
     void setAll(const float* normalised); // one gesture per parameter that changes
-    void applyParams(const juce::XmlElement& state); // missing or unreadable -> default
+    void applyParams(const juce::XmlElement& state); // missing or unreadable -> default; migrates older versions
     void setIdentity(int index, const juce::String& name);
     mutable juce::CriticalSection lock; // identity and A/B slots; never held across a host callback
     const juce::File presetDirectory;
