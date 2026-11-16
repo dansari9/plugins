@@ -288,7 +288,7 @@ static void testState()
     {
         const auto xml = juce::String(R"(<GULP stateVersion="1"><PARAM id="band" value="B"/><PARAM id="color" value="C"/><PARAM id="soothe" value="50"/></GULP>)");
         set(p, "soothe", 30), load(p, blob(xml.replace("B", juce::String(band)).replace("C", juce::String(colour))));
-        CHECK(get(p, "color") == (float) now && get(p, "band") == (float) band && get(p, "soothe") == 50);
+        CHECK(get(p, "color") == (float) now && get(p, "band") == (float) band && get(p, "soothe") == 0);
     }
     load(p, blob(R"(<GULP stateVersion="2"><PARAM id="band" value="1"/><PARAM id="color" value="0"/></GULP>)")); // v2: band is inert
     CHECK(get(p, "color") == 0 && get(p, "soothe") == 0);
@@ -650,13 +650,33 @@ static void testSoothe()
             last = step;
         }
     }
-    Proc p;
-    prepare(p, 48000, 256);
-    Host h;
-    juce::Random rnd(4);
-    Run r = dc(1);
-    r.host = &h, r.perBlock = [&](int) { set(p, "soothe", rnd.nextFloat() * 100); };
-    CHECK(maxStep(run(p, 48000, 256, r)) < 0.081);
+    // One shots must ease both boundaries, including inverted curves and releases that cross the cycle end.
+    // A DC input exposes gain discontinuities directly; 0.5 % per sample is a generous ceiling at this rate.
+    for (int trigger : { 1, 2 }) for (int curve = 0; curve < gulp::numCurves; ++curve)
+        for (float invert : { 0.0f, 1.0f }) for (float slope : { -100.0f, 100.0f })
+        {
+            Proc edge;
+            set(edge, { { "trigger", (float) trigger }, { "curve", (float) curve }, { "slope", slope }, { "invert", invert }, { "soothe", 100 }, { "rate", 5 } });
+            prepare(edge, 48000, 512, 2, 1);
+            Run hit = dc(1);
+            hit.notes = { 100 };
+            hit.sc = [](int i) { return i == 100 ? 1.0f : 0.0f; };
+            const auto y = run(edge, 15000, 0, hit);
+            if (maxStep(y) >= 0.005) std::cerr << "one-shot edge: trigger " << trigger << " curve " << curve << " invert " << invert << " slope " << slope << " step " << maxStep(y) << "\n";
+            CHECK(maxStep(y) < 0.005);
+        }
+    for (int trigger : { 0, 1, 2 })
+    {
+        Proc p;
+        set(p, "trigger", (float) trigger);
+        prepare(p, 48000, 256);
+        Host h;
+        juce::Random rnd(4);
+        Run r = dc(1);
+        r.host = &h, r.notes = { 100 }, r.sc = [](int i) { return i == 100 ? 1.0f : 0.0f; };
+        r.perBlock = [&](int start) { set(p, "soothe", start % 1024 == 0 ? 0 : rnd.nextFloat() * 100); };
+        CHECK(maxStep(run(p, 48000, 256, r), 2000) < 0.005);
+    }
 }
 
 // The host's transport: stopped, the graph's telemetry (cycle, duck, its held peak, the bins) holds still while the audio
@@ -732,6 +752,14 @@ static void testBands()
         r.in = [hz](int i, int) { return (float) (0.5 * std::sin(2 * pi * hz * i / 48000)); }, r.host = &h, r.notes.push_back(0);
         return rmsDb(run(p, 96000, 512, r), 24000) - 10 * std::log10(0.125);
     };
+    // Legacy automation must remain sonically inert in every mode, even when the duck is active.
+    for (int mode = 0; mode < gulp::numColors; ++mode)
+    {
+        Proc a, b;
+        set(a, "color", (float) mode), set(b, { { "color", (float) mode }, { "band", 2 }, { "tone", 100 } });
+        prepare(a, 48000, 512), prepare(b, 48000, 512);
+        CHECK(run(a, 12000, 512) == run(b, 12000, 512));
+    }
     const Settings pumping { { "color", 1 } }, lows { { "color", 1 } }, highs { { "color", 2 } };
     CHECK(std::abs(level(pumping, 2000)) < 0.05 && level(pumping, 50) < -1);
     CHECK(std::abs(level(lows + plateau, 2000)) < 0.05 && level(lows + plateau, 50) < -30); // duck 1 throughout (as in testColours)
@@ -992,7 +1020,15 @@ static void testInteraction()
             }
             else if (auto* l = dynamic_cast<juce::Label*>(c))
                 CHECK(l->isEditableOnSingleClick()), l->showEditor();
-            CHECK(dynamic_cast<juce::Button*>(c) != nullptr || dynamic_cast<juce::Label*>(c) != nullptr);
+            else if (auto* slider = dynamic_cast<juce::Slider*>(c))
+            {
+                const auto pos = slider->getLocalBounds().toFloat().getCentre();
+                const auto time = juce::Time::getCurrentTime();
+                const juce::MouseEvent event(juce::Desktop::getInstance().getMainMouseSource(), pos, juce::ModifierKeys::leftButtonModifier,
+                                             1, 0, 0, 0, 0, slider, slider, time, pos, time, 1, false);
+                slider->mouseDown(event), slider->mouseUp(event);
+            }
+            CHECK(dynamic_cast<juce::Button*>(c) != nullptr || dynamic_cast<juce::Label*>(c) != nullptr || dynamic_cast<juce::Slider*>(c) != nullptr);
             timer.timerCallback();
         };
         const auto press = [&](const juce::String& id) { click(at(id)); };
@@ -1034,7 +1070,9 @@ static void testInteraction()
             auto* param = p.apvts.getParameter(id);
             CHECK(box(slider) != nullptr && slider->isVisible());
             juce::Point<float> grab = slider->getLocalBounds().toFloat().getCentre(); // a point off the value box, if any
-            for (int y = 0; box(slider)->getBounds().toFloat().contains(grab) && y < slider->getHeight(); y += 4) grab = { 2.0f, (float) y };
+            auto* target = e->getComponentAt(centre(*slider, juce::Rectangle<int>((int) grab.x, (int) grab.y, 1, 1)).roundToInt());
+            if (target != slider) std::cerr << "drag target for " << id << ": " << target->getComponentID() << " " << target->getName() << "\n";
+            CHECK(target == slider);
             param->setValueNotifyingHost(0.3f);
             const auto to = grab - juce::Point<float>(0, 50.0f); // 50 design px up = 0.2 of the range
             slider->mouseDown(mouse(slider, grab, grab)), slider->mouseDrag(mouse(slider, to, grab)), slider->mouseUp(mouse(slider, to, grab));
@@ -1055,6 +1093,8 @@ static void testInteraction()
         const auto onEditor = [&](juce::Point<float> inLayer) { return e->getLocalPoint(layer, inLayer); };
         CHECK(e->getComponentAt(onEditor(diamond()).roundToInt()) == slope && std::abs(diamond().x - (25 + 0.3f * 70) * 1024 / 120 - 4) < 6);
         CHECK(e->getComponentAt(onEditor({ (25 + 0.8f * 70) * 1024 / 120, (5 + 8) * 576 / 34.0f }).roundToInt()) != slope);
+        // Empty space between the grip and value label must not start a drag.
+        CHECK(e->getComponentAt(onEditor(slope->getPosition().toFloat() + juce::Point<float>(0.5f * 1024 / 120, 0.5f * 576 / 34)).roundToInt()) != slope);
         const auto start = diamond();
         const auto grab = slope->getLocalPoint(layer, start);
         const float cycle = 70 * 1024 / 120.0f;

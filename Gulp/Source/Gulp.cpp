@@ -115,12 +115,7 @@ std::optional<double> number(const String& t) // the whole text is one finite nu
 
 // stateVersion 1 -> 2, on normalised values in ID order: ducking the lows / highs was band lows / highs with level and
 // is now the lows / highs mode (the same sound, bit for bit); band and tone are otherwise dropped; soothe is off.
-void fromV1(std::vector<float>& v)
-{
-    if (v[Color] <= 0 && v[Band] > 0)
-        v[Color] = v[Band] * 2 / (gulp::numColors - 1);
-    v.resize(gulp::numParams, 0.0f);
-}
+float fromV1(float band, float mode) { return mode <= 0 && band > 0 ? band * 2 / (gulp::numColors - 1) : mode; }
 } // namespace
 
 const char* const gulp::curveNames[] = { "classic", "tight", "punch", "round", "long", "slam", "sub", "sub long", "trim", "suck", "wave", "double" };
@@ -146,7 +141,7 @@ double gulp::duck(int curve, double p, double s)
     }
 }
 
-void gulp::shape(Table& t, int curve, double slope, bool invert, double soothe)
+void gulp::shape(Table& t, int curve, double slope, bool invert, double soothe, bool triggered)
 {
     for (size_t j = 0; j < t.size(); ++j)
     {
@@ -154,6 +149,7 @@ void gulp::shape(Table& t, int curve, double slope, bool invert, double soothe)
         t[j] = invert ? 1 - d : d;
     }
     if (const int r = blur(soothe); r > 0) // running sums over the cycle: three box blurs approach a Gaussian
+    {
         for (int pass = 0; pass < 3; ++pass)
         {
             const Table from = t;
@@ -164,6 +160,19 @@ void gulp::shape(Table& t, int curve, double slope, bool invert, double soothe)
                 t[(size_t) j] = sum / (2 * r + 1), sum += from[(size_t) (j + r + 1) % 1024] - from[(size_t) (j - r + 1024) % 1024];
             t[1024] = t[0];
         }
+        // Start a triggered cycle 3r early. Its neighbours are idle, not the previous/next cycle:
+        // taper over the blur's support so inverted and long-release curves also enter and leave without a step.
+        if (triggered)
+        {
+            const Table from = t;
+            for (int j = 0; j < 1024; ++j)
+            {
+                const double edge = std::min(1.0, (double) std::min(j, 1024 - j) / (3 * r));
+                t[(size_t) j] = from[(size_t) (j + 1024 - 3 * r) % 1024] * edge * edge * (3 - 2 * edge);
+            }
+            t[1024] = t[0];
+        }
+    }
 }
 
 struct GulpProcessor::Dsp
@@ -171,8 +180,9 @@ struct GulpProcessor::Dsp
     std::array<std::atomic<float>*, gulp::numParams> raw {};
     double fs = 48000, slew = 1, envRelease = 0;
     SmoothedValue<double> depth, gain, split, colours[gulp::numColors], mid, side;
-    gulp::Table table {};
-    std::array<float, 4> tableKey {}; // curve, slope, invert, soothe the table was built for
+    gulp::Table table {}, previous {};
+    SmoothedValue<double> tableMix { 1 };
+    std::array<float, 5> tableKey {}; // curve, slope, invert, soothe, triggered the table was built for
     Svf cross[2][4];                  // per channel: two lowpass, two highpass sections (LR4)
     ColourState state[2][gulp::numColors]; // per channel and mode
     Coefs k;
@@ -189,7 +199,7 @@ struct GulpProcessor::Dsp
     {
         fs = sr > 0 && sr < 1.0e7 ? sr : 48000.0;
         slew = 1 - std::exp(-1 / (0.00025 * fs)), envRelease = std::exp(-1 / (0.05 * fs));
-        for (auto* s : { &depth, &gain, &split })
+        for (auto* s : { &depth, &gain, &split, &tableMix })
             s->reset(fs, 0.02);
         for (auto* s : { &mid, &side })
             s->reset(fs, 0.01);
@@ -220,11 +230,17 @@ struct GulpProcessor::Dsp
         set(depth, p(Depth) / 100), set(gain, Decibels::decibelsToGain(p(Output))), set(split, std::log2(p(Split)));
         set(mid, p(Stereo) < 1.5 ? 1 : 0), set(side, p(Stereo) < 0.5 || p(Stereo) > 1.5 ? 1 : 0);
     }
-    void buildTable()
+    void buildTable(bool triggered)
     {
-        const std::array<float, 4> key { raw[Curve]->load(), raw[Slope]->load(), raw[Invert]->load(), raw[Soothe]->load() };
-        if (key != tableKey)
-            tableKey = key, gulp::shape(table, (int) key[0], key[1], key[2] > 0.5f, key[3] / 100.0);
+        const std::array<float, 5> key { raw[Curve]->load(), raw[Slope]->load(), raw[Invert]->load(), raw[Soothe]->load(), (float) triggered };
+        if (key == tableKey) return;
+        const bool fade = tableKey[0] >= 0 && (tableMix.isSmoothing() || key[3] > 0 || tableKey[3] > 0);
+        // Retarget from the currently audible shape, even if automation arrives during a previous 20 ms fade.
+        if (fade)
+            for (size_t j = 0; j < table.size(); ++j)
+                previous[j] += tableMix.getCurrentValue() * (table[j] - previous[j]);
+        tableKey = key, gulp::shape(table, (int) key[0], key[1], key[2] > 0.5f, key[3] / 100.0, triggered);
+        tableMix.setCurrentAndTargetValue(fade ? 0 : 1), tableMix.setTargetValue(1);
     }
     void update(double splitLog2) // every 8 samples: crossover and mode coefficients from the duck amount a
     {
@@ -273,12 +289,13 @@ void GulpProcessor::processBlock(AudioBuffer<float>& buffer, MidiBuffer& midi)
     auto& d = *dsp;
     if (resetPending.exchange(false))
         d.reset();
-    d.targets(false), d.buildTable();
+    d.targets(false);
     auto p = [&d](int i) { return d.raw[(size_t) i]->load(); };
     const int n = buffer.getNumSamples(), channels = jmin(2, getMainBusNumInputChannels(), getMainBusNumOutputChannels());
     const auto sc = getBusBuffer(buffer, true, 1);
     const int trigger = (int) p(Trigger), rate = (int) p(Rate), scChannels = jmin(2, sc.getNumChannels());
     const bool loop = p(Loop) > 0.5f, tempo = p(TempoSync) > 0.5f;
+    d.buildTable(trigger != 0);
 
     // Sync: the phase comes from the host's ppq at every block start and advances per sample, so tempo changes and
     // loop jumps land on the grid. Stopped or without a usable position it freewheels at the host tempo (120 if the
@@ -307,8 +324,6 @@ void GulpProcessor::processBlock(AudioBuffer<float>& buffer, MidiBuffer& midi)
     const size_t delay = trigger == 0 ? 0 : (size_t) jmin((long) ring - 1, std::lround(jmax(0.0, shift) / inc));
     double scPeak = d.env, outPeak = d.outEnv; // the meters: the followers' peaks over the block
     const double threshold = Decibels::decibelsToGain((double) p(Thresh)), rearm = threshold * Decibels::decibelsToGain(-3.0);
-    // Soothe's blur reaches 3 * blur steps before a hit: a trigger starts that far back, so its attack eases in from it.
-    const double lead = 3 * gulp::blur(p(Soothe) / 100.0) / 1024.0;
     auto event = midi.cbegin();
     double phase = 0, view = 0, held = 0; // view: where the graph is (the beat or the time since the trigger)
     for (int i = 0; i < n; ++i)
@@ -342,13 +357,15 @@ void GulpProcessor::processBlock(AudioBuffer<float>& buffer, MidiBuffer& midi)
             view = !d.armed ? 1 : loop ? d.cycle - std::floor(d.cycle) : jmin(d.cycle, 1.0);
             idle = !d.armed || (!loop && view >= 1);
             d.cycle = loop ? view + inc : jmin(d.cycle + inc, 1.0);
-            phase = view < lead ? view - lead + 1 : view - lead;
+            phase = view;
         }
 
         const double x = phase * 1024;
         const int j = jmin(1023, (int) x);
         const double depth = d.depth.getNextValue();
-        const double aim = idle ? 0.0 : depth * (d.table[(size_t) j] + (x - j) * (d.table[(size_t) j + 1] - d.table[(size_t) j]));
+        const auto read = [&](const gulp::Table& t) { return t[(size_t) j] + (x - j) * (t[(size_t) j + 1] - t[(size_t) j]); };
+        const double mix = d.tableMix.getNextValue(), shaped = read(d.table);
+        const double aim = idle ? 0.0 : depth * (mix < 1 ? read(d.previous) + mix * (shaped - read(d.previous)) : shaped);
         if (idle || (d.hold > 0 && (aim >= d.hold || d.table[(size_t) j + 1] <= d.table[(size_t) j])))
             d.hold = 0;
         d.aim = jmax(aim, d.hold);
@@ -446,23 +463,18 @@ void GulpProcessor::getStateInformation(MemoryBlock& dest)
 
 void GulpProcessor::applyParams(const XmlElement& state)
 {
+    const bool legacy = state.getIntAttribute("stateVersion", 1) < 2;
     for (int i = 0; i < gulp::numParams; ++i)
     {
         auto* p = apvts.getParameter(ids[i]);
         const XmlElement* e = nullptr; // the first PARAM with this id
         for (auto* c : state.getChildWithTagNameIterator("PARAM"))
             e = e == nullptr && c->getStringAttribute("id") == ids[i] ? c : e;
-        const auto v = number(e != nullptr ? e->getStringAttribute("value") : String());
+        const auto v = number(e != nullptr && !(legacy && i == Soothe) ? e->getStringAttribute("value") : String());
         p->setValueNotifyingHost(v ? p->convertTo0to1(p->getNormalisableRange().snapToLegalValue((float) *v)) : p->getDefaultValue());
     }
-    if (state.getIntAttribute("stateVersion", 1) < 2) // 0.1.0 sessions and user preset files
-    {
-        std::vector<float> v;
-        for (int i = 0; i < Soothe; ++i)
-            v.push_back(apvts.getParameter(ids[i])->getValue());
-        fromV1(v);
-        apvts.getParameter(ids[Color])->setValueNotifyingHost(v[Color]);
-    }
+    if (legacy) // 0.1.0 sessions and user preset files
+        apvts.getParameter(ids[Color])->setValueNotifyingHost(fromV1(apvts.getParameter(ids[Band])->getValue(), apvts.getParameter(ids[Color])->getValue()));
 }
 
 // stateVersion 1 is 0.1.0's format, 2 (0.2.0) appended soothe and retired band and tone: fromV1() migrates. A newer one
@@ -490,7 +502,7 @@ void GulpProcessor::setStateInformation(const void* data, int size)
             if (const auto v = number(t[i]); v && *v >= 0 && *v <= 1)
                 slots[k].push_back((float) *v);
         if (v1 && slots[k].size() == (size_t) Soothe)
-            fromV1(slots[k]);
+            slots[k][Color] = fromV1(slots[k][Band], slots[k][Color]), slots[k].push_back(0);
         if (slots[k].size() != (size_t) gulp::numParams)
             slots[k].clear();
     }

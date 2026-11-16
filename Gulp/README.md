@@ -10,7 +10,8 @@ itself on the sidechain (**audio**: peak follower, threshold, re-armed 3 dB belo
 does with the mode: **vol** (level), **lows** / **highs** (only below / above the Linkwitz-Riley **split**), dark
 (lowpass), thin (highpass), pinch (band closing on 1 kHz), hollow (1 kHz notch) or grit (sample-rate drop), on both
 channels, the mid or the side. **soothe** rounds the curve's hard corners (the same blur in the graph and the audio), so
-the attack eases in without a click; with a MIDI or audio trigger the eased attack starts at the hit.
+the attack eases in; MIDI/audio envelopes also taper to full level at the cycle boundaries. Changes to a soothed
+shape crossfade over 20 ms to avoid automation steps; soothe at zero preserves the original DSP.
 
 ## Controls
 

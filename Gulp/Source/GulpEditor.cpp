@@ -117,6 +117,21 @@ struct Look : LookAndFeel_V4
         return layout;
     }
 };
+// The free-rate value is also its drag surface; the label lets pointer events through until it is being edited.
+struct RateValue : Slider
+{
+    void lookAndFeelChanged() override
+    {
+        Slider::lookAndFeelChanged();
+        for (auto* child : getChildren())
+            if (auto* label = dynamic_cast<Label*>(child)) label->setInterceptsMouseClicks(false, true);
+    }
+    void mouseUp(const MouseEvent& e) override
+    {
+        Slider::mouseUp(e);
+        if (e.mouseWasClicked() && e.getNumberOfClicks() == 1 && !e.mods.isPopupMenu()) showTextBox();
+    }
+};
 struct Key : Button
 {
     explicit Key(const String& id) : Button(id) { setComponentID(id), setRepaintsOnMouseActivity(false); }
@@ -127,11 +142,16 @@ struct KnobSpec { const char *id, *name; int x, y; bool centred; };
 const KnobSpec knobSpecs[] = { { "shift", "nudge", 61, B + 1, true }, { "thresh", "thresh", 74, B + 1, false }, { "soothe", "soothe", 87, B + 1, false },
                                { "depth", "depth", RX + 7, 4, false }, { "split", "split", RX + 7, 13, false }, { "output", "output", RX + 7, 22, false } };
 
-// The slope: only the ◆ (with its arrows and label) is a target. A sideways drag moves the handle with the cursor, in
+// The slope: only the ◆ and its value label are targets. A sideways drag moves the handle with the cursor, in
 // design pixels from where it was grabbed, so the handle's own moves never feed back into the drag.
 struct Handle : Slider
 {
+    Rectangle<int> grip;
     std::function<void(double dx)> drag;
+    bool hitTest(int x, int y) override
+    {
+        return grip.contains(x, y) || Rectangle<int>::fromString(getProperties()["box"].toString()).contains(x, y);
+    }
     void mouseDrag(const MouseEvent& e) override
     {
         const auto m = e.getEventRelativeTo(getParentComponent());
@@ -144,7 +164,8 @@ struct Editor : AudioProcessorEditor, Timer
     GulpProcessor& proc;
     Look look;
     Component layer; // the controls, in design pixels
-    Slider knobs[6], freeHz;
+    Slider knobs[6];
+    RateValue freeHz;
     Handle slope;
     Key prev { "prev" }, next { "next" }, save { "save" }, slotA { "A" }, slotB { "B" }, invert { "invert" }, loop { "loop" }, free { "free" }, sync { "sync" }, down { "rate-" }, up { "rate+" }, peak { "peak" };
     OwnedArray<Key> curves, colours, stereos, triggers;
@@ -309,9 +330,9 @@ struct Editor : AudioProcessorEditor, Timer
         const double s = std::exp2(value("slope") / 100.0), depth = value("depth") / 100.0, soothe = value("soothe") / 100.0;
         // The graph is the time since the cycle began (the beat in sync): the nudge slides the curve along it in sync,
         // and a trigger's softened attack starts where the hit is.
-        const double offset = trigger == 0 ? value("shift") / 100.0 : 3 * gulp::blur(soothe) / 1024.0;
+        const double offset = trigger == 0 ? value("shift") / 100.0 : 0;
         gulp::Table table;
-        gulp::shape(table, curve, value("slope"), inverted, soothe);
+        gulp::shape(table, curve, value("slope"), inverted, soothe, trigger != 0);
         const auto gain = [&](double p) {
             p -= offset + std::floor(p - offset);
             const double x = p * 1024;
@@ -393,13 +414,15 @@ struct Editor : AudioProcessorEditor, Timer
         g.braille(AX, AT, AW, AH, line, red), g.braille(AX, AT, AW, AH, ghost, kick, under);
         // The slope handle rides the curve where the release is (it moves with the slope and the nudge); its label is
         // the value to type. Hovered or dragged, its arrows light up.
-        const double hp = 0.3 * s + offset - std::floor(0.3 * s + offset);
+        const double position = 0.3 * s + offset + (trigger == 0 ? 0 : 3 * gulp::blur(soothe) / 1024.0);
+        const double hp = position - std::floor(position);
         const int hx = AX + (int) (AW * hp), hy = jlimit(AT, AT + AH - 2, AT + (int) std::nearbyint((1 - gain(hp)) * AH));
         const String label = "slope " + text("slope");
         const int lx = hx + 2 + label.length() <= AX + AW ? hx + 2 : hx - 1 - label.length(), ly = hy > AT ? hy - 1 : hy + 1;
         const bool hot = slope.isMouseOverOrDragging(true);
         g.put(hx, hy, u("◆"), white), g.put(hx - 3, hy + 1, u("◀ ▶"), hot ? white : grey), g.put(lx, ly, label, white, true);
         place(slope, cells(hx - 3, hy - 1, 7, 3).getUnion(cells(lx, ly, label.length(), 1)), cells(lx, ly, label.length(), 1));
+        slope.grip = cells(hx - 1, hy, 3, 1).expanded(2) - slope.getPosition();
         // Playhead (only while the transport runs) and ruler in fractions of the rate (or time when free).
         const int ph = AX + jmin(AW - 1, (int) (AW * feed.phase.load()));
         for (int j = AT; j < AT + AH && live; ++j)

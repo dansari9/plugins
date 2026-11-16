@@ -18,10 +18,10 @@ inline constexpr int rateDen[numRates] { 32, 24, 16, 32, 12, 8, 16, 6, 4, 8, 3, 
 double duck(int curve, double phase, double s);
 // One cycle of the duck in 1024 steps (+ the end point): the curve with its slope % and invert, rounded by soothe 0..1
 // (three circular box blurs of radius blur(soothe) steps, so it reaches 3 * blur steps either side). The DSP and the
-// graph both read it.
+// graph both read it. Triggered cycles additionally taper to idle at their boundaries.
 using Table = std::array<double, 1025>;
 inline int blur(double soothe) { return (int) std::lround(80 * soothe); }
-void shape(Table&, int curve, double slope, bool invert, double soothe);
+void shape(Table&, int curve, double slope, bool invert, double soothe, bool triggered = false);
 
 // Audio thread -> editor, relaxed atomics: where the cycle is (the beat in sync, the time since the trigger otherwise),
 // the duck amount and its held peak (the editor may zero it), the peak (linear, per block) of the sidechain follower the
@@ -30,6 +30,7 @@ void shape(Table&, int curve, double slope, bool invert, double soothe);
 // stopped; the cycle, the duck, the peak and the bins then hold still.
 struct Feed
 {
+    static_assert(std::atomic<float>::is_always_lock_free && std::atomic<bool>::is_always_lock_free, "audio telemetry must be lock-free");
     static constexpr int bins = 140;
     std::atomic<float> phase { 0 }, duck { 0 }, held { 0 }, scLevel { 0 }, outLevel { 0 };
     std::atomic<bool> live { true };
