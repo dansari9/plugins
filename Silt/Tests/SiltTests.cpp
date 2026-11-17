@@ -10,7 +10,7 @@
 #include <new>
 #include <thread>
 
-// Real-time check: count heap allocations made on a thread flagged as "audio" (as crumb).
+// Real-time check: count heap allocations made on a thread flagged as "audio" (as gulp).
 static thread_local bool onAudioThread = false;
 static std::atomic<int> audioAllocations { 0 };
 static void countAllocation() { audioAllocations += onAudioThread ? 1 : 0; }
@@ -310,23 +310,24 @@ static void testDryAndLifecycle()
                 Proc p;set(p,{{"mix",0},{"output",12},{"oversample",(float)quality}});prepare(p,fs,512,1,2,2);
                 Run r;r.input=[](int i,int){return i==37?1.0f:noise(i)*2;};
                 const auto audio=run(p,8192,block,r);const int latency=p.getLatencySamples();
-                CHECK(latency>=0 && latency<512 && (quality==0?latency==0:latency>0));
-                for(size_t i=0;i<audio.l.size();++i)CHECK(audio.l[i]==((int)i<latency?0:r.input((int)i-latency,0)) && audio.r[i]==audio.l[i]);
+                CHECK(latency==0);
+                for(size_t i=0;i<audio.l.size();++i)CHECK(audio.l[i]==r.input((int)i,0) && audio.r[i]==audio.l[i]);
                 Run impulse;impulse.input=[](int i,int){return i==0?1.0f:0.0f;};
                 prepare(p,fs,512,2,0);const auto y=run(p,512,17,impulse);
                 CHECK(std::distance(y.l.begin(),std::max_element(y.l.begin(),y.l.end()))==latency);
                 if(block==512)std::cout<<" | "<<latency;
-                // Quality can change after prepare, with no new storage or stale dry data after its delay.
+                // Quality can change after prepare, with exact dry and no new storage.
                 for(int next=0;next<4;++next)
                 {
-                    set(p,"oversample",(float)next);run(p,512,block,r);
-                    CHECK(next==0?p.getLatencySamples()==0:p.getLatencySamples()>0);
+                    set(p,"oversample",(float)next);const auto changed=run(p,512,block,r);
+                    for(size_t i=0;i<changed.l.size();++i)CHECK(changed.l[i]==r.input((int)i,0) && changed.r[i]==changed.l[i]);
+                    CHECK(p.getLatencySamples()==0);
                 }
             }
         }
         std::cout<<"\n";
     }
-    // Live quality changes glide between delay taps and FIR paths instead of resetting into a step.
+    // Live quality changes crossfade the feedback FIR paths while dry stays exact.
     Proc changing;set(changing,"mix",0);prepare(changing);
     Run sine;sine.input=[](int i,int){return (float)(.1*std::sin(2*pi*110*i/48000));};
     sine.perBlock=[&](int t){set(changing,"oversample",(float)((t/2400)%4));};
@@ -456,17 +457,24 @@ static double maxStep(const Audio& a,size_t begin=1)
 {double m=0;for(size_t i=juce::jmax<size_t>(1,begin);i<a.l.size();++i)m=juce::jmax(m,(double)std::abs(a.l[i]-a.l[i-1]));return m;}
 static void testFreezeAndWindows()
 {
-    for(int shape=0;shape<12;++shape)for(double skew:{0.0,.5,1.0})
+    for(int shape=0;shape<silt::numWindows;++shape)for(double skew:{0.0,.5,1.0})
     {
         CHECK(std::abs(silt::window(shape,0,skew))<1e-12 && std::abs(silt::window(shape,1,skew))<1e-12);
         for(int k=0;k<=1000;++k)CHECK(silt::window(shape,k/1000.0,skew)>=0 && silt::window(shape,k/1000.0,skew)<=1);
     }
-    Proc p;set(p,plain),set(p,{{"size",600},{"density",24},{"bloom",50}}),prepare(p);
-    Run r;r.input=[](int i,int){return (float)(.15*std::sin(2*pi*110*i/48000));};run(p,48000,64,r);
-    r.offset=48000;r.perBlock=[&](int){set(p,"freeze",1);};const auto held=run(p,24000,64,r);
-    CHECK(p.feed.frozen && maxStep(held)<.04);
-    const int head=p.feed.at[0];r.offset=72000;run(p,24000,64,r);CHECK(p.feed.at[0]==head);
-    r.offset=96000;r.perBlock=[&](int){set(p,"freeze",0);};CHECK(maxStep(run(p,24000,64,r))<.04 && !p.feed.frozen);
+    Proc p,reference;
+    for(auto* q:{&p,&reference})set(*q,plain),set(*q,{{"size",600},{"density",24},{"bloom",50},{"scatter",25}}),prepare(*q);
+    Run r;r.input=[](int i,int){return (float)(.15*std::sin(2*pi*110*i/48000));};
+    run(p,48000,64,r),run(reference,48000,64,r);
+    r.offset=48000;const auto live=run(reference,72000,64,r);
+    r.perBlock=[&](int){set(p,"freeze",1);};const auto held=run(p,24000,64,r);
+    const double bound=2*maxStep(live);
+    std::cout<<"Freeze steps: live "<<maxStep(live)<<" held "<<maxStep(held);
+    CHECK(p.feed.frozen && maxStep(held)<bound);
+    const int head=p.feed.at;r.offset=72000;run(p,24000,64,r);CHECK(p.feed.at==head);
+    r.offset=96000;r.perBlock=[&](int){set(p,"freeze",0);};const auto released=run(p,24000,64,r);
+    std::cout<<" released "<<maxStep(released)<<"\n";
+    CHECK(maxStep(released)<bound && !p.feed.frozen);
     set(p,plain),set(p,{{"trigger",2},{"size",4000},{"pitch",-48},{"pitchMode",1}}),prepare(p,96000,4096);
     Run longGrain;longGrain.input=[](int,int){return 0.0f;};longGrain.side=longGrain.input;
     longGrain.events={{0,juce::MidiMessage::noteOn(1,60,(juce::uint8)127)}};
@@ -541,6 +549,43 @@ static void testSound()
     std::cout<<"Pitch-up rejection: "<<10*std::log10((stop+1e-30)/pass)<<" dB\n";CHECK(pass>1e-5 && stop<pass*.01);
     for(int channels:{1,2})
     {Proc p;set(p,plain),set(p,"density",24),prepare(p,48000,512,channels,0,2);const auto a=run(p,48000);CHECK(a.l!=a.r && energy(a)>1e-5);}
+    // Channel identity must survive stereo capture; random pan alone cannot satisfy this check.
+    Proc stereo;set(stereo,plain),set(stereo,{{"density",24},{"size",500}}),prepare(stereo,48000,512,2,0,2);
+    Run tones;tones.input=[](int i,int c){return (float)(.15*std::sin(2*pi*(c==0?300:700)*i/48000));};
+    const auto separated=run(stereo,144000,512,tones);
+    const auto band=[](const std::vector<float>& audio,double hz) {
+        double re=0,im=0;
+        for(size_t i=96000;i<audio.size();++i)re+=audio[i]*std::cos(2*pi*hz*(double)i/48000),im+=audio[i]*std::sin(2*pi*hz*(double)i/48000);
+        return re*re+im*im;
+    };
+    CHECK(band(separated.l,300)>band(separated.l,700)*std::pow(10.0,1.5));
+    CHECK(band(separated.r,700)>band(separated.r,300)*std::pow(10.0,1.5));
+    // Small pitch-ups retain the top octave rather than jumping straight to the half-rate mip.
+    double highBand[2]{};
+    for(int pitch=0;pitch<=1;++pitch)
+    {
+        Proc p;set(p,plain),set(p,{{"pitch",(float)pitch},{"pitchMode",1},{"size",500},{"trigger",2}}),prepare(p);
+        Run r;r.input=[](int i,int){return (float)(.15*std::sin(2*pi*13000*i/48000));};
+        r.events={{96000,juce::MidiMessage::noteOn(1,60,(juce::uint8)127)}};
+        run(p,96000,512,r);r.offset=96000;highBand[pitch]=std::pow(Level(run(p,48000,512,r)).rms,2);
+    }
+    const double bandwidthDb=10*std::log10(highBand[1]/highBand[0]);
+    std::cout<<"+1 st / 13 kHz relative level: "<<bandwidthDb<<" dB\n";
+    CHECK(std::abs(bandwidthDb)<3);
+    // Pitched and held readers need power overlap compensation even without scatter or macros.
+    double unpitched=0;
+    for(int scenario=0;scenario<6;++scenario)
+    {
+        Proc p;set(p,plain),set(p,{{"size",1200},{"density",15},{"pitch",scenario==0 || scenario==5?0.0f:scenario%2?7.0f:-7.0f},{"pitchMode",scenario>=3?1.0f:0.0f}}),prepare(p);
+        // Broad, low-passed noise avoids periodic comb cancellation and mip stop-band losses.
+        Run r;r.input=[](int i,int){float x=0;for(int j=0;j<8;++j)x+=noise(i-j);return .053f*x;};
+        run(p,192000,512,r);if(scenario==5)set(p,"freeze",1);
+        r.offset=192000;run(p,96000,512,r);r.offset=288000;
+        const double db=Level(run(p,96000,512,r)).rmsDb();
+        if(scenario==0)unpitched=db;
+        std::cout<<"Zero-scatter level "<<scenario<<": "<<db<<" dBFS\n";
+        CHECK(std::abs(db-unpitched)<6);
+    }
     for(const auto* macro:{"motion","texture","bloom","chaos"})
     {
         Proc a,b;prepare(a),prepare(b);const auto neutral=params(b);set(b,macro,75);const auto modified=params(b);
@@ -622,7 +667,7 @@ static void testPerformance()
         CHECK(elapsed<10000); // generous on instrumented/contended CI; detects a processing-loop stall
     }
 }
-// Dense vector reads and lookahead must agree with single-sample processing, including a held capture.
+// Dense batch reads and lookahead must agree with single-sample processing, including a held capture.
 static void testDenseBlocks()
 {
     for (bool frozen : { false, true })
@@ -688,7 +733,7 @@ static juce::String pixels(const juce::Image& image)
     return sha(m);
 }
 
-// Observe real repaint invalidations without a window (as crumb).
+// Observe real repaint invalidations without a window (as gulp).
 struct RepaintCapture : juce::CachedComponentImage
 {
     juce::Component& component;
@@ -748,6 +793,13 @@ static void testEditor()
                 const auto grab=fader?juce::Point<float>(20,8):slider->getLocalBounds().toFloat().getCentre();
                 CHECK(e.getComponentAt(e.getLocalPoint(slider,grab).roundToInt())==slider);
                 param->setValueNotifyingHost(.3f);
+                if(fader)
+                {
+                    const float before=param->getValue();
+                    const auto click=juce::Point<float>(100,8);
+                    slider->mouseDown(mouse(slider,click,click));CHECK(param->getValue()==before);
+                    slider->mouseUp(mouse(slider,click,click));CHECK(param->getValue()==before);
+                }
                 const auto to=fader?grab+juce::Point<float>(30,0):grab-juce::Point<float>(0,50);
                 slider->mouseDown(mouse(slider,grab,grab)),slider->mouseDrag(mouse(slider,to,grab)),slider->mouseUp(mouse(slider,to,grab));
                 CHECK(fader?param->getValue()>.3f:std::abs(param->getValue()-.5f)<.01f); // gulp's exact 250 design-pixel vertical sensitivity
@@ -842,7 +894,7 @@ static void testGoldens(bool record=false)
     const auto renderer=pixels(probe);
     const bool ci=std::getenv("GITHUB_ACTIONS")!=nullptr;
     const char* expectedEnvironment="14.2.0/Release/07adb83962bd7f372226ea055bca705c159534fa4a19d3279488b12cd95eea5c", *expectedRenderer="506141d22f79fb1886eb4dec6e8e40da3c3c48e3df63f1f3d60e979dd78361b5";
-    const char* expectedSound="3545774254763dc86b8b7c7eeb00d3fd0fd032c1b8f0efa24dba0d6f89988cf5";
+    const char* expectedSound="fcb195d513a30e7218f22fae43f1ec69bcb38390dfb4dd78ceb6f57d44d8d831";
     const char* expectedShots[]{"ce8254e6680beb9b91b43334e5de2b0459159dd1f134d7afd525b44f14bc08b9","83626f7c99fb9acb6bed9c2afb58e44ffb203a4a21287edac94cf33ab31de67d","a87da81d62fe9c1f3640fd4948f6a796a02c199f50ecd6d28475232c46276ed2"};
     std::cout<<"Golden environment: "<<environment<<"\nGolden renderer: "<<renderer<<"\n";
     if(record || (!ci && environment==expectedEnvironment))

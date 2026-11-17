@@ -3,11 +3,6 @@
 #include <optional>
 #include <juce_dsp/juce_dsp.h>
 #include <sstream>
-#include <cstdlib>
-#if JUCE_INTEL && (defined(__GNUC__) || defined(__clang__))
- #include <immintrin.h>
- #define SILT_AVX2 1
-#endif
 
 using namespace juce;
 
@@ -84,8 +79,9 @@ std::optional<double> number(const String& t) // the whole text is one finite nu
 double release(double p, double hold, double k) { return p < hold ? 1 : std::pow(std::max(0.0, 1 - (p - hold) / (1 - hold)), k); } // gulp's, normalised
 
 // ================================ The capture buffer ================================
-// The input ring plus four halfband-filtered mipmaps. Each grain selects ceil(log2 pitch ratio), so every
-// pitched-up reader is band-limited before resampling. Level k's sample j sits at 2^k j - delay[k].
+// The input ring plus four halfband-filtered mipmaps. Each grain selects a band-limited level with
+// three semitones of headroom before stepping down, preserving small pitch-ups' bandwidth.
+// Level k's sample j sits at 2^k j - delay[k].
 // Four-point Hermite reads share stereo coordinates; only the nonlinear feedback needs oversampling.
 constexpr int levels = 5;
 constexpr double scale[levels] { 1, .5, .25, .125, .0625 };
@@ -102,7 +98,6 @@ inline __attribute__((always_inline)) float hermite(const std::vector<float>& d,
 
 struct Capture
 {
-    bool wide = false;
     std::vector<float> data[levels][2];
     size_t mask[levels] {};
     int64 head = 0;        // frames written
@@ -120,11 +115,9 @@ struct Capture
         for (int k = 0; k < levels; ++k) mask[k] = (size >> k) - 1;
         slice = jmax(1, sliceLength), history = frames;
         startup = jmax(1, roundToInt(frames / silt::maxBackSeconds * .005));
-        wide = SystemStats::hasAVX2() && std::getenv("SILT_PORTABLE") == nullptr;
     }
     void reset()
     {
-        for (auto& level : data) for (auto& c : level) std::fill(c.begin(), c.end(), 0.0f);
         head = 0, gain = 1, peak = 0, count = 0;
     }
     // One frame, mixed into what is there by the write gain, then each mipmap sample it completes.
@@ -184,42 +177,6 @@ struct Capture
             l += mix * (l2 - l), r += mix * (r2 - r);
         }
     }
-#if defined(SILT_AVX2)
-    __attribute__((target("avx2"))) static __m256 wideCubic(__m256 a, __m256 b, __m256 c, __m256 e, __m256 f)
-    {
-        const auto half = _mm256_set1_ps(.5f), oneHalf = _mm256_set1_ps(1.5f);
-        const auto inner = _mm256_add_ps(_mm256_mul_ps(half, _mm256_sub_ps(e, a)), _mm256_mul_ps(oneHalf, _mm256_sub_ps(b, c)));
-        const auto middle = _mm256_add_ps(_mm256_sub_ps(_mm256_add_ps(_mm256_sub_ps(a, _mm256_mul_ps(_mm256_set1_ps(2.5f), b)), _mm256_mul_ps(_mm256_set1_ps(2), c)), _mm256_mul_ps(half, e)), _mm256_mul_ps(f, inner));
-        return _mm256_add_ps(b, _mm256_mul_ps(f, _mm256_add_ps(_mm256_mul_ps(half, _mm256_sub_ps(c, a)), _mm256_mul_ps(f, middle))));
-    }
-    // Runtime dispatch preserves older Intel hosts and the portable/NEON compiler path on Apple Silicon.
-    __attribute__((target("avx2"))) void wideRead(const double* positions, int k,
-                                                float* l, float* r, int length) const
-    {
-        const double base = (double) ((int64) ((positions[0] + delay[k]) * scale[k]) & ~(int64) mask[k]);
-        int j = 0;
-        for (; j + 8 <= length; j += 8)
-        {
-            const auto t0 = _mm256_sub_pd(_mm256_mul_pd(_mm256_add_pd(_mm256_loadu_pd(positions + j), _mm256_set1_pd(delay[k])), _mm256_set1_pd(scale[k])), _mm256_set1_pd(base));
-            const auto t1 = _mm256_sub_pd(_mm256_mul_pd(_mm256_add_pd(_mm256_loadu_pd(positions + j + 4), _mm256_set1_pd(delay[k])), _mm256_set1_pd(scale[k])), _mm256_set1_pd(base));
-            const auto whole0 = _mm256_floor_pd(t0), whole1 = _mm256_floor_pd(t1);
-            const auto index = _mm256_inserti128_si256(_mm256_castsi128_si256(_mm256_cvttpd_epi32(whole0)), _mm256_cvttpd_epi32(whole1), 1);
-            const auto f = _mm256_insertf128_ps(_mm256_castps128_ps256(_mm256_cvtpd_ps(_mm256_sub_pd(t0, whole0))), _mm256_cvtpd_ps(_mm256_sub_pd(t1, whole1)), 1);
-            const auto m = _mm256_set1_epi32((int) mask[k]);
-            for (int c = 0; c < 2; ++c)
-            {
-                const auto* d = data[k][c].data();
-                const auto a = _mm256_i32gather_ps(d, _mm256_and_si256(_mm256_sub_epi32(index, _mm256_set1_epi32(1)), m), 4);
-                const auto b = _mm256_i32gather_ps(d, _mm256_and_si256(index, m), 4);
-                const auto cv = _mm256_i32gather_ps(d, _mm256_and_si256(_mm256_add_epi32(index, _mm256_set1_epi32(1)), m), 4);
-                const auto e = _mm256_i32gather_ps(d, _mm256_and_si256(_mm256_add_epi32(index, _mm256_set1_epi32(2)), m), 4);
-                const auto value = wideCubic(a, b, cv, e, f);
-                _mm256_storeu_ps((c == 0 ? l : r) + j, value);
-            }
-        }
-        for (; j < length; ++j) readAt(positions[j], k, l[j], r[j]);
-    }
-#endif
     static constexpr int batch = 128;
     void readBatch(const double* positions, int k, float* l, float* r, int length,
                    bool frozen, float freezeStep) const
@@ -241,9 +198,6 @@ struct Capture
             }
             return;
         }
-#if defined(SILT_AVX2)
-        if (wide && length >= 8) { wideRead(positions, k, l, r, length); return; }
-#endif
         float* out[] { l, r };
         for (int i = 0; i < length; ++i)
         {
@@ -277,8 +231,8 @@ struct Grain
     float gl = 0, gr = 0, pitch = 0;
     float peak = 0.5f, attack = 1, decay = 1;
     unsigned tag = 0;
-    int shape = 10;
-    int level = 0, source = 0;
+    int shape = 0;
+    int level = 0;
     bool shifted = false;      // pitch mode: two crossfaded taps keep the timeline while the pitch moves
 };
 
@@ -309,7 +263,6 @@ struct OnePole // TPT one-pole: lowpass and highpass of the same state
 float coefficient(double hz, double fs) { const double g = std::tan(pi * jmin(hz, 0.45 * fs) / fs); return (float) (g / (1 + g)); }
 } // namespace
 
-const char* const silt::windowNames[] = { "drop", "needle", "knock", "lean", "fade", "slab", "mesa", "dome", "gate", "bulge", "hann", "twin" };
 const char* const silt::noteNames[] = { "1/64", "1/32T", "1/32", "1/16T", "1/16", "1/16D", "1/8T", "1/8", "1/8D", "1/4T", "1/4", "1/4D", "1/2T", "1/2", "1/2D", "1 bar", "2 bars" };
 
 double silt::window(int shape, double x, double skew)
@@ -317,18 +270,9 @@ double silt::window(int shape, double x, double skew)
     const double k = 0.02 + 0.96 * skew, p = x < k ? 1 - x / k : (x - k) / (1 - k);
     switch (shape)
     {
-        case 0: return release(p, 0, 2.2);
-        case 1: return release(p, 0, 3.0);
-        case 2: return release(p, 0.19, 1.5);
-        case 3: return release(p, 0, 1.2);
-        case 4: return release(p, 0, 1.8);
-        case 5: return release(p, 0.83, 1.0);
-        case 6: return release(p, 0.11, 1.0);
-        case 7: return release(p, 0.16, 0.8);
-        case 8: return release(p, 0.65, 0.5);
-        case 9: return 1 - std::pow(p, 1.6);
-        case 10: return 0.5 + 0.5 * std::cos(pi * p);
-        default: return p < 0.5 ? 0.5 + 0.5 * std::pow(1 - 2 * p, 2.2) : 0.5 * std::pow(2 - 2 * p, 2.2);
+        case 0: return 0.5 + 0.5 * std::cos(pi * p); // hann
+        case 1: return release(p, 0.16, 0.8);       // dome
+        default: return release(p, 0, 1.2);        // lean
     }
 }
 
@@ -341,7 +285,7 @@ struct SiltProcessor::Engine
     std::array<std::atomic<float>*, silt::numParams> raw {};
     float v[silt::numParams] {}; // this block's parameters
     double fs = 48000, tempo = 120;
-    Capture capture[2];          // the input, the sidechain
+    Capture capture;            // main input history; sidechain only triggers
     std::array<Grain, silt::maxGrains> grains {};
     int voiceCount = 0;
     std::array<float, 1025> env[silt::numWindows] {}, taps {}; // immutable windows; sin^2 pitch taps
@@ -363,9 +307,7 @@ struct SiltProcessor::Engine
     int lastNote = 60;
     // All quality paths are prepared once; changing quality never allocates on the audio thread.
     std::array<std::unique_ptr<dsp::Oversampling<float>>, 4> oversamplers;
-    int quality = -1, latency = 0, previousQuality = 0, previousLatency = 0, qualityFade = 0;
-    std::array<float, 512> dryDelay[2] {}, wetDelay[2] {};
-    size_t dryAt = 0;
+    int quality = -1, previousQuality = 0, qualityFade = 0;
     float meters[3] {};
     
     float fbRing[2][K] {};
@@ -383,11 +325,8 @@ struct SiltProcessor::Engine
     {
         fs = sr > 0 && sr < 1.0e7 ? sr : 48000.0;
         const auto size = (size_t) nextPowerOfTwo((int) ((silt::maxBackSeconds + 2.5) * fs));
-        for (int c = 0; c < 1; ++c)
-        {
-            capture[c].wave = &feed.wave[c], capture[c].at = &feed.at[c];
-            capture[c].prepare(size, (int) (silt::maxBackSeconds * fs / silt::Feed::bins), silt::maxBackSeconds * fs);
-        }
+        capture.wave = &feed.wave, capture.at = &feed.at;
+        capture.prepare(size, (int) (silt::maxBackSeconds * fs / silt::Feed::bins), silt::maxBackSeconds * fs);
         for (int k = 0; k < 4; ++k) diffusion[k].assign((size_t) (fs * (k < 2 ? 0.0047 : 0.0071)) + 1, 0.0f);
         for (size_t q = 0; q < oversamplers.size(); ++q)
         {
@@ -410,32 +349,27 @@ struct SiltProcessor::Engine
     }
     void reset(silt::Feed& feed)
     {
-        for (auto& c : capture) c.reset();
+        capture.reset();
         voiceCount = 0, grains = {}, onsets[0] = onsets[1] = {}, phase = 0, lastTick = -1, wasPlaying = false, stream = 1, scanned = 0, seed = 0x5117u;
         nextGrain = 0;
         heldCount = 0, velocity = 1, now = 0, overlap = 0, level = inputLevel = 0, lastNote = 60;
-        quality = -1, qualityFade = 0, dryAt = 0, dryDelay[0].fill(0), dryDelay[1].fill(0), wetDelay[0].fill(0), wetDelay[1].fill(0);
-        for (auto& os : oversamplers) os->reset();
+        quality = -1, qualityFade = 0;
         std::fill(std::begin(meters), std::end(meters), 0.0f);
         feed.note.store(60), feed.time.store(0), feed.events.store(0);
         std::fill(std::begin(cc), std::end(cc), -1.0f), std::fill(std::begin(ccTarget), std::end(ccTarget), -1.0f);
         for (auto& r : fbRing) std::fill(std::begin(r), std::end(r), 0.0f);
-        for (auto& d : diffusion) std::fill(d.begin(), d.end(), 0.0f);
         std::fill(std::begin(diffusionAt), std::end(diffusionAt), (size_t) 0);
         lows[0] = lows[1] = highs[0] = highs[1] = dc[0] = dc[1] = outputDc[0] = outputDc[1] = {};
-        reverb.reset(); // SILT_REVERB
-        for (int c = 0; c < 2; ++c)
-        {
-            for (auto& w : feed.wave[c]) w.store(0, std::memory_order_relaxed);
-            feed.at[c].store(0, std::memory_order_relaxed);
-        }
+        for (auto& w : feed.wave) w.store(0, std::memory_order_relaxed);
+        feed.at.store(0, std::memory_order_relaxed);
         feed.fired.store(0, std::memory_order_relaxed);
         feed.lastFire.store(-1, std::memory_order_relaxed), feed.lastPitch.store(0, std::memory_order_relaxed), feed.lastLength.store(0, std::memory_order_relaxed);
         read();
         width.setCurrentAndTargetValue(0.8f);
         feedback.setCurrentAndTargetValue((0.12f + 0.48f * macro(Bloom)));
         lowpass.setCurrentAndTargetValue(coefficient(4000, fs)), highpass.setCurrentAndTargetValue(coefficient(30, fs));
-        power.setCurrentAndTargetValue((float) (1 - 0.5 * jlimit(0.0, 1.0, separation())));
+        power.setCurrentAndTargetValue((float) (1 - 0.5 * jlimit(0.0, 1.0, separation()
+                    + (std::abs(v[Pitch]) > .005f || heldCount > 0 || v[Freeze] > .5f ? 1 : 0))));
         mix.setCurrentAndTargetValue(v[Mix] / 100), gain.setCurrentAndTargetValue(Decibels::decibelsToGain(v[Output])), verb.setCurrentAndTargetValue(0);
     }
     void read()
@@ -488,7 +422,7 @@ struct SiltProcessor::Engine
         st += heldCount > 0 ? held[(size_t) heldCount - 1] - 60 : 0;
         st = jlimit(-48.0, 48.0, st);
         const double r = std::exp2(st / 12);
-        const int mip = r <= 1 ? 0 : jmin(levels - 1, (int) std::ceil(std::log2(r)));
+        const int mip = r <= 1.19 ? 0 : jmin(levels - 1, (int) std::ceil(std::log2(r / 1.19)));
         const int readMargin = jmax(margin, delay[mip] + 4 * (1 << mip) + Capture::batch);
         const bool reverse = random() < 0.65f * macro(Chaos), shifted = v[PitchMode] < 0.5f;
         const double dir = reverse ? -1 : 1;
@@ -503,8 +437,7 @@ struct SiltProcessor::Engine
         const double spray = (v[Scatter] * 20 + 600 * macro(Chaos)) * fs / 1000;
         double u = random();
         u = std::pow(u, 1 + 3 * (1 - macro(Texture))); // slope: small distances more likely
-        const int towards = macro(Motion) > .5f ? 1 : 0;
-        back += spray * (towards == 1 ? u : towards == 2 ? -u : (random() < 0.5f ? u : -u)) + scanned;
+        back += spray * (macro(Motion) > .5f || random() < .5f ? u : -u) + scanned;
         const double extent = shifted ? size : dur * r;
         double a = 0, b = 0;
         if (frozen) a = extent + (shifted && reverse ? span : 0), b = shifted && !reverse ? span : 0;
@@ -513,11 +446,11 @@ struct SiltProcessor::Engine
         else a = jmax(0.0, dur * (r - 1)), b = jmax(0.0, dur * (1 - r));
         // Fit the whole segment when possible; longer notes retain their duration and use the capture's splice.
         back = a + b < maxBack - 2 * readMargin ? jlimit(readMargin + a, maxBack - readMargin - b, back) : jlimit((double) readMargin, maxBack - readMargin, back);
-        const double start = (double) capture[source()].head + (frozen ? 0 : wait) - back;
+        const double start = (double) capture.head + (frozen ? 0 : wait) - back;
         g->wait = wait, g->traceIn = 0, g->length = jmax(2, (int) dur), g->left = g->length, g->phase = 0, g->inc = 1.0 / g->left;
-        g->shape = macro(Texture) < .33f ? 10 : macro(Texture) < .66f ? 7 : 3, g->peak = 0.5f - 0.3f * macro(Texture);
+        g->shape = macro(Texture) < .33f ? 0 : macro(Texture) < .66f ? 1 : 2, g->peak = 0.5f - 0.3f * macro(Texture);
         g->attack = 0.5f / g->peak, g->decay = 0.5f / (1 - g->peak);
-        g->shifted = shifted && std::abs(r - 1) > 1e-8, g->source = source(), g->pitch = (float) st;
+        g->shifted = shifted && std::abs(r - 1) > 1e-8, g->pitch = (float) st;
         g->step = shifted ? dir : dir * r;
         g->pos = shifted ? (reverse ? start + size : start) : (reverse ? start + dur * r : start);
         g->span = (float) jmax(2.0, 2 * std::round(span / 2)), g->tap = 0, g->tapStep = (float) (1 - r);
@@ -528,11 +461,6 @@ struct SiltProcessor::Engine
         const double pan = jlimit(-1.0, 1.0, (side == 0 ? -0.6 : 0.6) * stereo + (2 * random() - 1) * jmin(1.0, 0.25 + 0.7 * macro(Motion)));
         const double angle = (pan + 1) * pi / 4;
         g->gl = (float) (velocity * std::cos(angle) * std::sqrt(2.0)), g->gr = (float) (velocity * std::sin(angle) * std::sqrt(2.0));
-    }
-    static int source() { return 0; }
-    void burst(int at, double bpm, bool frozen) // a MIDI note or a transient: density grains over one tick
-    {
-        spawn(at, bpm, frozen, stream ^= 1);
     }
     void midi(const MidiMessage& m, int at, double bpm, bool frozen)
     {
@@ -545,7 +473,7 @@ struct SiltProcessor::Engine
             held[(size_t) heldCount++] = m.getNoteNumber();
             lastNote = m.getNoteNumber();
             velocities[(size_t) m.getNoteNumber()] = velocity = m.getFloatVelocity();
-            burst(at, bpm, frozen);
+            spawn(at, bpm, frozen, stream ^= 1);
         }
         else if (m.isNoteOff())
         {
@@ -601,7 +529,7 @@ struct SiltProcessor::Engine
         for (int c = 0; c < 2; ++c) std::fill_n(out[c], length, 0.0f);
         std::fill_n(weights, length, 0.0f);
         int frozenHeads[Capture::batch] {}, advance = 0;
-        float futureGain = capture[0].gain;
+        float futureGain = capture.gain;
         if (frozen)
             for (int j = 0; j < length; ++j)
             {
@@ -617,7 +545,7 @@ struct SiltProcessor::Engine
             alignas(16) float w[Capture::batch], a[Capture::batch], audio[2][Capture::batch], other[2][Capture::batch];
             for (int j = 0; j < length; ++j)
             {
-                trace(g, feed, now + j, capture[0].head + (frozen ? frozenHeads[j] : j));
+                trace(g, feed, now + j, capture.head + (frozen ? frozenHeads[j] : j));
                 w[j] = envelope(g);
                 positions[j] = g.pos;
                 if (g.shifted)
@@ -630,10 +558,10 @@ struct SiltProcessor::Engine
                 }
                 g.phase += g.inc, g.pos += g.step, --g.left;
             }
-            capture[0].readBatch(positions, g.level, audio[0], audio[1], length, frozen, freezeStep);
+            capture.readBatch(positions, g.level, audio[0], audio[1], length, frozen, freezeStep);
             if (g.shifted)
             {
-                capture[0].readBatch(positions2, g.level, other[0], other[1], length, frozen, freezeStep);
+                capture.readBatch(positions2, g.level, other[0], other[1], length, frozen, freezeStep);
                 for (int c = 0; c < 2; ++c)
                     for (int j = 0; j < length; ++j) audio[c][j] = a[j] * audio[c][j] + (1 - a[j]) * other[c][j];
             }
@@ -683,12 +611,10 @@ struct SiltProcessor::Engine
         const int selectedQuality = roundToInt(v[Oversample]);
         if (quality != selectedQuality)
         {
-            previousQuality = jmax(0, quality), previousLatency = latency;
+            previousQuality = jmax(0, quality);
             qualityFade = quality < 0 ? 0 : 128;
             quality = selectedQuality;
             oversamplers[(size_t) quality]->reset();
-            latency = roundToInt(oversamplers[(size_t) quality]->getLatencyInSamples());
-            p.setLatencySamples(latency);
         }
         const double spacing = period(bpm);
         const double quartersPerGrain = 1.0 / jmax(1, roundToInt(v[Density] / 2));
@@ -721,17 +647,10 @@ struct SiltProcessor::Engine
                 }
                 const bool hitIn = onsets[0].step(jmax(std::abs(x[0]), std::abs(x[1])), threshold, fastRelease, slowAttack, slowRelease, holdoff);
                 const bool hitSide = onsets[1].step(jmax(std::abs(side[0]), std::abs(side[1])), threshold, fastRelease, slowAttack, slowRelease, holdoff);
-                const float* selected = source() == 0 ? x : side;
-                const float input = 0.5f * (std::abs(selected[0]) + std::abs(selected[1]));
+                const float input = 0.5f * (std::abs(x[0]) + std::abs(x[1]));
                 inputLevel += (input > inputLevel ? inputAttack : inputRelease) * (input - inputLevel);
-                for (int c = 0; c < 1; ++c)
-                {
-                    auto& cap = capture[c];
-                    cap.gain = jlimit(0.0f, 1.0f, cap.gain + (frozen ? -freezeStep : freezeStep));
-                    const float* in = c == 0 ? x : side;
-                    const float add = c == source() ? 1.0f : 0.0f;
-                    if (cap.gain > 0) cap.write(in[0] + add * fbRing[0][now % K], in[1] + add * fbRing[1][now % K]);
-                }
+                capture.gain = jlimit(0.0f, 1.0f, capture.gain + (frozen ? -freezeStep : freezeStep));
+                if (capture.gain > 0) capture.write(x[0] + fbRing[0][now % K], x[1] + fbRing[1][now % K]);
                 const double scan = -0.25 * macro(Motion);
                 if (std::abs(scan) < 1e-9) scanned = 0;
                 else
@@ -753,7 +672,7 @@ struct SiltProcessor::Engine
                         tick = true, phase -= std::floor(phase + 1e-10);
                     if (tick) spawn((int) (random() * (0.4f * macro(Motion) + 0.5f * macro(Chaos)) * spacing), bpm, frozen, stream ^= 1);
                 }
-                if ((hitIn && trigger == 1) || (hitSide && trigger == 2)) burst(0, bpm, frozen);
+                if ((hitIn && trigger == 1) || (hitSide && trigger == 2)) spawn(0, bpm, frozen, stream ^= 1);
                 feedback.setTargetValue(0.12f + 0.48f * macro(Bloom));
                 width.setTargetValue(0.8f + 0.2f * macro(Bloom));
                 float y[2] {}, weight = 0;
@@ -782,8 +701,8 @@ struct SiltProcessor::Engine
                     {
                         auto& g = grains[(size_t) k];
                         if (g.wait > 0) { --g.wait; continue; }
-                        trace(g, feed, now, capture[0].head);
-                        const auto& cap = capture[g.source];
+                        trace(g, feed, now, capture.head);
+                        const auto& cap = capture;
                         const float w = envelope(g);
                         g.phase += g.inc, --g.left;
                         float l, r;
@@ -804,7 +723,8 @@ struct SiltProcessor::Engine
                 }
                 // Actual window overlap, with a slow release between clouds. No compressor or limiter.
                 overlap += (weight > overlap ? overlapAttack : overlapRelease) * (weight - overlap);
-                power.setTargetValue((float) (1 - 0.5 * jlimit(0.0, 1.0, separation())));
+                power.setTargetValue((float) (1 - 0.5 * jlimit(0.0, 1.0, separation()
+                    + (std::abs(v[Pitch]) > .005f || heldCount > 0 || v[Freeze] > .5f ? 1 : 0))));
                 const float exponent = power.getNextValue();
                 const float base = jmax(1.0f, weight, (float) overlap);
                 const float norm = 0.85f / (exponent <= .500001f ? std::sqrt(base) : exponent >= .999999f ? base : std::pow(base, exponent));
@@ -864,21 +784,13 @@ struct SiltProcessor::Engine
                 const int t = chunk + i;
                 const float blend = qualityFade > 0 ? 1.0f - (float) qualityFade / 128 : 1;
                 float frame[4], y[2], dry[2] { dryFrames[0][i], dryFrames[1][i] };
-                for (int c = 0; c < 4; ++c) frame[c] = i < fading ? old[c][i] + blend * (frames[c][i] - old[c][i]) : frames[c][i];
+                for (int c = 2; c < 4; ++c) frame[c] = i < fading ? old[c][i] + blend * (frames[c][i] - old[c][i]) : frames[c][i];
                 for (int c = 0; c < 2; ++c)
                 {
                     fbRing[c][(chunkTime + i) % K] = frame[c + 2];
-                    // Grain readers are already band-limited. Only the nonlinear feedback needs oversampling;
-                    // keep the wet signal aligned with its declared quality latency using an exact delay.
-                    wetDelay[c][dryAt] = frames[c][i];
-                    const auto wet = [&](int offset) { return wetDelay[c][(dryAt + wetDelay[c].size() - (size_t) offset) % wetDelay[c].size()]; };
-                    y[c] = qualityFade > 0 ? wet(previousLatency) + blend * (wet(latency) - wet(previousLatency)) : wet(latency);
-                    dryDelay[c][dryAt] = dry[c];
-                    const auto tap = [&](int offset) { return dryDelay[c][(dryAt + dryDelay[c].size() - (size_t) offset) % dryDelay[c].size()]; };
-                    dry[c] = qualityFade > 0 ? tap(previousLatency) + blend * (tap(latency) - tap(previousLatency)) : tap(latency);
+                    y[c] = frames[c][i];
                 }
                 qualityFade = jmax(0, qualityFade - 1);
-                dryAt = (dryAt + 1) % dryDelay[0].size();
                 // SILT_REVERB: removable grain-output reverb; keep its frozen parameters inert if removed.
                 float rl = y[0], rr = y[1];
                 reverb.process(rl, rr, (0.45f + 0.5f * bloomFrames[i]));
@@ -911,14 +823,12 @@ struct SiltProcessor::Engine
         for (int i = 0; i < voiceCount; ++i)
             if (const auto& g = grains[(size_t) i]; g.left > 0 && g.wait == 0 && k < (size_t) silt::Feed::dots)
             {
-                feed.back[k].store((float) (((double) capture[g.source].head - g.pos) / fs), std::memory_order_relaxed);
-                feed.pitch[k].store(g.pitch, std::memory_order_relaxed);
                 feed.env[k++].store(jmax(0.001f, envelope(g)), std::memory_order_relaxed);
             }
         for (; k < (size_t) silt::Feed::dots; ++k) feed.env[k].store(0, std::memory_order_relaxed);
         feed.centre.store((float) ((position(tempo) + scanned) / fs), std::memory_order_relaxed);
-        feed.frozen.store(capture[source()].gain <= 0, std::memory_order_relaxed);
-        feed.captureHead.store(capture[0].head, std::memory_order_relaxed);
+        feed.frozen.store(capture.gain <= 0, std::memory_order_relaxed);
+        feed.captureHead.store(capture.head, std::memory_order_relaxed);
         feed.time.store(now, std::memory_order_relaxed), feed.sampleRate.store((float) fs, std::memory_order_relaxed);
         feed.note.store(lastNote, std::memory_order_relaxed);
         for (size_t i = 0; i < 3; ++i) feed.meter[i].store(meters[i], std::memory_order_relaxed);
@@ -938,7 +848,6 @@ SiltProcessor::~SiltProcessor() = default;
 void SiltProcessor::prepareToPlay(double sr, int)
 {
     engine->prepare(sr, feed), resetPending = true;
-    setLatencySamples(roundToInt(engine->oversamplers[(size_t) roundToInt(apvts.getRawParameterValue("oversample")->load())]->getLatencyInSamples()));
 }
 bool SiltProcessor::isBusesLayoutSupported(const BusesLayout& l) const
 {
@@ -989,9 +898,7 @@ void SiltProcessor::applyParams(const XmlElement& state)
     for (int i = 0; i < silt::numParams; ++i)
     {
         auto* p = apvts.getParameter(ids[i]);
-        const XmlElement* e = nullptr; // the first PARAM with this id
-        for (auto* c : state.getChildWithTagNameIterator("PARAM"))
-            e = e == nullptr && c->getStringAttribute("id") == ids[i] ? c : e;
+        const auto* e = state.getChildByAttribute("id", ids[i]);
         const auto v = number(e != nullptr ? e->getStringAttribute("value") : String());
         p->setValueNotifyingHost(v ? p->convertTo0to1(p->getNormalisableRange().snapToLegalValue((float) *v)) : p->getDefaultValue());
     }
@@ -1001,11 +908,7 @@ void SiltProcessor::applyParams(const XmlElement& state)
 
 void SiltProcessor::setStateInformation(const void* data, int size)
 {
-    const auto* bytes = static_cast<const char*>(data);
-    if (bytes == nullptr || size < 8 || ByteOrder::littleEndianInt(bytes) != 0x21324356 || ByteOrder::littleEndianInt(bytes + 4) > (uint32) size - 8)
-        return;
-    const auto text = String::fromUTF8(bytes + 8, (int) ByteOrder::littleEndianInt(bytes + 4)).trimEnd();
-    const auto tree = text.endsWith("</SILT>") || (text.endsWith("/>") && !text.fromFirstOccurrenceOf("<SILT", false, false).containsChar('<')) ? parseXML(text) : nullptr;
+    const auto tree = getXmlFromBinary(data, size);
     if (tree == nullptr || !tree->hasTagName("SILT"))
         return;
     applyParams(*tree);

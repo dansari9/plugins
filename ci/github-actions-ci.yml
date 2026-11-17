@@ -156,6 +156,7 @@ jobs:
           BIN="$(find Silt/build -type f -name SiltTests -perm +111 | head -n 1)"
           test -n "$BIN"
           "$BIN"
+          arch -x86_64 "$BIN" --core
 
       - name: Universal binary check
         run: |

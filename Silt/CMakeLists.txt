@@ -53,7 +53,7 @@ juce_add_plugin(Silt
 
 target_sources(Silt PRIVATE Source/Silt.cpp Source/SiltEditor.cpp)
 
-# Geist Mono (SIL OFL 1.1, Assets/Fonts/OFL.txt), the same faces as crumb.
+# Geist Mono (SIL OFL 1.1, Assets/Fonts/OFL.txt), the same faces as gulp.
 juce_add_binary_data(SiltFonts SOURCES Assets/Fonts/GeistMono-Regular.ttf Assets/Fonts/GeistMono-SemiBold.ttf)
 set_target_properties(SiltFonts PROPERTIES POSITION_INDEPENDENT_CODE TRUE)
 

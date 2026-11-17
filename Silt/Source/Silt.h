@@ -7,8 +7,7 @@
 // (APVTS XML <SILT stateVersion="1"> plus additive root attributes). Never rename, remove or reorder; only append.
 namespace silt
 {
-inline constexpr int numParams = 18, numPresets = 10, numWindows = 12, numNotes = 17, maxGrains = 128;
-extern const char* const windowNames[numWindows];
+inline constexpr int numParams = 18, numPresets = 10, numWindows = 3, numNotes = 17, maxGrains = 128;
 extern const char* const noteNames[numNotes]; // 1/64 .. 2 bars, incl. triplets (T) and dotted (D)
 // Note values in whole notes: noteNum / noteDen.
 inline constexpr int noteNum[numNotes] { 1, 1, 1, 1, 1, 3, 1, 1, 3, 1, 1, 3, 1, 1, 3, 1, 2 };
@@ -16,20 +15,20 @@ inline constexpr int noteDen[numNotes] { 64, 48, 32, 24, 16, 32, 12, 8, 16, 6, 4
 inline constexpr double maxBackSeconds = 8; // the capture buffer grains read from
 
 // A grain window at x in 0..1: a decay curve f (1 at its peak, 0 at its end) mirrored around the peak at `skew`
-// (0..1, the attack's share). The 12 decay curves are gulp's duck curves normalised to end at 1.
+// (0..1, the attack's share). The hann, dome and lean curves are normalised to end at 1.
 double window(int shape, double x, double skew);
 
-// Audio thread -> editor, relaxed atomics. wave: the peak of each 8 s / bins slice of each capture buffer (input,
-// sidechain), a ring whose newest finished slice is at[...] - 1; it stops while frozen. Up to `dots` live grains: how
-// far back they read (s), their pitch (st) and envelope (0 = no grain). centre: where new grains read (s, incl. scan).
+// Audio thread -> editor, lock-free atomics. wave is the main capture's peak ring (8 s / bins per slice),
+// with the newest completed slice at at - 1; it stops while frozen. env reports live voice envelopes for
+// diagnostics; the editor draws actual grain footprints from history. centre is the new-grain read position (s).
 struct Feed
 {
     static_assert(std::atomic<float>::is_always_lock_free && std::atomic<int>::is_always_lock_free
                   && std::atomic<juce::int64>::is_always_lock_free && std::atomic<bool>::is_always_lock_free, "audio telemetry must be lock-free");
     static constexpr int bins = 224, dots = maxGrains;
-    std::array<std::atomic<float>, bins> wave[2] {};
-    std::atomic<int> at[2] {};
-    std::array<std::atomic<float>, dots> back {}, pitch {}, env {};
+    std::array<std::atomic<float>, bins> wave {};
+    std::atomic<int> at {};
+    std::array<std::atomic<float>, dots> env {};
     std::atomic<float> centre { 0 };
     std::atomic<bool> frozen { false };
     std::atomic<juce::int64> lastFire { -1 };

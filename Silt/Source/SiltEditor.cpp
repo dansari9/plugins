@@ -35,8 +35,11 @@ using Dots = std::vector<Point<int>>;
 struct Grid
 {
     Cell at[R][C];
+    int ox = 0, oy = 0;
+    Cell& cell(int x, int y) { return at[oy + y][ox + x]; }
     void put(int x, int y, const String& s, Colour fg, bool bold = false, Colour bg = {})
     {
+        x += ox, y += oy;
         for (auto p = s.getCharPointer(); !p.isEmpty(); ++x)
             if (const auto c = p.getAndAdvance(); isPositiveAndBelow(x, C) && isPositiveAndBelow(y, R))
                 at[y][x] = { c, fg, bg, bold };
@@ -49,6 +52,7 @@ struct Grid
     void right(int x, int y, const String& s, Colour fg) { put(x - s.length() + 1, y, s, fg); }
     void braille(int x, int y, int w, int h, const Dots& dots, Colour fg, Mode mode = merge) // dots in a 2w x 4h space
     {
+        x += ox, y += oy;
         std::vector<uint8> bits((size_t) (w * h));
         for (auto d : dots)
             if (isPositiveAndBelow(d.x, 2 * w) && isPositiveAndBelow(d.y, 4 * h))
@@ -116,10 +120,10 @@ static void knob(Grid& g, int x, int y, float norm, const String& name, const St
         g.centre(x - 3, 14, y + 4, valueText, dim ? grey : white, !dim);
     }
 
-struct Panel { const char* name; int x, y, w, h; };
+struct Panel { const char* name; int x, y, w, h; bool leftRule = false; };
 // The final option 1 arrangement. All control coordinates below are local to their group.
 constexpr Panel panels[] { {"header",0,0,120,3}, {"cloud",2,4,116,12}, {"grain",0,16,51,7},
-    {"pitch",52,16,13,7}, {"trigger",66,16,16,7}, {"space / output",84,16,36,7},
+    {"pitch",52,16,13,7,true}, {"trigger",66,16,16,7}, {"space / output",84,16,36,7,true},
     {"presets",2,3,108,1}, {"macros",2,3,108,1}, {"freeze",110,3,8,1} };
 struct Group : Component
 {
@@ -152,28 +156,42 @@ struct Group : Component
 struct Header : Group
 {
     std::function<void()> changed;
-    explicit Header(SiltProcessor& proc) : Group(proc,panels[0])
+    enum Kind { action, slot, quality, macro };
+    struct Item { const char *id,*text; int x; Kind kind=action; int index=0; std::function<void()> run; };
+    std::array<Item,11> items;
+    explicit Header(SiltProcessor& proc) : Group(proc,panels[0]), items {{
+        {"prev","‹",10,action,0,[this] {p.stepPreset(-1);}}, {"next","›",20,action,0,[this] {p.stepPreset(1);}},
+        {"save","save",27,action,0,[this] {p.saveUserPreset();}},
+        {"A","A",33,slot,0,[this] {p.selectAb(0);}}, {"B","B",35,slot,1,[this] {p.selectAb(1);}},
+        {"rnd","randomize",82,action,0,[this] {p.randomise(Time::getHighResolutionTicks());}},
+        {"macro","macros",95,macro,0,[this] {p.showMacros=!p.showMacros;if(changed)changed();}},
+        {"oversample:0","off",63,quality,0,{}}, {"oversample:1","2x",67,quality,1,{}},
+        {"oversample:2","4x",70,quality,2,{}}, {"oversample:3","8x",73,quality,3,{}} }}
     {
-        key("prev",10,1,1,[this] { p.stepPreset(-1); });
-        key("next",20,1,1,[this] { p.stepPreset(1); });
-        key("save",27,1,4,[this] { p.saveUserPreset(); });
-        key("A",33,1,1,[this] { p.selectAb(0); }); key("B",35,1,1,[this] { p.selectAb(1); });
-        key("rnd",82,1,9,[this] { p.randomise(Time::getHighResolutionTicks()); });
-        key("macro",95,1,8,[this] { p.showMacros=!p.showMacros; if(changed) changed(); });
-        int x=63; for(int i=0;i<4;++i) { const char* text=i==0?"off":i==1?"2x":i==2?"4x":"8x"; word("oversample",i,x,1,text); x+=String(text).length()+1; }
+        for(const auto& item:items)
+            if(item.kind==quality)word("oversample",item.index,item.x,1,item.text);
+            else key(item.id,item.x,1,String::fromUTF8(item.text).length()+(item.kind==macro?2:0),item.run);
     }
     void draw(Grid& g) override
     {
         const auto name=p.presetName().substring(0,10);
-        g.put(2,1,"silt",white,true),g.put(10,1,u("‹"),grey);
+        g.put(2,1,"silt",white,true);
         g.put(12,1,p.preset>=0?String(p.preset.load()+1).paddedLeft('0',2):String("--"),grey);
-        g.put(15,1,name,white,true),g.put(16+name.length(),1,u("›"),grey);
-        keys[1]->setBounds(cells(16+name.length(),1,1,1));
-        g.put(27,1,"save",grey);
-        for(int slot=0;slot<2;++slot) g.put(33+2*slot,1,slot==0?"A":"B",p.abSlot()==slot?page:grey,p.abSlot()==slot,p.abSlot()==slot?white:Colour());
+        g.put(15,1,name,white,true);
+        items[1].x=16+name.length();
+        keys[1]->setBounds(cells(items[1].x,1,1,1));
+        for(const auto& item:items)
+        {
+            const int x=item.x;
+            if(item.kind==macro)g.toggle(x,1,item.text,p.showMacros);
+            else if(item.kind==slot)
+            {
+                const bool selected=p.abSlot()==item.index;
+                g.put(x,1,item.text,selected?page:grey,selected,selected?white:Colour());
+            }
+            else g.put(x,1,u(item.text),item.kind==quality?(roundToInt(value("oversample"))==item.index?white:dark):grey);
+        }
         g.put(52,1,"oversample",dark);
-        int x=63; for(int i=0;i<4;++i) { const String text=i==0?"off":String(1<<i)+"x";g.put(x,1,text,roundToInt(value("oversample"))==i?white:dark);x+=text.length()+1; }
-        g.put(82,1,"randomize",grey),g.toggle(95,1,"macros",p.showMacros);
         g.right(117,1,"daveydidit",dark),g.put(2,2,String::repeatedString(u("─"),116),rule);
     }
 };
@@ -182,12 +200,12 @@ struct Presets : Group
     explicit Presets(SiltProcessor& proc) : Group(proc,panels[6])
     { for(int i=0;i<silt::numPresets;++i) key("preset:"+String(i),11*i,0,String(silt::presets[i].name).length(),[this,i] { p.setCurrentProgram(i); }); }
     void draw(Grid& g) override
-    { for(int i=0;i<silt::numPresets;++i) g.put(spec.x+11*i,3,silt::presets[i].name,p.preset==i?red:grey); }
+    { for(int i=0;i<silt::numPresets;++i) g.put(11*i,0,silt::presets[i].name,p.preset==i?red:grey); }
 };
 struct Freeze : Group
 {
     explicit Freeze(SiltProcessor& proc) : Group(proc,panels[8]) { toggle("freeze","freeze",0,0); }
-    void draw(Grid& g) override { g.toggle(spec.x,spec.y,"freeze",value("freeze")>.5f); }
+    void draw(Grid& g) override { g.toggle(0,0,"freeze",value("freeze")>.5f); }
 };
 
 // Event history is published by the audio thread, so even an editor opened mid-note has a cloud. It advances
@@ -198,7 +216,7 @@ struct Cloud : Group
     void draw(Grid& g) override
     {
         constexpr int w=116,h=11,ww=2*w,hh=4*h;
-        const int x=spec.x,y=spec.y;
+        const int x=0,y=0;
         const auto& f=p.feed;
         const auto now=f.time.load(); const double fs=f.sampleRate.load();
         const bool frozen=f.frozen.load();
@@ -208,14 +226,14 @@ struct Cloud : Group
         const int xa=roundToInt(dot(jmin(4.0,pos+scatter*2))),xb=roundToInt(dot(jmax(0.0,pos-scatter*2)));
         const double mid=hh/2.0-.5;
         // Read-window wash, faint mirrored input waveform, then grain spindles, as silt3.py.
-        for(int j=0;j<h;++j) for(int k=xa/2;k<=xb/2 && k<w;++k) g.at[y+j][x+k].bg=Colour(0xff121212);
+        for(int j=0;j<h;++j) for(int k=xa/2;k<=xb/2 && k<w;++k) g.cell(x+k,y+j).bg=Colour(0xff121212);
         for(int shade=0;shade<5;++shade)
         {
             Dots pts;
             for(int k=0;k<ww;k+=2)
             {
-                const int bin=(f.at[0].load()-1-(int)std::nearbyint((ww-1-k)*4.0/ww/8*silt::Feed::bins)+silt::Feed::bins*2)%silt::Feed::bins;
-                const double amplitude=jlimit(0.0,1.0,(double)f.wave[0][(size_t)bin].load()*3.0);
+                const int bin=(f.at.load()-1-(int)std::nearbyint((ww-1-k)*4.0/ww/8*silt::Feed::bins)+silt::Feed::bins*2)%silt::Feed::bins;
+                const double amplitude=jlimit(0.0,1.0,(double)f.wave[(size_t)bin].load()*3.0);
                 const bool inside=xa<=k && k<=xb;
                 if((inside?4:jmin(3,k*4/ww))!=shade)continue;
                 const double e=amplitude*hh*.34;
@@ -265,17 +283,17 @@ struct Cloud : Group
             for(int k=1;k<4;++k) for(int t:{0,hh-1})ends.push_back({edge+dir*k,t});
             g.braille(x,y,w,h,dots,Colour(0xff4a4a4a),under),g.braille(x,y,w,h,ends,Colour(0xff8a8a8a),over);
         }
-        for(int j=0;j<h;++j)for(int k=xa/2;k<=xb/2 && k<w;++k)g.at[y+j][x+k].bg=Colour(0xff121212);
+        for(int j=0;j<h;++j)for(int k=xa/2;k<=xb/2 && k<w;++k)g.cell(x+k,y+j).bg=Colour(0xff121212);
         Dots marker;for(int t=0;t<hh;t+=3)for(int d:{0,1})marker.push_back({2*(cell(pos)-x)+d,t});
         g.braille(x,y,w,h,marker,Colour(0xff5c1d12),under);
-        Dots edge;const double e=jlimit(0.0,1.0,(double)f.wave[0][(size_t)((f.at[0].load()+silt::Feed::bins-1)%silt::Feed::bins)].load()*3)*hh*.34;
+        Dots edge;const double e=jlimit(0.0,1.0,(double)f.wave[(size_t)((f.at.load()+silt::Feed::bins-1)%silt::Feed::bins)].load()*3)*hh*.34;
         for(int t=(int)(mid-e);t<=(int)(mid+e);++t)edge.push_back({ww-1,t});
         g.braille(x,y,w,h,edge,Colour(0xff6a6a6a),over);
         const int ry=y+h;
         g.put(x,ry,String::repeatedString(u("─"),w),rule);
         for(int k=0;k<=8;++k)g.put(cell(k/2.0),ry,u("┴"),k%2==0?dark:rule);
         const int a=cell(jmin(4.0,pos+scatter*2)),b=cell(jmax(0.0,pos-scatter*2));
-        for(int k=a;k<=b;++k)g.at[ry][k].fg=Colour(0xffbcbcbc);
+        for(int k=a;k<=b;++k)g.cell(k,ry).fg=Colour(0xffbcbcbc);
         g.put(a,ry,u("├"),Colour(0xffbcbcbc)),g.put(b,ry,u("┤"),Colour(0xffbcbcbc));
         g.put(x,ry,"4 s ",dark),g.right(x+w-1,ry,frozen?" held":" now",frozen?red:dark);
         for(int sec:{3,2,1})g.put(cell(sec)-2,ry," "+String(sec)+" s ",dark);
@@ -286,15 +304,17 @@ struct Dial { const char *id,*name; int cx; bool centred=false; };
 struct Controls : Group
 {
     std::vector<Dial> dials;
+    bool fader;
+    std::function<void(Grid&)> extra;
     OwnedArray<Slider> sliders;
     std::vector<std::unique_ptr<AudioProcessorValueTreeState::SliderAttachment>> sliderAttachments;
-    Controls(SiltProcessor& proc,Panel panel,std::initializer_list<Dial> ds) : Group(proc,panel),dials(ds)
+    Controls(SiltProcessor& proc,Panel panel,std::initializer_list<Dial> ds,bool horizontal=false) : Group(proc,panel),dials(ds),fader(horizontal)
     {
         for(const auto& d:dials)
         {
             auto& k=*sliders.add(new Slider());
-            const bool fader=String(spec.name)=="macros";
             k.setSliderStyle(fader?Slider::LinearHorizontal:Slider::RotaryVerticalDrag);
+            if(fader)k.setSliderSnapsToMousePosition(false);
             k.setTextBoxStyle(fader?Slider::TextBoxRight:Slider::TextBoxBelow,false,roundToInt(cw*(fader?5:10)),roundToInt(ch));
             k.setMouseDragSensitivity(250),k.setComponentID(d.id),k.setRepaintsOnMouseActivity(false);
             sliderAttachments.push_back(std::make_unique<AudioProcessorValueTreeState::SliderAttachment>(p.apvts,d.id,k));
@@ -304,39 +324,24 @@ struct Controls : Group
     }
     void draw(Grid& g) override
     {
-        const bool fader=String(spec.name)=="macros";
         for(const auto& d:dials)
         {
             auto* q=p.apvts.getParameter(d.id);
-            const int cx=spec.x+d.cx;
-            if(!fader)knob(g,cx-4,spec.y+1,q->getValue(),d.name,q->getCurrentValueAsText(),d.centred,false);
+            const int cx=d.cx;
+            if(!fader)knob(g,cx-4,1,q->getValue(),d.name,q->getCurrentValueAsText(),d.centred,false);
             else
             {
-                g.put(cx,spec.y,d.name,grey);
+                g.put(cx,0,d.name,grey);
                 const int thumb=roundToInt(q->getValue()*21);
                 Dots off,on,tip;
                 for(int i=0;i<22;++i)if(i<=thumb)on.push_back({i,2});else if(i%2==0)off.push_back({i,2});
                 for(int t=0;t<4;++t)tip.push_back({thumb,t});
                 for(int t=1;t<4;++t)tip.push_back({thumb+1,t});
-                g.braille(cx+8,spec.y,11,1,off,rule),g.braille(cx+8,spec.y,11,1,on,red,over),g.braille(cx+8,spec.y,11,1,tip,white);
-                g.right(cx+23,spec.y,q->getCurrentValueAsText(),white);
+                g.braille(cx+8,0,11,1,off,rule),g.braille(cx+8,0,11,1,on,red,over),g.braille(cx+8,0,11,1,tip,white);
+                g.right(cx+23,0,q->getCurrentValueAsText(),white);
             }
         }
-        if(String(spec.name)=="grain")
-        {
-            g.put(4,22,"sync",value("sizeSync")<.5f?red:grey),g.put(9,22,"free",value("sizeSync")>.5f?red:grey);
-        }
-        if(String(spec.name)=="pitch")g.put(53,22,"shift",value("pitchMode")<.5f?red:grey),g.put(59,22,"tape",value("pitchMode")>.5f?red:grey);
-        if(String(spec.name)=="space / output")
-        {
-            g.put(87,16,"reverb",value("reverbOn")>.5f?white:grey),g.put(85,16,u(value("reverbOn")>.5f?"■":"□"),value("reverbOn")>.5f?red:grey);
-            Dots off,on,tick;
-            for(int k=0;k<16;++k)for(int t=0;t<4;++t)
-                (k<jlimit(0.0f,1.0f,p.feed.meter[(size_t)(t/2)].load()*3)*16?on:off).push_back({k,t});
-            const int peak=roundToInt(jlimit(0.0f,1.0f,jmax(p.feed.meter[0].load(),p.feed.meter[1].load())*3)*15);
-            for(int t=0;t<4;++t)tick.push_back({peak,t});
-            g.braille(110,22,8,1,off,rule),g.braille(110,22,8,1,on,Colour(0xffbcbcbc),over),g.braille(110,22,8,1,tick,white,over);
-        }
+        if(extra)extra(g);
         for(auto* k:sliders)for(auto* child:k->getChildren())if(auto* label=dynamic_cast<Label*>(child);label && !label->isBeingEdited())k->updateText();
     }
 };
@@ -346,14 +351,14 @@ struct TriggerGroup : Group
     { word("trigger",0,0,1,"clock"),word("trigger",1,0,2,"transient"),word("trigger",2,0,3,"sidechain"); }
     void draw(Grid& g) override
     {
-        g.put(66,16,"trigger",grey);
+        g.put(0,0,"trigger",grey);
         const char* names[]{"clock","transient","sidechain"};
-        for(int i=0;i<3;++i){const bool selected=roundToInt(value("trigger"))==i;g.put(66,17+i,names[i],selected?red:grey);if(selected)g.put(80,17+i,u("◀"),red);}
+        for(int i=0;i<3;++i){const bool selected=roundToInt(value("trigger"))==i;g.put(0,1+i,names[i],selected?red:grey);if(selected)g.put(14,1+i,u("◀"),red);}
         const auto note=MidiMessage::getMidiNoteName(p.feed.note.load(),true,true,3).toLowerCase();
-        g.put(66,21,"midi",grey),g.put(71,21,u("●"),red),g.put(73,21,note,white),g.put(66,22,"sc",grey);
+        g.put(0,5,"midi",grey),g.put(5,5,u("●"),red),g.put(7,5,note,white),g.put(0,6,"sc",grey);
         Dots off,on,tick;for(int k=0;k<18;++k)for(int t:{1,2})(k<p.feed.meter[2].load()*3*18?on:off).push_back({k,t});
         for(int t=0;t<4;++t)tick.push_back({8,t});
-        g.braille(69,22,9,1,off,rule),g.braille(69,22,9,1,on,grey,over),g.braille(69,22,9,1,tick,white);
+        g.braille(3,6,9,1,off,rule),g.braille(3,6,9,1,on,grey,over),g.braille(3,6,9,1,tick,white);
     }
 };
 struct Editor : AudioProcessorEditor, Timer
@@ -376,12 +381,23 @@ struct Editor : AudioProcessorEditor, Timer
         grain(p,panels[2],{{"size","size",8},{"density","density",20},{"position","position",32},{"scatter","scatter",44}}),
         pitch(p,panels[3],{{"pitch","pitch",6,true}}),
         space(p,panels[5],{{"reverb","",6},{"mix","mix",18},{"output","output",30}}),
-        macros(p,panels[7],{{"motion","motion",0},{"texture","texture",27},{"bloom","bloom",54},{"chaos","chaos",81}}),
+        macros(p,panels[7],{{"motion","motion",0},{"texture","texture",27},{"bloom","bloom",54},{"chaos","chaos",81}},true),
         trigger(p),presets(p),freeze(p)
     {
         grain.word("sizeSync",0,4,6,"sync"),grain.word("sizeSync",1,9,6,"free");
         pitch.word("pitchMode",0,1,6,"shift"),pitch.word("pitchMode",1,7,6,"tape");
         space.toggle("reverbOn","reverb",1,0);
+        grain.extra=[this](Grid& g) {g.put(4,6,"sync",grain.value("sizeSync")<.5f?red:grey),g.put(9,6,"free",grain.value("sizeSync")>.5f?red:grey);};
+        pitch.extra=[this](Grid& g) {g.put(1,6,"shift",pitch.value("pitchMode")<.5f?red:grey),g.put(7,6,"tape",pitch.value("pitchMode")>.5f?red:grey);};
+        space.extra=[this](Grid& g) {
+            g.put(3,0,"reverb",space.value("reverbOn")>.5f?white:grey),g.put(1,0,u(space.value("reverbOn")>.5f?"■":"□"),space.value("reverbOn")>.5f?red:grey);
+            Dots off,on,tick;
+            for(int k=0;k<16;++k)for(int t=0;t<4;++t)
+                (k<jlimit(0.0f,1.0f,proc.feed.meter[(size_t)(t/2)].load()*3)*16?on:off).push_back({k,t});
+            const int peak=roundToInt(jlimit(0.0f,1.0f,jmax(proc.feed.meter[0].load(),proc.feed.meter[1].load())*3)*15);
+            for(int t=0;t<4;++t)tick.push_back({peak,t});
+            g.braille(26,6,8,1,off,rule),g.braille(26,6,8,1,on,Colour(0xffbcbcbc),over),g.braille(26,6,8,1,tick,white,over);
+        };
         setOpaque(true),setLookAndFeel(&look),addAndMakeVisible(layer);layer.setBounds(0,0,W,H);
         for(auto* group:groups())layer.addAndMakeVisible(group);
         header.changed=[this] {macros.setVisible(proc.showMacros),presets.setVisible(!proc.showMacros);refresh();};
@@ -403,9 +419,8 @@ struct Editor : AudioProcessorEditor, Timer
         std::vector<float> now;
         for (auto* param : proc.getParameters()) now.push_back(param->getValue());
         auto& f = proc.feed;
-        now.insert(now.end(), { (float) f.time.load(), (float) f.events.load(), (float) f.note.load(), f.meter[0].load(), f.meter[1].load(), f.meter[2].load(), (float) f.at[0].load(), (float) f.at[1].load(), f.centre.load(), (float) f.frozen.load(), (float) proc.showMacros.load(), (float) proc.abSlot(), (float) proc.preset.load() });
-        for (size_t k = 0; k < silt::Feed::bins; ++k) now.insert(now.end(), { f.wave[0][k].load(), f.wave[1][k].load() });
-        for (size_t k = 0; k < silt::Feed::dots; ++k) now.insert(now.end(), { f.back[k].load(), f.pitch[k].load(), f.env[k].load() });
+        now.insert(now.end(), { (float) f.time.load(), (float) f.events.load(), (float) f.note.load(), f.meter[0].load(), f.meter[1].load(), f.meter[2].load(), (float) f.at.load(), f.centre.load(), (float) f.frozen.load(), (float) proc.showMacros.load(), (float) proc.abSlot(), (float) proc.preset.load() });
+        for (size_t k = 0; k < silt::Feed::bins; ++k) now.insert(now.end(), { f.wave[k].load() });
         if (now == drawnFrom && proc.presetName() == drawnName) return;
         drawnFrom = std::move(now), drawnName = proc.presetName();
         macros.setVisible(proc.showMacros), presets.setVisible(!proc.showMacros), refresh();
@@ -413,8 +428,12 @@ struct Editor : AudioProcessorEditor, Timer
     void refresh()
     {
         Grid g;
-        for (auto* group : groups()) if (group->isVisible()) group->draw(g);
-        for(int x:{51,83})for(int y=16;y<=22;++y)g.put(x,y,u("│"),rule);
+        for (auto* group : groups()) if (group->isVisible())
+        {
+            g.ox=group->spec.x, g.oy=group->spec.y;
+            group->draw(g);
+            if(group->spec.leftRule)for(int y=0;y<group->spec.h;++y)g.put(-1,y,u("│"),rule);
+        }
         show(g);
     }
     // Cells that differ from the shown grid are redrawn into the image; runs of them on a row are repainted.
