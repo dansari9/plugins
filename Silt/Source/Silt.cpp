@@ -330,7 +330,7 @@ struct SiltProcessor::Engine
     int64 now = 0;               // samples since reset
     double overlap = 0;          // smoothed sum of the windows sounding
     float overlapAttack = 0, overlapRelease = 0;
-    OnePole lows[2], highs[2], dc[2];
+    OnePole lows[2], highs[2], dc[2], outputDc[2];
     std::vector<float> diffusion[4];
     size_t diffusionAt[4] {};
     float level = 0, inputLevel = 0, levelGlide = 0, inputAttack = 0, inputRelease = 0;
@@ -370,7 +370,7 @@ struct SiltProcessor::Engine
         for (auto& r : fbRing) std::fill(std::begin(r), std::end(r), 0.0f);
         for (auto& d : diffusion) std::fill(d.begin(), d.end(), 0.0f);
         std::fill(std::begin(diffusionAt), std::end(diffusionAt), (size_t) 0);
-        lows[0] = lows[1] = highs[0] = highs[1] = dc[0] = dc[1] = {};
+        lows[0] = lows[1] = highs[0] = highs[1] = dc[0] = dc[1] = outputDc[0] = outputDc[1] = {};
         reverb.reset(); // SILT_REVERB
         for (int c = 0; c < 2; ++c)
         {
@@ -562,7 +562,7 @@ struct SiltProcessor::Engine
         const float tone = jlimit(-1.0f, 1.0f, v[Tone] / 100);
         lowpass.setTargetValue(coefficient(20000 * std::pow(0.04, jmax(0.0f, -tone)), fs));
         highpass.setTargetValue(coefficient(20 * std::pow(100.0, jmax(0.0f, tone)), fs));
-        const float dcCoef = coefficient(20, fs);
+        const float dcCoef = coefficient(20, fs), outputDcCoef = coefficient(8, fs);
         // Similar grains add in amplitude; scattered/pitched grains add mostly in power. Interpolate the overlap
         // law using their source separation, preserving level without analysing or limiting the output.
         const double apart = separation();
@@ -586,7 +586,8 @@ struct SiltProcessor::Engine
             }
             const bool hitIn = onsets[0].step(jmax(std::abs(x[0]), std::abs(x[1])), threshold, fastRelease, slowAttack, slowRelease, holdoff);
             const bool hitSide = onsets[1].step(jmax(std::abs(side[0]), std::abs(side[1])), threshold, fastRelease, slowAttack, slowRelease, holdoff);
-            const float input = 0.5f * (std::abs(x[0]) + std::abs(x[1]));
+            const float* selected = source() == 0 ? x : side;
+            const float input = 0.5f * (std::abs(selected[0]) + std::abs(selected[1]));
             inputLevel += (input > inputLevel ? inputAttack : inputRelease) * (input - inputLevel);
             for (int c = 0; c < 2; ++c)
             {
@@ -672,6 +673,8 @@ struct SiltProcessor::Engine
             reverb.process(rl, rr, jmin(1.0f, v[VerbSize] / 100 + 0.4f * macro(Bloom)));
             const float vm = verb.getNextValue();
             y[0] += vm * (rl - y[0]), y[1] += vm * (rr - y[1]);
+            // Remove subsonic drift left by long, frozen windows and a modulated reverb tail.
+            for (int c = 0; c < 2; ++c) y[c] -= outputDc[c].low(y[c], outputDcCoef);
             const float m = mix.getNextValue(), out = gain.getNextValue();
             if (outs == 1) y[0] = 0.5f * (y[0] + y[1]);
             for (int c = 0; c < outs; ++c)

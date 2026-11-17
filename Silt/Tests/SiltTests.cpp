@@ -476,6 +476,16 @@ static void testOnsetsAndSource()
         set(p,"source",0),prepare(p,48000,512,main,sc,2);const auto zero=run(p,48000,64,side);
         for(float v:zero.l) CHECK(v==0);
     }
+    // With sidechain capture and clock triggering, main-bus audio must not influence the feedback guard.
+    Proc quietMain,loudMain;
+    for(auto* effect:{&quietMain,&loudMain})
+        set(*effect,{{"source",1},{"feedback",100}}),prepare(*effect);
+    Run quiet,loud;
+    quiet.input=[](int,int){return 0.0f;};
+    loud.input=[](int i,int){return .4f*noise(i);};
+    quiet.side=loud.side=[](int i,int c){return pad(i+c*31,48000);};
+    CHECK(run(quietMain,96000,512,quiet)==run(loudMain,96000,512,loud));
+
 }
 static double maxStep(const Audio& a,size_t begin=1)
 {
@@ -653,27 +663,38 @@ static void testLoudness(bool tableOnly=false)
     for(int preset=0;preset<11;++preset) for(int program=0;program<3;++program)
     {
         if(preset<10)p.setCurrentProgram(preset);else load(p,blob("<SILT/>"));
-        prepare(p);const Level level(run(p,192000,512,programs[program].input()));level.check();
+        prepare(p);
+        Run material=programs[program].input();
+        run(p,8*48000,512,material);material.offset=8*48000;
+        const Level level(run(p,192000,512,material));level.check();
         std::cout<<(preset<10?p.getProgramName(preset):juce::String("default"))<<" | "<<names[program]<<" | "<<level.peakDb()<<" | "<<level.rmsDb()<<" | "<<20*std::log10(level.dc+1e-30)<<"\n";
     }
     if(tableOnly)return;
     double maxRms=-300,maxPeak=-300,maxDc=0;
-    // Each random sound has a full second to fill its selected history before the measured second.
+    // Warm the selected history and grain overlaps before measuring each random sound.
     for(int seed=0;seed<500;++seed) for(int program=0;program<3;++program)
     {
         p.setCurrentProgram(0),p.randomise(seed),prepare(p);
-        const Level level(run(p,96000,512,programs[program].input()));level.check();
+        Run material=programs[program].input();
+        run(p,96000,512,material);material.offset=96000;
+        const Level level(run(p,96000,512,material));level.check();
         maxRms=std::max(maxRms,level.rmsDb()),maxPeak=std::max(maxPeak,level.peakDb()),maxDc=std::max(maxDc,level.dc);
     }
-    std::cout<<"500 randomise seeds x 3 programs: max RMS "<<maxRms<<" dBFS, peak "<<maxPeak<<" dBFS, DC "<<maxDc<<"\n";
+    std::cout<<"500 randomise seeds x 3 programs: max RMS "<<maxRms<<" dBFS, peak "<<maxPeak<<" dBFS, DC "<<20*std::log10(maxDc+1e-30)<<" dBFS\n";
+    double cornerRms=-300,cornerPeak=-300,cornerDc=0;
     for(float pitch:{-48.0f,48.0f}) for(float size:{.5f,4000.0f}) for(int freeze:{0,1}) for(int mode:{0,1})
         for(int program=0;program<3;++program)
     {
         p.setCurrentProgram(0);set(p,{{"density",16},{"rate",50},{"feedback",100},{"verbMix",100},{"verbSize",100},{"pitch",pitch},
             {"size",size},{"pitchMode",(float)mode},{"pitchRand",24},{"blur",100},{"bloom",100},{"glint",100}});prepare(p);
-        Run r=programs[program].input();r.perBlock=[&](int t){if(freeze && t>=48000)set(p,"freeze",1);};
-        const Level level(run(p,192000,512,r));level.check();
+        Run r=programs[program].input();r.perBlock=[&](int t){if(freeze && t>=8*48000)set(p,"freeze",1);};
+        const int warmup=(mode==0 && pitch<0 && size>1000?32:8)*48000;
+        run(p,warmup,512,r);r.offset=warmup;
+        const Level level(run(p,192000,512,r));if(level.dc>=.001)std::cerr<<"corner pitch "<<pitch<<" size "<<size<<" freeze "<<freeze<<" mode "<<mode<<" program "<<program<<"\n";
+        level.check();
+        cornerRms=std::max(cornerRms,level.rmsDb()),cornerPeak=std::max(cornerPeak,level.peakDb()),cornerDc=std::max(cornerDc,level.dc);
     }
+    std::cout<<"Warmed corners: max RMS "<<cornerRms<<" dBFS, peak "<<cornerPeak<<" dBFS, DC "<<20*std::log10(cornerDc+1e-30)<<" dBFS\n";
     p.setCurrentProgram(0),set(p,{{"density",16},{"rate",50},{"feedback",100},{"verbMix",100},{"verbSize",100}}),prepare(p);
     Run tail=programs[1].input();tail.input=[&](int i,int){return i<48000?programs[1].data[(size_t)i]:0.0f;};tail.side=tail.input;
     const auto y=run(p,60*48000,4096,tail);const Level longLevel(y);longLevel.check();
@@ -857,7 +878,7 @@ static void testGoldens(bool record=false)
     const auto renderer=pixels(probe);
     const bool ci=std::getenv("GITHUB_ACTIONS")!=nullptr;
     const char* expectedEnvironment="14.2.0/Release/07adb83962bd7f372226ea055bca705c159534fa4a19d3279488b12cd95eea5c", *expectedRenderer="506141d22f79fb1886eb4dec6e8e40da3c3c48e3df63f1f3d60e979dd78361b5";
-    const char* expectedSound="c9d4ea411aa34621b71f5e1174da338ab6791b826d1895ac0ed8a7cfd7698648";
+    const char* expectedSound="59ef01bcb51dc08a5d0457829603afc7d77d36015f6d14a75aa3981815b62598";
     const char* expectedShots[]{"1e9b5ecd24f8b5f84fa546eec593a678edade387881bc979911226d05cc911c5","25a2736273be37e3ce8017f242d5f63d46cbc8d572e5e8f8f9769cffcec31360","9217a91e9fb212d4fb362f8ca53ea8335f2465276b3ecbb5b6f58b88df619bfb"};
     std::cout<<"Golden environment: "<<environment<<"\nGolden renderer: "<<renderer<<"\n";
     if(record || (!ci && environment==expectedEnvironment))
