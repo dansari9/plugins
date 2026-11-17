@@ -14,11 +14,12 @@ using namespace juce;
 
 namespace
 {
-constexpr int C = 120, R = 34, W = 1024, H = 576, L = 22, AX = 25, AW = 70, AT = 5, AH = 11, RX = 98, CY = 21, B = 24;
+constexpr int C = 120, R = 34, W = 1024, H = 576, L = 22, AX = 25, AW = 70, AT = 5, AH = 14, RX = 98, CY = 22, B = 25;
 constexpr int TY = AT - 2, stepX = AX + AW - 13, syncX = stepX + 3, SX = 44, wordsY = B + 2, secondaryY = B + 4, readoutY = B + 5;
+constexpr int invertX = 56, midiX = AX + 5; // invert centred over the graph; the sc meter from "midi" to "audio"
 constexpr int curveY[] { 5, 7, 9, 12, 14, 16, 19, 21, 23, 26, 28, 30 }; // groups of three fill the column
 constexpr float cw = (float) W / C, ch = (float) H / R;
-const Colour page { 0xff0d0d0d }, white { 0xffececec }, grey { 0xff7a7a7a }, rule { 0xff2c2c2c }, dark { 0xff454545 }, red { 0xffff3d1f }, kick { 0xff5a5a5a };
+const Colour page { 0xff0d0d0d }, white { 0xffececec }, grey { 0xff7a7a7a }, rule { 0xff2c2c2c }, dark { 0xff454545 }, red { 0xffff3d1f }, kick { 0xff5a5a5a }, tag { 0xff1c1c1c };
 String u(const char* s) { return String::fromUTF8(s); }
 String minus(const String& s) { return s.replace("-", u("−")); }
 Rectangle<int> cells(int x, int y, int w, int h) // edges rounded, so neighbours share an edge and never overlap
@@ -32,7 +33,7 @@ Font mono(float size, bool bold)
                                          Typeface::createSystemTypefaceFor(BinaryData::GeistMonoSemiBold_ttf, BinaryData::GeistMonoSemiBold_ttfSize) };
     return Font(FontOptions(faces[bold ? 1 : 0]).withPointHeight(size));
 }
-const StringArray triggerWords { "sync", "midi", "audio" }, stereoWords { "both", "mid", "side" };
+const StringArray triggerWords { "host", "midi", "audio" }, stereoWords { "both", "mid", "side" };
 const StringArray curveWords(gulp::curveNames, gulp::numCurves), colourWords(gulp::colorNames, gulp::numColors);
 const int modeGap = (AW - colourWords.joinIntoString("").length()) / (gulp::numColors - 1); // first to last: the graph
 
@@ -92,6 +93,15 @@ struct Grid
     void toggle(int x, int y, const String& label, bool on, bool dim = false)
     {
         put(x, y, u(on ? "■" : "□"), dim ? dark : on ? red : grey), put(x + 2, y, label, dim ? dark : on ? white : grey, on && !dim);
+    }
+    // A dotted meter, two steps per cell, dot rows from..to: the lit fraction in `on` over the track.
+    void meter(int x, int y, int w, int h, int from, int to, float fraction, Colour on)
+    {
+        const int lit = roundToInt(jlimit(0.0f, 1.0f, fraction) * (float) (2 * w));
+        Dots dots[2];
+        for (int k = 0; k < 2 * w; ++k)
+            for (int t = from; t < to; ++t) dots[k < lit ? 1 : 0].push_back({ k, t });
+        braille(x, y, w, h, dots[0], rule), braille(x, y, w, h, dots[1], on, over);
     }
 };
 
@@ -207,7 +217,7 @@ struct Editor : AudioProcessorEditor, Timer
         slotA.onClick = [this] { proc.selectAb(0); };
         slotB.onClick = [this] { proc.selectAb(1); };
         peak.onClick = [this] { proc.feed.held = 0; };
-        for (auto [key, x, w] : { std::tuple { &prev, 30, 2 }, { &next, 62, 2 }, { &save, 67, 4 }, { &slotA, 74, 1 }, { &slotB, 76, 1 } })
+        for (auto [key, x, w] : { std::tuple { &prev, 30, 2 }, { &next, 62, 2 }, { &save, 67, 4 }, { &slotA, 76, 1 }, { &slotB, 78, 1 } })
             layer.addAndMakeVisible(*key), key->setBounds(cells(x, 1, w, 1));
         // Keys never toggle themselves: the attachment sets them from the parameter, a click only asks for a value.
         const auto bind = [&](const char* id, std::vector<Key*> keys) {
@@ -236,7 +246,7 @@ struct Editor : AudioProcessorEditor, Timer
         row(triggers, "trigger", triggerWords, AX, wordsY);
         bind("invert", { &invert }), bind("loop", { &loop });
         bind("tempoSync", { &free, &sync }); // explicit choices: free = 0, sync = 1, including repeated clicks
-        // ◁ ▷ step the rate, or in free a ladder of round frequencies.
+        // ‹ › step the rate, or in free a ladder of round frequencies.
         auto* rate = bind("rate", {});
         auto* hz = bind("freeHz", {});
         const auto step = [this, rate, hz](int by) {
@@ -251,7 +261,7 @@ struct Editor : AudioProcessorEditor, Timer
         };
         down.onClick = [step] { step(-1); };
         up.onClick = [step] { step(1); };
-        for (auto [key, r] : { std::pair { &invert, cells(12, 3, 8, 1) }, { &loop, cells(AX, secondaryY, 6, 1) }, { &peak, cells(AX, TY, 20, 1) },
+        for (auto [key, r] : { std::pair { &invert, cells(invertX, TY, 8, 1) }, { &loop, cells(AX, secondaryY, 6, 1) }, { &peak, cells(AX, TY, 20, 1) },
                                { &sync, cells(syncX, TY, 4, 2) }, { &free, cells(syncX + 6, TY, 4, 2) }, { &up, cells(stepX, TY, 1, 1) } })
             layer.addAndMakeVisible(*key), key->setBounds(r);
         layer.addAndMakeVisible(down); // placed by refresh(): it moves out for a long value
@@ -289,9 +299,9 @@ struct Editor : AudioProcessorEditor, Timer
             now.push_back(param->getValue());
         const auto& f = proc.feed;
         now.insert(now.end(), { f.phase.load(), f.duck.load(), f.held.load(), (float) f.live.load(), f.scLevel.load(), f.outLevel.load(),
-                                (float) proc.preset.load(), (float) proc.abSlot(), (float) slope.isMouseOverOrDragging(true) });
+                                f.bpm.load(), (float) proc.preset.load(), (float) proc.abSlot() });
         for (size_t k = 0; k < gulp::Feed::bins; ++k)
-            now.insert(now.end(), { f.lo[k].load(), f.hi[k].load(), f.outLo[k].load(), f.outHi[k].load() });
+            now.insert(now.end(), { f.lo[k].load(), f.hi[k].load() });
         if (now == drawnFrom && proc.presetName() == drawnName)
             return;
         drawnFrom = std::move(now), drawnName = proc.presetName();
@@ -341,18 +351,18 @@ struct Editor : AudioProcessorEditor, Timer
         };
         // Header: name, preset number and name with prev / next, save, A / B, maker.
         g.put(2, 1, "gulp", white, true);
-        g.put(30, 1, u("‹"), grey), g.put(63, 1, u("›"), grey), g.put(67, 1, "save", grey);
+        g.put(30, 1, u("‹"), grey), g.put(63, 1, u("›"), grey), g.put(67, 1, "save", grey); // ‹ ›: also the rate's
         g.put(33, 1, proc.preset >= 0 ? String(proc.preset.load()).paddedLeft('0', 2) : String("--"), grey);
         g.centre(36, 26, 1, proc.presetName(), white, true);
         for (int k = 0; k < 2; ++k)
-            g.put(74 + 2 * k, 1, k == 0 ? "A" : "B", proc.abSlot() == k ? page : grey, proc.abSlot() == k, proc.abSlot() == k ? white : Colour());
+            g.put(76 + 2 * k, 1, k == 0 ? "A" : "B", proc.abSlot() == k ? page : grey, proc.abSlot() == k, proc.abSlot() == k ? white : Colour());
         g.right(C - 3, 1, "daveydidit", dark);
-        g.put(2, 2, String::repeatedString(u("─"), C - 4), rule), g.put(2, R - 3, String::repeatedString(u("─"), C - 4), rule);
-        for (int j = 3; j < R - 3; ++j)
+        g.put(2, 2, String::repeatedString(u("─"), C - 4), rule), g.put(2, R - 2, String::repeatedString(u("─"), C - 4), rule);
+        for (int j = 3; j < R - 2; ++j)
             g.put(L, j, u("│"), rule), g.put(RX - 1, j, u("│"), rule);
 
-        // Curve list: number, thumbnail, name, ◀ on the selected one; invert.
-        g.put(2, 3, "curve", grey), g.toggle(12, 3, "invert", inverted);
+        // Curve list: number, thumbnail, name, ◀ on the selected one.
+        g.put(2, 3, "curve", grey);
         for (int i = 0; i < gulp::numCurves; ++i)
         {
             const int y = curveY[i];
@@ -370,18 +380,16 @@ struct Editor : AudioProcessorEditor, Timer
             if (sel) g.put(20, y, u("◀"), red);
         }
 
-        // Above the graph: gain reduction now (24 dB in half cells) and its held peak in whole dB; the rate stepper
+        // Above the graph: gain reduction now (24 dB, dotted) and its held peak in whole dB; invert; the rate stepper
         // (or the free rate) and sync / free.
         const float duck = live ? feed.duck.load() : 0.0f, held = feed.held.load();
-        const int halves = roundToInt(jlimit(0.0f, 1.0f, -Decibels::gainToDecibels(1.0f - duck, -100.0f) / 24) * 24);
-        g.put(AX, TY, "gr", grey);
-        for (int k = 0; k < 12; ++k)
-            g.put(AX + 3 + k, TY, u(halves >= 2 * k + 2 ? "█" : halves == 2 * k + 1 ? "▌" : "·"), halves > 2 * k ? red : dark);
+        g.put(AX, TY, "gr", grey), g.meter(AX + 3, TY, 10, 1, 1, 3, -Decibels::gainToDecibels(1.0f - duck, -100.0f) / 24, red);
         const float heldDb = Decibels::gainToDecibels(1.0f - held, -100.0f);
-        g.put(AX + 17, TY, heldDb <= -100 ? u("−inf") : minus(String(roundToInt(heldDb))), heldDb < -0.5f ? red : grey, heldDb < -0.5f);
+        g.put(AX + 14, TY, heldDb <= -100 ? u("−inf") : minus(String(roundToInt(heldDb))), heldDb < -0.5f ? red : grey, heldDb < -0.5f);
+        g.toggle(invertX, TY, "invert", inverted);
         const String rateText = isFree ? text("freeHz") : String(gulp::rateNames[r]);
         const int field = jmax(7, rateText.length() + 4), downX = stepX - field - 1;
-        g.put(downX, TY, u("◁"), grey), g.centre(downX + 1, field, TY, rateText, white, true), g.put(stepX, TY, u("▷"), grey);
+        g.put(downX, TY, u("‹"), grey), g.centre(downX + 1, field, TY, rateText, white, true), g.put(stepX, TY, u("›"), grey);
         g.words(syncX, TY, { "sync", "free" }, isFree ? 1 : 0, 2);
         down.setBounds(cells(downX, TY, 1, 1));
         place(freeHz, cells(downX + 1, TY, field, 1), cells(downX + 1, TY, field, 1));
@@ -412,23 +420,25 @@ struct Editor : AudioProcessorEditor, Timer
                 for (int t = row(hi); t <= row(lo); ++t)
                     ghost.push_back({ k, t });
         g.braille(AX, AT, AW, AH, line, red), g.braille(AX, AT, AW, AH, ghost, kick, under);
-        // The slope handle rides the curve where the release is (it moves with the slope and the nudge); its label is
-        // the value to type. Hovered or dragged, its arrows light up.
+        // Playhead (only while the transport runs; under the slope's handle and label).
+        const int ph = AX + jmin(AW - 1, (int) (AW * feed.phase.load()));
+        for (int j = AT; j < AT + AH && live; ++j)
+            if (g.at[j][ph].c == ' ' || g.at[j][ph].c == 0x2591) g.put(ph, j, u("┊"), red);
+        // The slope handle rides the curve where the release is (it moves with the slope and the nudge). Its label, the
+        // value to type, sits on a dark tag diagonally off the ◆ on the side the curve leaves open.
         const double position = 0.3 * s + offset + (trigger == 0 ? 0 : 3 * gulp::blur(soothe) / 1024.0);
         const double hp = position - std::floor(position);
         const int hx = AX + (int) (AW * hp), hy = jlimit(AT, AT + AH - 2, AT + (int) std::nearbyint((1 - gain(hp)) * AH));
         const String label = "slope " + text("slope");
-        const int lx = hx + 2 + label.length() <= AX + AW ? hx + 2 : hx - 1 - label.length(), ly = hy > AT ? hy - 1 : hy + 1;
-        const bool hot = slope.isMouseOverOrDragging(true);
-        g.put(hx, hy, u("◆"), white), g.put(hx - 3, hy + 1, u("◀ ▶"), hot ? white : grey), g.put(lx, ly, label, white, true);
-        place(slope, cells(hx - 3, hy - 1, 7, 3).getUnion(cells(lx, ly, label.length(), 1)), cells(lx, ly, label.length(), 1));
+        const bool right = hx + 3 + label.length() <= AX + AW, below = (gain(hp + 0.02) >= gain(hp)) == right || hy == AT;
+        const int lx = right ? hx + 2 : hx - 1 - label.length(), ly = below ? hy + 1 : hy - 1;
+        g.put(hx, hy, u("◆"), white), g.put(lx - 1, ly, " " + label + " ", white, true, tag);
+        place(slope, cells(hx - 1, hy - 1, 3, 3).getUnion(cells(lx, ly, label.length(), 1)), cells(lx, ly, label.length(), 1));
         slope.grip = cells(hx - 1, hy, 3, 1).expanded(2) - slope.getPosition();
-        // Playhead (only while the transport runs) and ruler in fractions of the rate (or time when free).
-        const int ph = AX + jmin(AW - 1, (int) (AW * feed.phase.load()));
-        for (int j = AT; j < AT + AH && live; ++j)
-            if (g.at[j][ph].c == ' ' || g.at[j][ph].c == 0x2591) g.put(ph, j, u("┊"), red);
-        for (int i = 0; i <= 16; ++i)
-            g.put(AX + (int) std::nearbyint(i * (AW - 1) / 16.0), AT + AH, u(i % 4 == 0 ? "┴" : i % 2 == 0 ? "┬" : "·"), i % 4 == 0 ? grey : dark);
+        // The ruler, in fractions of the rate (or time when free): a baseline, a tall tick on each labelled beat.
+        g.put(AX, AT + AH, String::repeatedString(u("─"), AW), rule);
+        for (int i = 0; i <= 16; i += 2)
+            g.put(AX + (int) std::nearbyint(i * (AW - 1) / 16.0), AT + AH, u(i % 4 == 0 ? "┸" : "┴"), i % 4 == 0 ? grey : dark);
         for (int i = 0; i <= 4; ++i)
         {
             String t = "0";
@@ -442,15 +452,9 @@ struct Editor : AudioProcessorEditor, Timer
             g.centre(AX + (int) std::nearbyint(i * (AW - 1) / 4.0) - 3, 7, AT + AH + 1, t, dark);
         }
         if (live) g.put(ph, AT + AH, u("▲"), red);
-        // The output scope: the post-trim output over the same cycle, full scale = the strip's height.
-        Dots scope;
-        const auto level = [](float v) { return (int) std::nearbyint((1 - (jlimit(-1.0f, 1.0f, v) + 1) / 2) * 7); };
-        for (size_t k = 0; k < gulp::Feed::bins; ++k)
-            for (int t = level(feed.outHi[k].load()); t <= level(feed.outLo[k].load()); ++t)
-                scope.push_back({ (int) k, t });
-        g.braille(AX, AT + AH + 2, AW, 2, scope, grey);
 
-        // The modes across the graph's width; the bottom strip: trigger, loop, stereo, nudge / thresh / soothe.
+        // The modes across the graph's width; the bottom strip: trigger, loop (dim in host sync, which never reads it),
+        // stereo, nudge / thresh / soothe.
         g.words(AX, CY, colourWords, colour, modeGap);
         g.put(L + 1, B - 1, String::repeatedString(u("─"), RX - L - 2), rule);
         g.put(AX, B, "trigger", grey), g.words(AX, wordsY, triggerWords, trigger), g.toggle(AX, secondaryY, "loop", value("loop") > 0.5f, trigger == 0);
@@ -458,23 +462,19 @@ struct Editor : AudioProcessorEditor, Timer
         for (const auto& k : knobSpecs)
             knob(g, k.x, k.y, proc.apvts.getParameter(k.id)->getValue(), k.name, text(k.id), k.centred,
                  (std::strcmp(k.id, "thresh") == 0 && trigger != 2) || (std::strcmp(k.id, "split") == 0 && colour != 1 && colour != 2));
-        // Dotted meters, two steps per cell: the sidechain follower against the threshold (a full-height tick, white
-        // when the audio trigger listens; the bar red above it) under the trigger, -60..0 dB; the output peak under its
-        // knob, 2 rows of a 4-dot bar, -54..0 dBFS, red at 0. Unlit steps are the dark track.
-        const auto bar = [&g](int x, int y, int cells, int rows, int from, int to, float db, float floorDb, Colour on) {
-            const int lit = roundToInt(jlimit(0.0f, 1.0f, (db - floorDb) / -floorDb) * (float) (2 * cells));
-            Dots on_, track;
-            for (int k = 0; k < 2 * cells; ++k)
-                for (int t = from; t < to; ++t) (k < lit ? on_ : track).push_back({ k, t });
-            g.braille(x, y, cells, rows, track, rule), g.braille(x, y, cells, rows, on_, on, over);
-        };
+        // Dotted meters: the sidechain follower against the threshold (a full-height tick, white when the audio trigger
+        // listens; the bar red above it) under midi .. audio, -60..0 dB; the output peak under its knob, 2 rows of a
+        // 4-dot bar, -54..0 dBFS, red at 0.
         const float sc = feed.scLevel.load(), thresh = value("thresh"), out = feed.outLevel.load();
         const bool listening = trigger == 2;
         g.put(AX, readoutY, "sc", grey);
-        bar(AX + 3, readoutY, 12, 1, 1, 3, Decibels::gainToDecibels(sc, -100.0f), -60, Decibels::gainToDecibels(sc) > thresh && listening ? red : grey);
-        const int tick = jlimit(0, 23, roundToInt((thresh + 60) * 23 / 60));
-        g.braille(AX + 3, readoutY, 12, 1, { { tick, 0 }, { tick, 1 }, { tick, 2 }, { tick, 3 } }, listening ? white : dark);
-        bar(RX + 3, B + 4, 16, 2, 2, 6, Decibels::gainToDecibels(out, -100.0f), -54, out >= 1 ? red : white);
+        g.meter(midiX, readoutY, 10, 1, 1, 3, (Decibels::gainToDecibels(sc, -100.0f) + 60) / 60, Decibels::gainToDecibels(sc) > thresh && listening ? red : grey);
+        const int tick = jlimit(0, 19, roundToInt((thresh + 60) * 19 / 60));
+        g.braille(midiX, readoutY, 10, 1, { { tick, 0 }, { tick, 1 }, { tick, 2 }, { tick, 3 } }, listening ? white : dark);
+        g.meter(RX + 3, B + 4, 16, 2, 2, 6, (Decibels::gainToDecibels(out, -100.0f) + 54) / 54, out >= 1 ? red : white);
+        // The nudge's ms follow the tempo and rate: keep its (hidden) value box current unless it is being typed in.
+        if (auto* box = dynamic_cast<Label*>(knobs[0].getChildComponent(0)); box != nullptr && !box->isBeingEdited())
+            knobs[0].updateText();
         show(g);
     }
 
@@ -528,10 +528,6 @@ struct Editor : AudioProcessorEditor, Timer
         const float w = (float) image.getWidth() / C, h = (float) image.getHeight() / R, x = (float) r.getX(), y = (float) r.getY();
         const float cx = x + (float) r.getWidth() / 2, cy = y + (float) r.getHeight() / 2, lw = jmax(1.0f, w * 0.12f);
         const int t = jmax(1, roundToInt(lw)), hx = roundToInt(cx - (float) t / 2), hy = roundToInt(cy - (float) t / 2);
-        const auto block = [&](float l, float tp, float rt, float bt) {
-            g.fillRect(Rectangle<int>::leftTopRightBottom(roundToInt(x + l * (float) r.getWidth()), roundToInt(y + tp * (float) r.getHeight()),
-                                                          roundToInt(x + rt * (float) r.getWidth()), roundToInt(y + bt * (float) r.getHeight())));
-        };
         const auto glyph = [&](juce_wchar code, float offset) {
             const float gx = (c.left != 0 ? (float) i * w : x + ((float) r.getWidth() - w) / 2) + offset;
             if (code == 0x2594) g.fillRect(Rectangle<float>(gx, y, w, h * 0.125f));
@@ -545,12 +541,13 @@ struct Editor : AudioProcessorEditor, Timer
             }
         };
         if (c.left != 0) { glyph(c.left, -w / 2), glyph(c.c, w / 2); return; }
-        const int arms = c.c == 0x2500 ? 10 : c.c == 0x2502 ? 5 : c.c == 0x2534 ? 11 : c.c == 0x252c ? 14 : 0; // ─ │ ┴ ┬: up 1 right 2 down 4 left 8
+        const int arms = c.c == 0x2500 ? 10 : c.c == 0x2502 ? 5 : c.c == 0x2534 || c.c == 0x2538 ? 11 : 0; // ─ │ ┴ ┸: up 1 right 2 down 4 left 8
         if (arms != 0)
         {
+            const int top = c.c == 0x2534 ? (r.getY() + hy) / 2 : r.getY(); // ┴ a short tick, ┸ a tall one
             if (arms & 8) g.fillRect(r.getX(), hy, hx + t - r.getX(), t);
             if (arms & 2) g.fillRect(hx, hy, r.getRight() - hx, t);
-            if (arms & 1) g.fillRect(hx, r.getY(), t, hy + t - r.getY());
+            if (arms & 1) g.fillRect(hx, top, t, hy + t - top);
             if (arms & 4) g.fillRect(hx, hy, t, r.getBottom() - hy);
         }
         else if (c.c == 0x250a) // ┊
@@ -558,9 +555,7 @@ struct Editor : AudioProcessorEditor, Timer
         else if (c.c == 0x2591) // ░: a CRT dither of 4 dots
             for (auto [di, dj] : { std::pair { 0, 0 }, { 0, 2 }, { 1, 1 }, { 1, 3 } })
                 g.fillRect(Rectangle<float>(0.22f * w, 0.22f * w).withCentre({ x + w * ((float) di * 0.5f + 0.25f), y + h * ((float) dj * 0.25f + 0.125f) }));
-        else if (c.c >= 0x2581 && c.c <= 0x2588) block(0, 1 - (float) (c.c - 0x2580) / 8, 1, 1); // ▁ .. █
-        else if (c.c == 0x258c) block(0, 0, 0.5f, 1); // ▌
-        else if (c.c == 0x2594) block(0, 0, 1, 0.125f); // ▔
+        else if (c.c == 0x2594) g.fillRect(r.withBottom(roundToInt(y + 0.125f * (float) r.getHeight()))); // ▔
         else if (c.c >= 0x2800 && c.c <= 0x28ff) // braille
         {
             for (int dx = 0; dx < 2; ++dx)
@@ -570,14 +565,14 @@ struct Editor : AudioProcessorEditor, Timer
         }
         else if (c.c == 0x25a0) g.fillRect(Rectangle<float>(0.72f * w, 0.36f * h).withCentre({ cx, cy })); // ■
         else if (c.c == 0x25a1) g.drawRect(Rectangle<float>(0.72f * w, 0.36f * h).withCentre({ cx, cy }), lw); // □
-        else if (c.c == 0x25b2 || c.c == 0x25b6 || c.c == 0x25b7 || c.c == 0x25c0 || c.c == 0x25c1 || c.c == 0x25c6) // ▲ ▶ ▷ ◀ ◁ ◆
+        else if (c.c == 0x25b2 || c.c == 0x25c0 || c.c == 0x25c6) // ▲ ◀ ◆
         {
-            const float rr = 0.36f * w, s = 0.95f * rr, d = c.c == 0x25c0 || c.c == 0x25c1 ? -1.0f : 1.0f;
+            const float rr = 0.36f * w, s = 0.95f * rr;
             Path p;
             if (c.c == 0x25c6) p.addQuadrilateral(cx, cy - 1.1f * rr, cx + rr, cy, cx, cy + 1.1f * rr, cx - rr, cy);
             else if (c.c == 0x25b2) p.addTriangle(cx, cy - s, cx + s, cy + 0.8f * s, cx - s, cy + 0.8f * s);
-            else p.addTriangle(cx + d * s, cy, cx - d * 0.8f * s, cy - s, cx - d * 0.8f * s, cy + s);
-            if (c.c != 0x25b7 && c.c != 0x25c1) g.fillPath(p);
+            else p.addTriangle(cx - s, cy, cx + 0.8f * s, cy - s, cx + 0.8f * s, cy + s);
+            g.fillPath(p);
             g.strokePath(p, PathStrokeType(c.c == 0x25c6 ? lw : 0.8f * lw, PathStrokeType::curved, PathStrokeType::rounded));
         }
         else if (c.c == 0x2039 || c.c == 0x203a) // ‹ › (not in Geist Mono)

@@ -16,26 +16,36 @@ const char* const ids[] = { "trigger", "tempoSync", "rate", "freeHz", "curve", "
 enum { Trigger, TempoSync, Rate, FreeHz, Curve, Slope, Invert, Depth, Shift, Loop, Thresh, Band, Split, Output, Color, Tone, Stereo, Soothe };
 constexpr double pi = MathConstants<double>::pi;
 
-AudioProcessorValueTreeState::ParameterLayout layout()
+// One cycle in ms at the current rate: the host's last tempo (120 without one) in sync, else 1 / free Hz. The nudge
+// shows and takes ms of it; the parameter itself stays % of a cycle, so sessions and automation are unchanged.
+double cycleMs(const GulpProcessor& p)
+{
+    const auto v = [&p](const char* id) { return (double) p.apvts.getRawParameterValue(id)->load(); };
+    const int rate = jlimit(0, gulp::numRates - 1, (int) v("rate"));
+    return 1000 * (v("tempoSync") > 0.5 ? 240.0 * gulp::rateNum[rate] / gulp::rateDen[rate] / p.feed.bpm.load() : 1 / v("freeHz"));
+}
+
+AudioProcessorValueTreeState::ParameterLayout layout(const GulpProcessor& self)
 {
     // Every float snaps to its step: save -> reload is then bit-exact (the snapped value converts back to itself).
     auto trim = [](float v) { return String(v, std::abs(v - std::round(v)) < 0.05f ? 0 : 1); };
     auto sign = [](float v) { return String(v > 0 ? "+" : ""); };
     auto parse = [](const String& t) { return (float) (t.replace(CharPointer_UTF8("\xe2\x88\x92"), "-").retainCharacters("+-.0123456789").getDoubleValue() * (t.containsIgnoreCase("k") ? 1000 : 1)); };
     // Legacy parameters (inert) are not automatable: VST3 drops kCanAutomate, AU marks them non-real-time; both keep them.
-    auto num = [&](int i, const char* name, float lo, float hi, float def, float step, bool log, const char* unit, std::function<String(float)> text, bool live = true) {
+    auto num = [&](int i, const char* name, float lo, float hi, float def, float step, bool log, const char* unit, std::function<String(float)> text,
+                   std::function<float(const String&)> from = {}) {
         const auto snap = [per = std::round(1 / step)](float s, float e, float v) { return jlimit(s, e, std::round(v * per) / per + 0.0f); };
         // The snap is part of the mapping: APVTS also reads its first value through the range's own convertFrom0to1.
         NormalisableRange<float> r(lo, hi, [=](float s, float e, float v) { return snap(s, e, log ? s * std::pow(e / s, v) : s + (e - s) * v); },
                                    [=](float s, float e, float v) { return log ? std::log(v / s) / std::log(e / s) : (v - s) / (e - s); }, snap);
         r.interval = log ? 0.0f : step;
         return std::make_unique<AudioParameterFloat>(ParameterID { ids[i], i < Soothe ? 1 : 2 }, name, r, def,
-                                                     AudioParameterFloatAttributes().withLabel(unit).withStringFromValueFunction([text](float v, int) { return text(v); }).withValueFromStringFunction(parse).withAutomatable(live));
+                                                     AudioParameterFloatAttributes().withLabel(unit).withStringFromValueFunction([text](float v, int) { return text(v); }).withValueFromStringFunction(from ? from : decltype(from)(parse)).withAutomatable(i != Tone));
     };
     auto onOff = [](int i, const char* name, bool def) { return std::make_unique<AudioParameterBool>(ParameterID { ids[i], 1 }, name, def); };
     auto choice = [](int i, const char* name, StringArray items, int def, bool live = true) { return std::make_unique<AudioParameterChoice>(ParameterID { ids[i], 1 }, name, items, def, AudioParameterChoiceAttributes().withAutomatable(live)); };
     auto percent = [trim](float v) { return trim(v) + "%"; };
-    return { choice(Trigger, "Trigger", { "sync", "midi", "audio" }, 0),
+    return { choice(Trigger, "Trigger", { "host", "midi", "audio" }, 0), // index 0 was named "sync" until 0.2.0
              onOff(TempoSync, "Tempo Sync", true),
              choice(Rate, "Rate", StringArray(gulp::rateNames, gulp::numRates), 8),
              num(FreeHz, "Free Rate", 0.1f, 20, 2, 0.01f, true, "Hz", [](float v) { return String(v, 2) + " Hz"; }),
@@ -43,14 +53,15 @@ AudioProcessorValueTreeState::ParameterLayout layout()
              num(Slope, "Slope", -100, 100, 0, 0.1f, false, "%", [=](float v) { return sign(v) + trim(v) + "%"; }),
              onOff(Invert, "Invert", false),
              num(Depth, "Depth", 0, 100, 100, 0.1f, false, "%", percent),
-             num(Shift, "Nudge", -50, 50, 0, 0.1f, false, "%", [=](float v) { return exactlyEqual(v, 0.0f) ? String("0") : sign(v) + trim(v) + "%"; }),
+             num(Shift, "Nudge", -50, 50, 0, 0.1f, false, "ms", [&self](float v) { const int ms = roundToInt(v / 100 * cycleMs(self)); return (ms > 0 ? "+" : "") + String(ms) + " ms"; },
+                 [&self, parse](const String& t) { return jlimit(-50.0f, 50.0f, t.containsChar('%') ? parse(t) : (float) (parse(t) * 100 / cycleMs(self))); }),
              onOff(Loop, "Loop", false),
              num(Thresh, "Threshold", -60, 0, -24, 0.1f, false, "dB", [=](float v) { return trim(v) + " dB"; }),
              choice(Band, "Band (unused)", { "full", "lows", "highs" }, 0, false),
              num(Split, "Split", 20, 5120, 120, 0.1f, true, "Hz", [](float v) { return String(roundToInt(v)) + " Hz"; }),
              num(Output, "Output", -24, 12, 0, 0.1f, false, "dB", [=](float v) { return sign(v) + String(v, 1) + " dB"; }),
              choice(Color, "Mode", StringArray(gulp::colorNames, gulp::numColors), 0),
-             num(Tone, "Tone (unused)", 0, 100, 50, 0.1f, false, "%", percent, false),
+             num(Tone, "Tone (unused)", 0, 100, 50, 0.1f, false, "%", percent),
              choice(Stereo, "Stereo", { "both", "mid", "side" }, 0),
              num(Soothe, "Soothe", 0, 100, 0, 0.1f, false, "%", percent) };
 }
@@ -186,7 +197,7 @@ struct GulpProcessor::Dsp
     Svf cross[2][4];                  // per channel: two lowpass, two highpass sections (LR4)
     ColourState state[2][gulp::numColors]; // per channel and mode
     Coefs k;
-    double cycle = 1, aim = 0, a = 0, hold = 0, env = 0, lo = 0, hi = 0, outEnv = 0, outLo = 0, outHi = 0;
+    double cycle = 1, aim = 0, a = 0, hold = 0, env = 0, lo = 0, hi = 0, outEnv = 0;
     bool armed = false, scArmed = true, stopped = false;
     int holdoff = 0, bin = 0;
     unsigned tick = 0; // only its low bits are used: wraps, never overflows
@@ -209,7 +220,7 @@ struct GulpProcessor::Dsp
     }
     void reset()
     {
-        cycle = 1, aim = a = hold = env = lo = hi = outEnv = outLo = outHi = 0, armed = false, scArmed = true, holdoff = bin = 0, tick = 0;
+        cycle = 1, aim = a = hold = env = lo = hi = outEnv = 0, armed = false, scArmed = true, holdoff = bin = 0, tick = 0;
         std::fill(due.begin(), due.end(), false), now = 0;
         tableKey[0] = -1;
         for (auto& c : cross) for (auto& s : c) s = {};
@@ -261,7 +272,7 @@ GulpProcessor::GulpProcessor(File directory)
                          .withInput("Input", AudioChannelSet::stereo())
                          .withOutput("Output", AudioChannelSet::stereo())
                          .withInput("Sidechain", AudioChannelSet::stereo(), false)),
-      apvts(*this, nullptr, "GULP", layout()), presetDirectory(std::move(directory)), dsp(std::make_unique<Dsp>())
+      apvts(*this, nullptr, "GULP", layout(*this)), presetDirectory(std::move(directory)), dsp(std::make_unique<Dsp>())
 {
     for (int i = 0; i < gulp::numParams; ++i)
         dsp->raw[(size_t) i] = apvts.getRawParameterValue(ids[i]);
@@ -315,6 +326,7 @@ void GulpProcessor::processBlock(AudioBuffer<float>& buffer, MidiBuffer& midi)
     if (d.stopped && !stopped)
         feed.held.store(0, std::memory_order_relaxed);
     d.stopped = stopped;
+    feed.bpm.store((float) bpm, std::memory_order_relaxed);
     const double quarters = 4.0 * gulp::rateNum[rate] / gulp::rateDen[rate];
     // bpm 20..999, freeHz 0.1..20 and fs sanitized in prepare: inc is always finite and positive.
     const double inc = (tempo ? bpm / 60 / quarters : (double) p(FreeHz)) / d.fs, shift = p(Shift) / 100.0;
@@ -397,30 +409,27 @@ void GulpProcessor::processBlock(AudioBuffer<float>& buffer, MidiBuffer& midi)
         if (channels == 1)
             change[1] = change[0];
         const double m = 0.5 * wMid * (change[0] + change[1]), sd = 0.5 * wSide * (change[0] - change[1]);
-        double o = 0, peak = 0;
+        double peak = 0;
         for (int c = 0; c < channels; ++c)
         {
             const double y = (in[c] + m + (c == 0 ? sd : -sd)) * out;
             buffer.setSample(c, i, (float) y);
-            o += y / channels, peak = jmax(peak, std::abs(y));
+            peak = jmax(peak, std::abs(y));
         }
 
-        // Telemetry: the followers (instant attack, 50 ms release) for the meters; the sidechain and the output folded
-        // into the cycle for the kick ghost and the output scope (both on the beat, so a nudge slides the scope's ducks).
+        // Telemetry: the followers (instant attack, 50 ms release) for the meters; the sidechain folded into the cycle
+        // (on the beat) for the kick ghost.
         d.outEnv = jmax(peak, d.outEnv * d.envRelease);
         scPeak = jmax(scPeak, d.env), outPeak = jmax(outPeak, d.outEnv);
         const int b = jmin(gulp::Feed::bins - 1, (int) (view * gulp::Feed::bins));
         if (b != d.bin)
         {
             if (const auto k = (size_t) d.bin; !stopped)
-            {
                 feed.lo[k].store((float) d.lo, std::memory_order_relaxed), feed.hi[k].store((float) d.hi, std::memory_order_relaxed);
-                feed.outLo[k].store((float) d.outLo, std::memory_order_relaxed), feed.outHi[k].store((float) d.outHi, std::memory_order_relaxed);
-            }
-            d.bin = b, d.lo = d.hi = s, d.outLo = d.outHi = o;
+            d.bin = b, d.lo = d.hi = s;
         }
         else
-            d.lo = jmin(d.lo, s), d.hi = jmax(d.hi, s), d.outLo = jmin(d.outLo, o), d.outHi = jmax(d.outHi, o);
+            d.lo = jmin(d.lo, s), d.hi = jmax(d.hi, s);
     }
     for (int c = channels; c < getTotalNumOutputChannels(); ++c)
         buffer.clear(c, 0, n);
@@ -511,7 +520,7 @@ void GulpProcessor::setStateInformation(const void* data, int size)
     preset = (int) jlimit(-1.0, gulp::numPresets - 1.0, number(tree->getStringAttribute("preset")).value_or(-1)), userName = tree->getStringAttribute("presetName");
 }
 
-// Values in ID order: trigger (sync midi audio), tempoSync, rate (index), freeHz, curve (index), slope %, invert, depth %,
+// Values in ID order: trigger (host midi audio), tempoSync, rate (index), freeHz, curve (index), slope %, invert, depth %,
 // nudge %, loop, thresh dB, band (unused), split Hz, output dB, mode (index), tone (unused), stereo (both mid side), soothe %.
 const gulp::Preset gulp::presets[] = {
     { "init", { 0, 1, 8, 2, 0, 0, 0, 100, 0, 0, -24, 0, 120, 0, 0, 50, 0, 0 } },

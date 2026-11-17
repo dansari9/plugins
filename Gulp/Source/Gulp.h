@@ -23,18 +23,18 @@ using Table = std::array<double, 1025>;
 inline int blur(double soothe) { return (int) std::lround(80 * soothe); }
 void shape(Table&, int curve, double slope, bool invert, double soothe, bool triggered = false);
 
-// Audio thread -> editor, relaxed atomics: where the cycle is (the beat in sync, the time since the trigger otherwise),
-// the duck amount and its held peak (the editor may zero it), the peak (linear, per block) of the sidechain follower the
-// threshold sees and of the output, and one cycle of the sidechain and of the post-trim output folded into `bins`
-// columns (signed min and max): the kick ghost and the output scope. live: false while the host's transport is
-// stopped; the cycle, the duck, the peak and the bins then hold still.
+// Audio thread -> editor, relaxed atomics: where the cycle is (the beat in host sync, the time since the trigger
+// otherwise), the duck amount and its held peak (the editor may zero it), the peak (linear, per block) of the sidechain
+// follower the threshold sees and of the output, one cycle of the sidechain folded into `bins` columns (signed min and
+// max: the kick ghost), and the host tempo of the last block (120 without one: the nudge's ms). live: false while the
+// host's transport is stopped; the cycle, the duck, the peak and the bins then hold still.
 struct Feed
 {
     static_assert(std::atomic<float>::is_always_lock_free && std::atomic<bool>::is_always_lock_free, "audio telemetry must be lock-free");
     static constexpr int bins = 140;
-    std::atomic<float> phase { 0 }, duck { 0 }, held { 0 }, scLevel { 0 }, outLevel { 0 };
+    std::atomic<float> phase { 0 }, duck { 0 }, held { 0 }, scLevel { 0 }, outLevel { 0 }, bpm { 120 };
     std::atomic<bool> live { true };
-    std::array<std::atomic<float>, bins> lo {}, hi {}, outLo {}, outHi {};
+    std::array<std::atomic<float>, bins> lo {}, hi {};
 };
 
 struct Preset

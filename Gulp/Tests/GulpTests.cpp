@@ -179,12 +179,12 @@ static void testIdentity()
     CHECK(JucePlugin_ManufacturerCode == 0x44776b73); // 'Dwks'
     CHECK(juce::String(JUCE_STRINGIFY(JucePlugin_AUMainType)) == "'aumf'");
     CHECK(juce::String(JUCE_STRINGIFY(JucePlugin_CFBundleIdentifier)) == "com.dripworks.gulp");
-    CHECK(juce::String(JucePlugin_Name) == "gulp" && juce::String(JucePlugin_Manufacturer) == "daveydidit" && juce::String(JucePlugin_VersionString) == "0.2.0");
+    CHECK(juce::String(JucePlugin_Name) == "gulp" && juce::String(JucePlugin_Manufacturer) == "daveydidit" && juce::String(JucePlugin_VersionString) == "0.2.1");
     static_assert(JUCE_VST3_CAN_REPLACE_VST2 == 0 && JUCE_FORCE_USE_LEGACY_PARAM_IDS == 0, "frozen host-facing IDs");
     CHECK(!JucePlugin_IsSynth && JucePlugin_WantsMidiInput && !JucePlugin_ProducesMidiOutput);
     // Golden: id -> range and default (floats), item list and default (choices), default (switches).
     struct Golden { const char* id; float lo, hi, def; const char* items; };
-    const Golden golden[] = { { "trigger", 0, 2, 0, "sync,midi,audio" },
+    const Golden golden[] = { { "trigger", 0, 2, 0, "host,midi,audio" }, // index 0 was named "sync" until 0.2.0: only its text changed
                               { "tempoSync", 0, 1, 1, "" },
                               { "rate", 0, 15, 8, "1/32,1/16T,1/16,1/16D,1/8T,1/8,1/8D,1/4T,1/4,1/4D,1/2T,1/2,1/2D,1/1,2/1,4/1" },
                               { "freeHz", 0.1f, 20, 2, nullptr },
@@ -692,7 +692,7 @@ static void testTransport()
     CHECK(p.feed.live && p.feed.held > 0.9f);
     const auto frozen = [&] {
         std::vector<float> v { p.feed.phase, p.feed.duck, p.feed.held };
-        for (size_t k = 0; k < gulp::Feed::bins; ++k) v.push_back(p.feed.outLo[k]), v.push_back(p.feed.lo[k]);
+        for (size_t k = 0; k < gulp::Feed::bins; ++k) v.push_back(p.feed.hi[k]), v.push_back(p.feed.lo[k]);
         return v;
     };
     h.playing = false;
@@ -940,8 +940,8 @@ static void testEditorSizes()
     }
 }
 
-// Telemetry: the input level, the output trim and the sidechain level move the output scope and meters and the
-// sidechain meter; the threshold moves its mark. No control moves, and none covers the scope or the meters.
+// Telemetry: the input level and the output trim move the output meter, the sidechain level moves the sidechain meter;
+// the threshold moves its mark. No control moves, and none covers the meters.
 static juce::Rectangle<int> cellArea(int x, int y, int w, int h) // the editor's cells() at 100 %
 {
     const auto px = [](int k) { return juce::roundToInt(1024.0f / 120 * (float) k); };
@@ -967,7 +967,7 @@ static void testTelemetry()
         return v;
     };
     const auto before = controls();
-    const juce::Rectangle<int> scope = cellArea(25, 18, 70, 2), scMeter = cellArea(25, 29, 15, 1), outMeter = cellArea(101, 28, 16, 2);
+    const juce::Rectangle<int> scMeter = cellArea(30, 30, 10, 1), outMeter = cellArea(101, 29, 16, 2);
     int offset = 0;
     const auto frame = [&] {
         r.offset = offset, offset += 24000, run(p, 24000, 512, r);
@@ -980,7 +980,7 @@ static void testTelemetry()
     in = 0.1f;
     const auto quiet = frame();
     const float out1 = p.feed.outLevel;
-    CHECK(out0 > 0.3f && out1 < 0.5f * out0 && look(quiet, outMeter) != look(loud, outMeter) && look(quiet, scope) != look(loud, scope));
+    CHECK(out0 > 0.3f && out1 < 0.5f * out0 && look(quiet, outMeter) != look(loud, outMeter));
     set(p, "output", -12);
     const auto trimmed = frame();
     CHECK(p.feed.outLevel < 0.5f * out1 && look(trimmed, outMeter) != look(quiet, outMeter));
@@ -991,7 +991,7 @@ static void testTelemetry()
     CHECK(look(e->createComponentSnapshot(e->getLocalBounds(), true, 1.0f), scMeter) != look(soft, scMeter));
     CHECK(controls() == before);
     for (const auto& c : controls())
-        for (const auto& area : { scope, scMeter, outMeter }) CHECK(!c.intersects(area));
+        for (const auto& area : { scMeter, outMeter }) CHECK(!c.intersects(area));
 }
 
 // Every control through the component tree and JUCE's handlers (not peer hit-testing): knobs and the free rate drag
@@ -1042,7 +1042,7 @@ static void testInteraction()
             return false;
         };
         CHECK(!overlaps());
-        for (auto [id, x, y] : { std::tuple { "shift", 60, 24 }, { "thresh", 73, 24 }, { "soothe", 86, 24 },
+        for (auto [id, x, y] : { std::tuple { "shift", 60, 25 }, { "thresh", 73, 25 }, { "soothe", 86, 25 },
                                 { "depth", 104, 3 }, { "split", 104, 12 }, { "output", 104, 21 } })
             CHECK(find(*e, id)->getBounds() == cellArea(x, y, 10, 6));
         const auto time = juce::Time::getCurrentTime();
@@ -1089,7 +1089,7 @@ static void testInteraction()
         // quarter cycle from 0.3 to 0.6 is slope +100 % and the ◆ is under the cursor again; double-click resets.
         set(p, { { "slope", 0 }, { "shift", 0 }, { "soothe", 0 }, { "curve", 0 } }), timer.timerCallback();
         auto* slope = find(*e, "slope");
-        const auto diamond = [&] { return slope->getPosition().toFloat() + juce::Point<float>(3.5f, 1.5f) * juce::Point<float>(1024.0f / 120, 576.0f / 34); }; // in the layer
+        const auto diamond = [&] { return slope->getPosition().toFloat() + juce::Point<float>(1.5f, 1.5f) * juce::Point<float>(1024.0f / 120, 576.0f / 34); }; // in the layer
         const auto onEditor = [&](juce::Point<float> inLayer) { return e->getLocalPoint(layer, inLayer); };
         CHECK(e->getComponentAt(onEditor(diamond()).roundToInt()) == slope && std::abs(diamond().x - (25 + 0.3f * 70) * 1024 / 120 - 4) < 6);
         CHECK(e->getComponentAt(onEditor({ (25 + 0.8f * 70) * 1024 / 120, (5 + 8) * 576 / 34.0f }).roundToInt()) != slope);
@@ -1140,12 +1140,12 @@ static void testInteraction()
         press("sync");
         CHECK(dynamic_cast<juce::Button*>(find(*e, "sync"))->getToggleState() && !dynamic_cast<juce::Button*>(find(*e, "free"))->getToggleState());
         CHECK(find(*e, "sync")->getBounds() == cellArea(85, 3, 4, 2) && find(*e, "free")->getBounds() == cellArea(91, 3, 4, 2));
-        CHECK(find(*e, "loop")->getBounds() == cellArea(25, 28, 6, 1) && find(*e, "loop")->getX() == find(*e, "trigger sync")->getX());
+        CHECK(find(*e, "loop")->getBounds() == cellArea(25, 29, 6, 1) && find(*e, "loop")->getX() == find(*e, "trigger host")->getX());
 
         // The held peak: click the number to zero it.
         p.feed.held = 0.6f, timer.timerCallback();
-        CHECK(e->getComponentAt(onEditor(cellArea(42, 3, 1, 1).toFloat().getCentre()).roundToInt()) == find(*e, "peak"));
-        click(onEditor(cellArea(42, 3, 1, 1).toFloat().getCentre())), CHECK(p.feed.held == 0);
+        CHECK(e->getComponentAt(onEditor(cellArea(40, 3, 1, 1).toFloat().getCentre()).roundToInt()) == find(*e, "peak"));
+        click(onEditor(cellArea(40, 3, 1, 1).toFloat().getCentre())), CHECK(p.feed.held == 0);
 
         // The modes spread evenly from the graph's left edge to its right edge.
         const juce::StringArray modes { "vol", "lows", "highs", "dark", "thin", "pinch", "hollow", "grit" };
@@ -1154,7 +1154,7 @@ static void testInteraction()
             CHECK(std::abs(find(*e, "color " + modes[k])->getX() - find(*e, "color " + modes[k - 1])->getRight() - cellArea(0, 0, 5, 1).getWidth()) <= 1);
         const std::pair<const char*, juce::StringArray> choices[] = {
             { "curve", { "classic", "tight", "punch", "round", "long", "slam", "sub", "sub long", "trim", "suck", "wave", "double" } },
-            { "color", modes }, { "stereo", { "both", "mid", "side" } }, { "trigger", { "sync", "midi", "audio" } } };
+            { "color", modes }, { "stereo", { "both", "mid", "side" } }, { "trigger", { "host", "midi", "audio" } } };
         for (auto& [id, items] : choices)
             for (int k = items.size(); --k >= 0;)
                 press(juce::String(id) + " " + items[k]), CHECK(get(p, id) == (float) k);
@@ -1171,6 +1171,69 @@ static void testInteraction()
         CHECK(!overlaps());
     }
     folder.deleteRecursively();
+}
+
+// The nudge is stored as % of a cycle and shown in ms of one cycle at the live tempo and rate (the host's last tempo, 120
+// without one; 1 / Hz in free), on the parameter itself and on its knob; typed ms convert back and clamp. Trigger index
+// 0 reads "host" in the editor and the host, and saves as 0 as it always did.
+static void testDisplayNames()
+{
+    Proc p;
+    prepare(p, 48000, 512);
+    auto* nudge = p.apvts.getParameter("shift");
+    const auto text = [&](float percent) { return nudge->getText(nudge->convertTo0to1(percent), 0); };
+    const auto value = [&](const juce::String& t) { return nudge->convertFrom0to1(nudge->getValueForText(t)); };
+    const auto near = [](float a, float b) { return std::abs(a - b) < 1e-4f; };
+    const auto roundTrip = [&](float percent, float cycleMs) { // text -> value lands within half a ms (+ the 0.1 % step)
+        const float back = value(text(percent));
+        return text(back) == text(percent) && std::abs(back - percent) <= 50 / cycleMs + 0.05f + 1e-4f;
+    };
+    CHECK(nudge->getLabel() == "ms" && p.feed.bpm == 120);
+    // No host tempo yet (as standalone): 120 BPM, 1/4 = 500 ms.
+    CHECK(text(2.4f) == "+12 ms" && text(0) == "0 ms" && text(-1.6f) == "-8 ms");
+    CHECK(near(value("+12 ms"), 2.4f) && near(value("-8 ms"), -1.6f) && near(value(juce::String::fromUTF8("\xe2\x88\x92" "8 ms")), -1.6f) && value("0 ms") == 0);
+    CHECK(value("+9999 ms") == 50 && value("-9999 ms") == -50 && near(value("12.5%"), 12.5f)); // clamped; % still typed as %
+    CHECK(roundTrip(10, 500) && roundTrip(-33.3f, 500));
+    set(p, "rate", 0), CHECK(text(0.1f) == "0 ms" && text(-0.1f) == "0 ms"); // 1/32: one step is 0.06 ms, never "-0"
+    // Host at 124 BPM, 1/16: 120.97 ms; 3/16 dotted 1/16 (index 3) = 181.45 ms.
+    Host h;
+    run(p, 512, 512, [&] { Run r; r.host = &h; return r; }());
+    set(p, "rate", 2);
+    CHECK(p.feed.bpm == 124 && text(10) == "+12 ms" && text(-50) == "-60 ms" && roundTrip(10, 120.97f) && roundTrip(-27.5f, 120.97f));
+    set(p, "rate", 3), CHECK(text(10) == "+18 ms" && roundTrip(41.2f, 181.45f));
+    // Free 4 Hz: 250 ms, whatever the tempo.
+    set(p, { { "tempoSync", 0 }, { "freeHz", 4 } });
+    CHECK(text(-20) == "-50 ms" && near(value("-50 ms"), -20) && text(4.8f) == "+12 ms" && roundTrip(17.3f, 250));
+    // A playhead without a tempo, and none at all: 120 again.
+    set(p, { { "tempoSync", 1 }, { "rate", 8 } }), h.bpm = 90;
+    run(p, 512, 512, [&] { Run r; r.host = &h; return r; }()), CHECK(p.feed.bpm == 90);
+    h.known = false;
+    run(p, 512, 512, [&] { Run r; r.host = &h; return r; }()), CHECK(p.feed.bpm == 120 && text(-1.6f) == "-8 ms");
+    h.known = true, h.bpm = 90;
+    run(p, 512, 512, [&] { Run r; r.host = &h; return r; }()), run(p, 512, 512), CHECK(p.feed.bpm == 120);
+
+    // The knob shows the same text, and follows a tempo change without the value moving.
+    set(p, { { "rate", 8 }, { "shift", 2.4f } });
+    std::unique_ptr<juce::AudioProcessorEditor> e(p.createEditor());
+    auto& timer = dynamic_cast<juce::Timer&>(*e);
+    timer.stopTimer();
+    auto* knob = dynamic_cast<juce::Slider*>(find(*e, "shift"));
+    const auto shown = [&] { timer.timerCallback(); auto* l = dynamic_cast<juce::Label*>(knob->getChildComponent(0)); return l != nullptr ? l->getText() : juce::String(); };
+    CHECK(shown() == "+12 ms");
+    h.bpm = 60;
+    run(p, 512, 512, [&] { Run r; r.host = &h; return r; }()), CHECK(shown() == "+24 ms" && get(p, "shift") == 2.4f && nudge->getCurrentValueAsText() == "+24 ms");
+    set(p, "shift", -1.6f), CHECK(shown() == juce::String::fromUTF8("\xe2\x88\x92" "16 ms"));
+
+    // "host": the trigger row's word and the host's text for index 0; the saved value is the index, unchanged.
+    set(p, "trigger", 0), timer.timerCallback();
+    auto* host = dynamic_cast<juce::Button*>(find(*e, "trigger host"));
+    CHECK(host != nullptr && host->getToggleState() && find(*e, "trigger sync") == nullptr && host->getBounds() == cellArea(25, 27, 4, 2));
+    CHECK(p.apvts.getParameter("trigger")->getCurrentValueAsText() == "host" && get(p, "trigger") == 0);
+    const auto xml = juce::AudioProcessor::getXmlFromBinary(save(p).getData(), (int) save(p).getSize());
+    CHECK(xml != nullptr && xml->getChildByAttribute("id", "trigger") != nullptr && xml->getChildByAttribute("id", "trigger")->getStringAttribute("value") == "0.0");
+    Proc old; // a 0.2.0 session's sync trigger (index 0) loads as host
+    load(old, blob(R"(<?xml version="1.0" encoding="UTF-8"?>)" "\n" R"(<GULP stateVersion="2"><PARAM id="trigger" value="0.0"/><PARAM id="shift" value="12.5"/></GULP>)"));
+    CHECK(get(old, "trigger") == 0 && old.apvts.getParameter("trigger")->getCurrentValueAsText() == "host" && get(old, "shift") == 12.5f);
 }
 
 // ================================ Screenshot and goldens ================================
@@ -1247,9 +1310,9 @@ static const Golden sounds[] = {
     { 0, 7, "f3ef30e486df5dfa2c033e2e2bb9cc182a3cf82a373247bb2527928ee56863f7" },
 };
 struct Shot { int percent; const char* hash; };
-static const Shot shots[] = { { 100, "deb605fd6dd6e4bc125ba9a88e4f01dadbb3955dd57a179183e69aa887bef9f2" },
-                              { 50, "3f5a17b87336a7da81ea5f05207c4bf2be4aeee096565a1bb883598a582a46c4" },
-                              { 200, "c3514a671b571848cb6593d85c3f04e5fa08e19f6c6e661922578f592dc10099" } };
+static const Shot shots[] = { { 100, "649b4ee351ee306fb65d31e251489c218cfd32347a4c9535ca98d6d1bfaa023e" },
+                              { 50, "6ed210ac0a699a5fcba3b6138c9e7cbb3103d567359d498c06d6714bc55066f8" },
+                              { 200, "9c907e3097f2813bbb25ee7c107aedf3e520c48b96f49898f51e573e16838b53" } };
 static void testGoldens()
 {
     CHECK(render(0, 0) == render(0, 0) && pixels(snapshot(100)) == pixels(snapshot(100)));
@@ -1325,6 +1388,7 @@ int main(int argc, char** argv)
     testEditorSizes();
     testTelemetry();
     testInteraction();
+    testDisplayNames();
     std::cout << (failures == 0 ? "All Gulp tests passed\n" : "Gulp tests FAILED\n");
     return failures == 0 ? 0 : 1;
 }

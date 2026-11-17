@@ -1,11 +1,11 @@
 # gulp
 
-Sidechain pumping and ducking for dance music, by daveydidit. Version 0.2.0. Zero latency in every mode, mono or
+Sidechain pumping and ducking for dance music, by daveydidit. Version 0.2.1. Zero latency in every mode, mono or
 stereo, with an optional mono or stereo sidechain input. One screen, no menus: 12 curves, 10 factory presets, user
 presets and A/B.
 
 Drop it on a bass, pad or bus and it pumps in time with the track straight away. Pick a curve, set how deep and how
-long, and choose what fires it: the host tempo (**sync**), MIDI notes (**midi**, each note-on at its sample) or the kick
+long, and choose what fires it: the host tempo (**host**), MIDI notes (**midi**, each note-on at its sample) or the kick
 itself on the sidechain (**audio**: peak follower, threshold, re-armed 3 dB below, 30 ms hold-off). Choose what the duck
 does with the mode: **vol** (level), **lows** / **highs** (only below / above the Linkwitz-Riley **split**), dark
 (lowpass), thin (highpass), pinch (band closing on 1 kHz), hollow (1 kHz notch) or grit (sample-rate drop), on both
@@ -17,7 +17,7 @@ shape crossfade over 20 ms to avoid automation steps; soothe at zero preserves t
 
 | ID | Control | Range | Default |
 | --- | --- | --- | --- |
-| `trigger` | Trigger | sync, midi, audio | sync |
+| `trigger` | Trigger (index 0 was named sync until 0.2.0) | host, midi, audio | host |
 | `tempoSync` | Tempo sync (off = **free**) | on/off | on |
 | `rate` | Rate, one cycle | 1/32 … 4/1 incl. dotted (D) and triplet (T), 16 values | 1/4 |
 | `freeHz` | Free rate | 0.1 … 20 Hz (log) | 2 Hz |
@@ -25,7 +25,7 @@ shape crossfade over 20 ms to avoid automation steps; soothe at zero preserves t
 | `slope` | Slope: release length ×0.5 … ×2 | −100 … +100 % | 0 % |
 | `invert` | Invert (duck ↔ push) | on/off | off |
 | `depth` | Depth (100 % = silent at the bottom) | 0 … 100 % | 100 % |
-| `shift` | Nudge: ± half a cycle in sync, a trigger delay (positive only) in midi/audio | −50 … +50 % | 0 |
+| `shift` | Nudge: ± half a cycle in host, a trigger delay (positive only) in midi/audio. Stored as % of a cycle, shown and typed in ms at the current rate and host tempo (120 BPM without one; 1 / Hz in free) | −50 … +50 % | 0 ms |
 | `loop` | Loop in midi/audio (off = one shot, then full level until the next hit) | on/off | off |
 | `thresh` | Audio trigger threshold | −60 … 0 dB | −24 dB |
 | `band` | unused since 0.2.0 (kept, not automatable) | full, lows, highs | full |
@@ -42,14 +42,14 @@ soothe is off.
 
 ## Editor
 
-One 120 × 34 cell grid in Geist Mono (scales 50–200 %, the size is saved with the session). Left: the curve list and
-invert. Middle: one cycle as a tide — the red gain line, the audio that passes as shaded water under it, the sidechain's
-kick as a grey ghost, the playhead and a ruler in fractions of the rate. The nudge slides the curve and the output scope
-against the beat; the kick and the ruler stay put. Top left: the gain reduction and its held peak (click it, or start
-the transport, to reset). Top right: the rate (◁ ▷ step through all 16; in **free** the Hz value, drag or click to
-type) and sync / free. Drag the ◆ sideways to change the slope (double-click resets, click "slope n%" to type). Below:
-the modes, then trigger, loop, stereo, nudge, thresh and soothe. Right: depth, split (live for lows and highs), output
-and its meter. With the host's transport stopped the graph holds still; with no transport at all (standalone) it runs.
+One 120 × 34 cell grid in Geist Mono (scales 50–200 %, the size is saved with the session). Left: the curve list.
+Middle: one cycle as a tide — the red gain line, the audio that passes as shaded water under it, the sidechain's kick as
+a grey ghost, the playhead and a ruler in fractions of the rate. The nudge slides the curve against the beat; the kick
+and the ruler stay put. Above it: the gain reduction (dotted) and its held peak (click it, or start the transport, to
+reset), invert, the rate (‹ › step through all 16; in **free** the Hz value, drag or click to type) and sync / free.
+Drag the ◆ sideways to change the slope (double-click resets, click "slope n%" to type). Below: the modes, then
+trigger, loop (dim with the host trigger, which ignores it), the sidechain meter, stereo, nudge (ms), thresh and
+soothe. Right: depth, split (live for lows and highs), output and its meter. With the host's transport stopped the graph holds still; with no transport at all (standalone) it runs.
 Every dial drags vertically, double-click resets, click its value to type.
 
 ## Build and test
