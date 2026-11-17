@@ -97,8 +97,8 @@ jobs:
             libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxext-dev \
             libgtk-3-dev
 
-      - name: Configure
-        run: cmake -S Silt -B Silt/build -G Ninja -DCMAKE_BUILD_TYPE=Release
+      - name: Configure (warnings are errors)
+        run: cmake -S Silt -B Silt/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_COMPILE_WARNING_AS_ERROR=ON
 
       - name: Build
         run: cmake --build Silt/build --parallel --target Silt_VST3 Silt_Standalone SiltTests
@@ -114,9 +114,9 @@ jobs:
           cmake --build Silt/build-asan --parallel 2 --target SiltTests
           xvfb-run -a Silt/build-asan/SiltTests
 
-      - name: pluginval (strictness 10)
+      - name: pluginval 1.0.4 (strictness 10)
         run: |
-          curl -sL -o pluginval.zip https://github.com/Tracktion/pluginval/releases/latest/download/pluginval_Linux.zip
+          curl -sL -o pluginval.zip https://github.com/Tracktion/pluginval/releases/download/v1.0.4/pluginval_Linux.zip
           unzip -q pluginval.zip
           xvfb-run -a ./pluginval --strictness-level 10 --validate-in-process \
             --validate Silt/build/Silt_artefacts/Release/VST3/silt.vst3
@@ -172,9 +172,9 @@ jobs:
           auval -a | grep -i Dwks || true
           auval -v aumf Silt Dwks
 
-      - name: pluginval (strictness 10, AU + VST3)
+      - name: pluginval 1.0.4 (strictness 10, AU + VST3)
         run: |
-          curl -sL -o pluginval.zip https://github.com/Tracktion/pluginval/releases/latest/download/pluginval_macOS.zip
+          curl -sL -o pluginval.zip https://github.com/Tracktion/pluginval/releases/download/v1.0.4/pluginval_macOS.zip
           unzip -q pluginval.zip
           PV=pluginval.app/Contents/MacOS/pluginval
           $PV --strictness-level 10 --validate-in-process --validate ~/Library/Audio/Plug-Ins/Components/silt.component

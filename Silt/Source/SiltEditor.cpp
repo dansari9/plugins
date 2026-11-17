@@ -27,8 +27,7 @@ struct Cell
     juce_wchar c = ' ';
     Colour fg, bg; // bg transparent: the page
     bool bold = false;
-    juce_wchar left = 0; // nonzero: half-cell centring, with the previous glyph's right half clipped to this cell
-    bool operator!=(const Cell& o) const { return c != o.c || fg != o.fg || bg != o.bg || bold != o.bold || left != o.left; }
+    bool operator!=(const Cell& o) const { return c != o.c || fg != o.fg || bg != o.bg || bold != o.bold; }
 };
 enum Mode { merge, under, over }; // braille onto braille: or the dots, keep the old cell, replace it (grid.py)
 using Dots = std::vector<Point<int>>;
@@ -71,7 +70,6 @@ struct Grid
     {
         put(x, y, u(on ? "■" : "□"), dim ? dark : on ? red : grey), put(x + 2, y, label, dim ? dark : on ? white : grey, false);
     }
-
 };
 
 // Controls draw nothing: the grid shows them. The value box only appears while a value is typed.
@@ -89,7 +87,6 @@ struct Look : LookAndFeel_V4
         l->setColour(TextEditor::highlightedTextColourId, white), l->setColour(CaretComponent::caretColourId, red);
         return l;
     }
-
 };
 
 struct Key : Button
@@ -97,28 +94,28 @@ struct Key : Button
     explicit Key(const String& id) : Button(id) { setComponentID(id), setRepaintsOnMouseActivity(false); }
     void paintButton(Graphics&, bool, bool) override {}
 };
-    // A round braille dial, 8 x 4 cells = 16 x 16 dots: a dotted 270 degree track, the value arc (centred: from the top)
-    // and a two-dot needle, layered as common.py's knob: track grey, arc red (merged), needle white (over).
+// A round braille dial, 8 x 4 cells = 16 x 16 dots: a dotted 270 degree track, the value arc (centred: from the top)
+// and a two-dot needle, layered as common.py's knob: track grey, arc red (merged), needle white (over).
 static void knob(Grid& g, int x, int y, float norm, const String& name, const String& valueText, bool centred, bool dim)
+{
+    Dots track, arc, needle;
+    const double c = 7.5, r = 7.2, v = 270.0 * norm;
+    for (int t = 0; t <= 270; t += 3)
     {
-        Dots track, arc, needle;
-        const double c = 7.5, r = 7.2, v = 270.0 * norm;
-        for (int t = 0; t <= 270; t += 3)
-        {
-            const double a = degreesToRadians(225.0 + t);
-            ((centred ? jmin(135.0, v) <= t && t <= jmax(135.0, v) : t <= v) ? arc : track).push_back({ (int) (c + r * std::sin(a)), (int) (c - r * std::cos(a)) });
-        }
-        const double a = degreesToRadians(225 + v), sn = std::sin(a), cs = std::cos(a);
-        for (auto [x0, y0, len] : { std::tuple { c, c, r - 2 }, { c + 0.5, c + 0.5, r - 2.5 } }) // common.py's dotline, Python rounding
-        {
-            const int steps = (int) jmax(std::abs(len * sn), std::abs(len * cs)) + 1;
-            for (int k = 0; k < steps; ++k)
-                needle.push_back({ (int) std::nearbyint(x0 + len * sn * k / jmax(1, steps - 1)), (int) std::nearbyint(y0 - len * cs * k / jmax(1, steps - 1)) });
-        }
-        g.braille(x, y, 8, 4, track, dim ? rule : dark), g.braille(x, y, 8, 4, arc, dim ? dark : red), g.braille(x, y, 8, 4, needle, dim ? grey : white, over);
-        g.centre(x - 3, 14, y - 1, name, dim ? dark : grey);
-        g.centre(x - 3, 14, y + 4, valueText, dim ? grey : white, !dim);
+        const double a = degreesToRadians(225.0 + t);
+        ((centred ? jmin(135.0, v) <= t && t <= jmax(135.0, v) : t <= v) ? arc : track).push_back({ (int) (c + r * std::sin(a)), (int) (c - r * std::cos(a)) });
     }
+    const double a = degreesToRadians(225 + v), sn = std::sin(a), cs = std::cos(a);
+    for (auto [x0, y0, len] : { std::tuple { c, c, r - 2 }, { c + 0.5, c + 0.5, r - 2.5 } }) // common.py's dotline, Python rounding
+    {
+        const int steps = (int) jmax(std::abs(len * sn), std::abs(len * cs)) + 1;
+        for (int k = 0; k < steps; ++k)
+            needle.push_back({ (int) std::nearbyint(x0 + len * sn * k / jmax(1, steps - 1)), (int) std::nearbyint(y0 - len * cs * k / jmax(1, steps - 1)) });
+    }
+    g.braille(x, y, 8, 4, track, dim ? rule : dark), g.braille(x, y, 8, 4, arc, dim ? dark : red), g.braille(x, y, 8, 4, needle, dim ? grey : white, over);
+    g.centre(x - 3, 14, y - 1, name, dim ? dark : grey);
+    g.centre(x - 3, 14, y + 4, valueText, dim ? grey : white, !dim);
+}
 
 struct Panel { const char* name; int x, y, w, h; bool leftRule = false; };
 // The final option 1 arrangement. All control coordinates below are local to their group.
@@ -216,13 +213,12 @@ struct Cloud : Group
     void draw(Grid& g) override
     {
         constexpr int w=116,h=11,ww=2*w,hh=4*h;
-        const int x=0,y=0;
         const auto& f=p.feed;
         const auto now=f.time.load(); const double fs=f.sampleRate.load();
         const bool frozen=f.frozen.load();
         const double pos=jlimit(0.0,4.0,(double)f.centre.load()), scatter=value("scatter")/100.0;
         const auto dot=[](double sec) {return (1-sec/4)*(ww-1);};
-        const auto cell=[&](double sec) {return x+(int)std::nearbyint(dot(sec))/2;};
+        const auto cell=[&](double sec) {return (int)std::nearbyint(dot(sec))/2;};
         const int xa=roundToInt(dot(jmin(4.0,pos+scatter*2))),xb=roundToInt(dot(jmax(0.0,pos-scatter*2)));
         const double mid=hh/2.0-.5;
         // Faint mirrored input waveform (brighter inside the read window), then grain spindles, as silt3.py.
@@ -239,61 +235,61 @@ struct Cloud : Group
                 for(int t=(int)(mid-e);t<=(int)(mid+e);++t) if((t+k/2)%2==0)pts.push_back({k,t});
             }
             const uint32 shades[]{0xff171717,0xff1c1c1c,0xff232323,0xff2d2d2d,0xff3a3a3a};
-            g.braille(x,y,w,h,pts,Colour(frozen && shade<4?0xff333333:shades[shade]));
+            g.braille(0,0,w,h,pts,Colour(frozen && shade<4?0xff333333:shades[shade]));
         }
-        Dots zero;for(int k=0;k<ww;k+=4)zero.push_back({k,roundToInt(mid)});g.braille(x,y,w,h,zero,rule);
+        Dots zero;for(int k=0;k<ww;k+=4)zero.push_back({k,roundToInt(mid)});g.braille(0,0,w,h,zero,rule);
         constexpr double limits[]{0,.025,.07,.17,.29,.44,.60,.78,1.01};
         const uint32 ramp[]{0xffff5a33,0xffff3d1f,0xfff4f4f4,0xffc4c4c4,0xff949494,0xff686868,0xff474747,0xff2e2e2e};
         const auto count=f.events.load(std::memory_order_acquire);
-        for(int shade=7;shade>=0;--shade)
+        const auto head=f.captureHead.load();
+        Dots byShade[8]; // one pass over the history, drawn oldest shade first
+        for(auto i=jmax((juce::int64)0,count-(juce::int64)silt::Feed::historySize);i<count;++i)
         {
-            Dots pts;
-            for(auto i=jmax((juce::int64)0,count-(juce::int64)silt::Feed::historySize);i<count;++i)
+            const auto& e=f.history[(size_t)i%silt::Feed::historySize];
+            const auto sequence=e.sequence.load(std::memory_order_acquire);
+            if(sequence&1u)continue;
+            const auto frame=e.frame.load(std::memory_order_relaxed),eventHead=e.captureHead.load(std::memory_order_relaxed);
+            const auto grain=e.grain.load(std::memory_order_relaxed);
+            const float eventBack=e.back.load(std::memory_order_relaxed),eventPitch=e.pitch.load(std::memory_order_relaxed),eventSize=e.size.load(std::memory_order_relaxed);
+            std::atomic_thread_fence(std::memory_order_acquire); // the field reads complete before the sequence re-check
+            if(sequence!=e.sequence.load(std::memory_order_relaxed))continue;
+            const double age=(now-frame)/fs/3.0;
+            const int shade=(int)(std::upper_bound(std::begin(limits),std::end(limits),age)-std::begin(limits))-1;
+            if(shade<0 || shade>7)continue;
+            const double back=eventBack+(head-eventHead)/fs;
+            if(back<0 || back>4)continue;
+            auto& pts=byShade[shade];
+            // Stable scatter gives each actual grain a legible pitch lane; pitch remains the y-axis.
+            const uint32 hash=grain*2654435761u;
+            const double jitter=std::sqrt(-2*std::log(jmax(.001,(double)(hash>>8)*0x1p-24)))*std::cos((hash&255)*MathConstants<double>::twoPi/256)*(1.8+scatter*hh*.27);
+            const double py=jlimit(4.0,(double)hh-4,mid-eventPitch/24.0*(hh/2-3)*.3+jitter);
+            const int len=jmax(2,roundToInt(eventSize/4*ww));
+            const double u=(double)(hash&255)/255,amp=shade==0?jmax(.8,std::pow(u,1.5)):std::pow(u,1.5); // mostly thin spindles
+            for(int k=0;k<len;++k)
             {
-                const auto& e=f.history[(size_t)i%silt::Feed::historySize];
-                const auto sequence=e.sequence.load(std::memory_order_acquire);
-                if(sequence&1u)continue;
-                const auto frame=e.frame.load(std::memory_order_relaxed);
-                const auto eventHead=e.captureHead.load();
-                const auto grain=e.grain.load(std::memory_order_relaxed);
-                const float eventBack=e.back.load(),eventPitch=e.pitch.load(),eventSize=e.size.load();
-                if(sequence!=e.sequence.load(std::memory_order_acquire))continue;
-                const double seconds=(now-frame)/fs,age=seconds/3.0;
-                if(age<limits[shade] || age>=limits[shade+1])continue;
-                const double back=eventBack+(f.captureHead.load()-eventHead)/fs;
-                if(back<0 || back>4)continue;
-                // Stable scatter gives each actual grain a legible pitch lane; pitch remains the y-axis.
-                const uint32 hash=grain*2654435761u;
-                const double jitter=std::sqrt(-2*std::log(jmax(.001,(double)(hash>>8)*0x1p-24)))*std::cos((hash&255)*MathConstants<double>::twoPi/256)*(1.8+scatter*hh*.27);
-                const double py=jlimit(4.0,(double)hh-4,mid-eventPitch/24.0*(hh/2-3)*.3+jitter);
-                const int len=jmax(2,roundToInt(eventSize/4*ww));
-                const double u=(double)(hash&255)/255,amp=shade==0?jmax(.8,std::pow(u,1.5)):std::pow(u,1.5); // mostly thin spindles
-                for(int k=0;k<len;++k)
-                {
-                    const int thickness=(int)(std::sin(MathConstants<double>::pi*(k+.5)/len)*amp*jmin(2.0,len/6.0)+.35);
-                    for(int d=-thickness;d<=thickness;++d)pts.push_back({(int)(dot(back)-len/2.0+k),roundToInt(py+d)});
-                }
+                const int thickness=(int)(std::sin(MathConstants<double>::pi*(k+.5)/len)*amp*jmin(2.0,len/6.0)+.35);
+                for(int d=-thickness;d<=thickness;++d)pts.push_back({(int)(dot(back)-len/2.0+k),roundToInt(py+d)});
             }
-            g.braille(x,y,w,h,pts,Colour(ramp[shade]),over);
         }
+        for(int shade=7;shade>=0;--shade)g.braille(0,0,w,h,byShade[shade],Colour(ramp[shade]),over);
         for(auto [edge,dir]:{std::pair{xa,1},std::pair{xb,-1}})
         {
             Dots dots,ends;for(int t=0;t<hh;t+=2)dots.push_back({edge,t});
             for(int k=1;k<4;++k) for(int t:{0,hh-1})ends.push_back({edge+dir*k,t});
-            g.braille(x,y,w,h,dots,Colour(0xff4a4a4a),under),g.braille(x,y,w,h,ends,Colour(0xff8a8a8a),over);
+            g.braille(0,0,w,h,dots,Colour(0xff4a4a4a),under),g.braille(0,0,w,h,ends,Colour(0xff8a8a8a),over);
         }
-        Dots marker;for(int t=0;t<hh;t+=3)for(int d:{0,1})marker.push_back({2*(cell(pos)-x)+d,t});
-        g.braille(x,y,w,h,marker,Colour(0xff5c1d12),under);
+        Dots marker;for(int t=0;t<hh;t+=3)for(int d:{0,1})marker.push_back({2*cell(pos)+d,t});
+        g.braille(0,0,w,h,marker,Colour(0xff5c1d12),under);
         Dots edge;const double e=jlimit(0.0,1.0,(double)f.wave[(size_t)((f.at.load()+silt::Feed::bins-1)%silt::Feed::bins)].load()*3)*hh*.34;
         for(int t=(int)(mid-e);t<=(int)(mid+e);++t)edge.push_back({ww-1,t});
-        g.braille(x,y,w,h,edge,Colour(0xff6a6a6a),over);
-        const int ry=y+h;
-        g.put(x,ry,String::repeatedString(u("─"),w),rule);
+        g.braille(0,0,w,h,edge,Colour(0xff6a6a6a),over);
+        const int ry=h;
+        g.put(0,ry,String::repeatedString(u("─"),w),rule);
         for(int k=0;k<=8;++k)g.put(cell(k/2.0),ry,u("┴"),k%2==0?dark:rule);
         const int a=cell(jmin(4.0,pos+scatter*2)),b=cell(jmax(0.0,pos-scatter*2));
         for(int k=a;k<=b;++k)g.cell(k,ry).fg=Colour(0xffbcbcbc);
         g.put(a,ry,u("├"),Colour(0xffbcbcbc)),g.put(b,ry,u("┤"),Colour(0xffbcbcbc));
-        g.put(x,ry,"4 s ",dark),g.right(x+w-1,ry,frozen?" held":" now",frozen?red:dark);
+        g.put(0,ry,"4 s ",dark),g.right(w-1,ry,frozen?" held":" now",frozen?red:dark);
         for(int sec:{3,2,1})g.put(cell(sec)-2,ry," "+String(sec)+" s ",dark);
         g.put(cell(pos),ry,u("▲"),red);
     }
@@ -480,40 +476,31 @@ struct Editor : AudioProcessorEditor, Timer
         const auto py = [this](int k) { return roundToInt((float) k * (float) image.getHeight() / R); };
         const auto r = Rectangle<int>::leftTopRightBottom(px(i), py(j), px(i + 1), py(j + 1));
         g.setColour(c.bg.isTransparent() ? page : c.bg), g.fillRect(r);
-        if (c.c == ' ' && c.left <= ' ') return;
+        if (c.c == ' ') return;
         Graphics::ScopedSaveState state(g);
         g.reduceClipRegion(r), g.setColour(c.fg); // nothing spills into a neighbour, which may be redrawn alone
         const float w = (float) image.getWidth() / C, h = (float) image.getHeight() / R, x = (float) r.getX(), y = (float) r.getY();
         const float cx = x + (float) r.getWidth() / 2, cy = y + (float) r.getHeight() / 2, lw = jmax(1.0f, w * 0.12f);
         const int t = jmax(1, roundToInt(lw)), hx = roundToInt(cx - (float) t / 2), hy = roundToInt(cy - (float) t / 2);
-        const auto glyph = [&](juce_wchar code, float offset) {
-            const float gx = (c.left != 0 ? (float) i * w : x + ((float) r.getWidth() - w) / 2) + offset;
-            if (code == 0x2594) g.fillRect(Rectangle<float>(gx, y, w, h * 0.125f));
-            else if (const auto id = fonts[c.bold ? 1 : 0].getTypefacePtr()->getNominalGlyphForCodepoint(code))
+        const auto glyph = [&](juce_wchar code) {
+            if (const auto id = fonts[c.bold ? 1 : 0].getTypefacePtr()->getNominalGlyphForCodepoint(code))
             {
                 const float size = w / 0.6f; // Geist Mono: advance 0.6 em, ascent 1.005 + descent 0.295 em
                 const uint16_t index = (uint16_t) *id;
-                const Point<float> at { gx, y + (h - 1.3f * size) / 2 + 1.005f * size };
+                const Point<float> at { x + ((float) r.getWidth() - w) / 2, y + (h - 1.3f * size) / 2 + 1.005f * size };
                 g.setFont(fonts[c.bold ? 1 : 0]);
                 g.getInternalContext().drawGlyphs({ &index, 1 }, { &at, 1 }, {});
             }
         };
-        if (c.left != 0) { glyph(c.left, -w / 2), glyph(c.c, w / 2); return; }
-        const int arms = c.c == 0x2500 ? 10 : c.c == 0x2502 ? 5 : c.c == 0x2534 || c.c == 0x2538 ? 11 : c.c == 0x251c ? 7 : c.c == 0x2524 ? 13 : 0; // ─ │ ┴ ┸: up 1 right 2 down 4 left 8
+        const int arms = c.c == 0x2500 ? 10 : c.c == 0x2502 ? 5 : c.c == 0x2534 ? 11 : c.c == 0x251c ? 7 : c.c == 0x2524 ? 13 : 0; // ─ │ ┴ ├ ┤: up 1 right 2 down 4 left 8
         if (arms != 0)
         {
-            const int top = r.getY(); // ┴ a short tick, ┸ a tall one
+            const int top = r.getY();
             if (arms & 8) g.fillRect(r.getX(), hy, hx + t - r.getX(), t);
             if (arms & 2) g.fillRect(hx, hy, r.getRight() - hx, t);
             if (arms & 1) g.fillRect(hx, top, t, hy + t - top);
             if (arms & 4) g.fillRect(hx, hy, t, r.getBottom() - hy);
         }
-        else if (c.c == 0x250a) // ┊
-            for (int k = 0; k < 4; ++k) g.fillRect(Rectangle<float>((float) hx, y + h * ((float) k + 0.2f) / 4, (float) t, h * 0.15f));
-        else if (c.c == 0x2591) // ░: a CRT dither of 4 dots
-            for (auto [di, dj] : { std::pair { 0, 0 }, { 0, 2 }, { 1, 1 }, { 1, 3 } })
-                g.fillRect(Rectangle<float>(0.22f * w, 0.22f * w).withCentre({ x + w * ((float) di * 0.5f + 0.25f), y + h * ((float) dj * 0.25f + 0.125f) }));
-        else if (c.c == 0x2594) g.fillRect(r.withBottom(roundToInt(y + 0.125f * (float) r.getHeight()))); // ▔
         else if (c.c >= 0x2800 && c.c <= 0x28ff) // braille
         {
             for (int dx = 0; dx < 2; ++dx)
@@ -532,15 +519,14 @@ struct Editor : AudioProcessorEditor, Timer
         else if (c.c == 0x25cf) g.fillEllipse(Rectangle<float>(.72f*w,.72f*w).withCentre({cx,cy}));
         else if (c.c == 0x25a0) g.fillRect(Rectangle<float>(0.72f * w, 0.36f * h).withCentre({ cx, cy })); // ■
         else if (c.c == 0x25a1) g.drawRect(Rectangle<float>(0.72f * w, 0.36f * h).withCentre({ cx, cy }), lw); // □
-        else if (c.c == 0x25b2 || c.c == 0x25c0 || c.c == 0x25c6) // ▲ ◀ ◆
+        else if (c.c == 0x25b2 || c.c == 0x25c0) // ▲ ◀
         {
-            const float rr = 0.36f * w, s = 0.95f * rr;
+            const float s = 0.95f * 0.36f * w;
             Path p;
-            if (c.c == 0x25c6) p.addQuadrilateral(cx, cy - 1.1f * rr, cx + rr, cy, cx, cy + 1.1f * rr, cx - rr, cy);
-            else if (c.c == 0x25b2) p.addTriangle(cx, cy - s, cx + s, cy + 0.8f * s, cx - s, cy + 0.8f * s);
+            if (c.c == 0x25b2) p.addTriangle(cx, cy - s, cx + s, cy + 0.8f * s, cx - s, cy + 0.8f * s);
             else p.addTriangle(cx - s, cy, cx + 0.8f * s, cy - s, cx + 0.8f * s, cy + s);
             g.fillPath(p);
-            g.strokePath(p, PathStrokeType(c.c == 0x25c6 ? lw : 0.8f * lw, PathStrokeType::curved, PathStrokeType::rounded));
+            g.strokePath(p, PathStrokeType(0.8f * lw, PathStrokeType::curved, PathStrokeType::rounded));
         }
         else if (c.c == 0x2039 || c.c == 0x203a) // ‹ › (not in Geist Mono)
         {
@@ -549,7 +535,7 @@ struct Editor : AudioProcessorEditor, Timer
             p.startNewSubPath(cx + d * 0.14f * w, cy - 0.14f * h), p.lineTo(cx - d * 0.14f * w, cy + 0.02f * h), p.lineTo(cx + d * 0.14f * w, cy + 0.18f * h);
             g.strokePath(p, PathStrokeType(lw));
         }
-        else glyph(c.c, 0);
+        else glyph(c.c);
     }
 };
 } // namespace

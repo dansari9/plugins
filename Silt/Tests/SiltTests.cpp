@@ -183,7 +183,7 @@ static void testContract()
         CHECK(p.checkBusesLayoutSupported(l)==(in<=2 && out<=2 && out>=in && side<=2));
     }
     CHECK(!p.getBus(true,1)->isEnabled() && p.acceptsMidi() && p.hasEditor());
-    CHECK(p.getTailLengthSeconds()>=8 && p.getName()=="silt");
+    CHECK(p.getTailLengthSeconds()>=8+4 && p.getName()=="silt"); // the capture span plus the longest free grain
 }
 static void testParameterText()
 {
@@ -205,6 +205,7 @@ static void testParameterText()
             CHECK(std::isfinite(q->convertTo0to1(plain)));
             CHECK(q->getText(n,0).isNotEmpty());
         }
+        CHECK(q->getLabel().isEmpty()); // texts carry their units; VST3 hosts would append a label ("1/16 ms")
     }
     const auto parse=[&](const char* id,const juce::String& text)
     {
@@ -287,7 +288,17 @@ static void testPresets()
     p.setCurrentProgram(0),set(p,"pitch",7);
     const auto before=params(p);
     const auto file=p.saveUserPreset();CHECK(file.existsAsFile() && p.presetName()=="user 01");
-    p.setCurrentProgram(9),p.stepPreset(1);CHECK(params(p)==before && p.presetName()=="user 01");
+    // A chosen user preset records like a factory one (gestures); a host restoring state sends none.
+    struct Gestures : juce::AudioProcessorListener
+    {
+        int begun=0;
+        void audioProcessorParameterChanged(juce::AudioProcessor*,int,float) override {}
+        void audioProcessorChanged(juce::AudioProcessor*,const ChangeDetails&) override {}
+        void audioProcessorParameterChangeGestureBegin(juce::AudioProcessor*,int) override {++begun;}
+    } gestures;
+    p.setCurrentProgram(9);p.addListener(&gestures);p.stepPreset(1);CHECK(params(p)==before && p.presetName()=="user 01" && gestures.begun>0);
+    gestures.begun=0;{Proc r;r.addListener(&gestures);load(r,save(p));r.removeListener(&gestures);}CHECK(gestures.begun==0);
+    p.removeListener(&gestures);
     p.stepPreset(1);CHECK(p.preset==0);p.stepPreset(-1);CHECK(params(p)==before);
     p.selectAb(1),set(p,"pitch",12),p.selectAb(0);CHECK(params(p)==before);
     Proc q(folder);load(q,save(p));q.selectAb(1);CHECK(get(q,"pitch")==12);
@@ -682,6 +693,17 @@ static void testEdges()
         for(auto i=std::max<juce::int64>(0,count-(juce::int64)silt::Feed::historySize);i<count;++i)oldest=std::min(oldest,p.feed.history[(size_t)i%silt::Feed::historySize].frame.load());
         const double span=(double)(p.feed.time-oldest)/48000;
         std::cout<<(kind==0?"drift":"dense")<<" cloud history: "<<span<<" s\n";CHECK(span>=3);
+    }
+    {
+        // Meter ballistics fall at the same rate at 48 and 96 kHz.
+        float level[2]{};
+        for(int k=0;k<2;++k)
+        {
+            const double fs=48000*(k+1);Proc p;set(p,"mix",0),prepare(p,fs);
+            Run r;r.input=[fs](int i,int){return i<fs/10?.3f:0.0f;};run(p,(int)(fs/5),512,r);level[k]=p.feed.meter[0];
+        }
+        std::cout<<"Meter after 100 ms: "<<level[0]<<" at 48 kHz, "<<level[1]<<" at 96 kHz\n";
+        CHECK(level[0]>.01f && std::abs(level[0]-level[1])<.01f*level[0]);
     }
     for(float peak:{.01f,.001f})
     {

@@ -76,7 +76,8 @@ public:
     const juce::String getName() const override { return JucePlugin_Name; }
     bool acceptsMidi() const override { return true; }
     bool producesMidi() const override { return false; }
-    double getTailLengthSeconds() const override { return 10.0; }
+    // After the input stops: grains read up to 8 s back and last up to 4 s (free), then reverb and feedback decay.
+    double getTailLengthSeconds() const override { return 20.0; }
     // Factory presets are the host's programs. User presets live in presetFolder() and are reached by prev/next.
     int getNumPrograms() override { return silt::numPresets; }
     int getCurrentProgram() override { return juce::jmax(0, preset.load()); }
@@ -104,7 +105,7 @@ public:
 
 private:
     void setAll(const float* normalised); // one gesture per parameter that changes
-    void applyParams(const juce::XmlElement& state); // missing or unreadable -> default
+    void applyParams(const juce::XmlElement& state, bool gestures); // missing or unreadable -> default
     void setIdentity(int index, const juce::String& name);
     mutable juce::CriticalSection lock; // identity and A/B slots; never held across a host callback
     const juce::File presetDirectory;

@@ -32,13 +32,14 @@ AudioProcessorValueTreeState::ParameterLayout layout(const SiltProcessor& self)
     using Text = std::function<String(float)>;
     using Parse = std::function<float(const String&)>;
     const auto parse = [](const String& t) { return t.replace(String::fromUTF8("−"), "-").retainCharacters("+-.0123456789").getFloatValue(); };
-    auto num = [&](int i, const char* name, float lo, float hi, float def, float step, std::optional<Travel> travel, const char* unit, Text text, Parse from = {}) {
+    // Every text carries its own unit, so no host label: VST3 hosts append it ("1/16 ms", "12/beat /s").
+    auto num = [&](int i, const char* name, float lo, float hi, float def, float step, std::optional<Travel> travel, Text text, Parse from = {}) {
         const auto snap = [per = std::round(1 / step)](float l, float h, float v) { return jlimit(l, h, std::round(v * per) / per + 0.0f); };
         NormalisableRange<float> r(lo, hi, [=](float l, float h, float v) { return snap(l, h, i == Pitch ? 48 * std::copysign(std::pow(std::abs(2*v-1),1.56f),2*v-1) : travel ? (float) travel->from(v) : l + (h - l) * v); },
             [=](float l, float h, float v) { return i == Pitch ? .5f + .5f * std::copysign(std::pow(std::abs(v/48),1/1.56f),v) : travel ? (float) travel->to(v) : (v - l) / (h - l); }, snap);
         r.interval = travel ? 0.0f : step;
         return std::make_unique<AudioParameterFloat>(ParameterID { ids[i], 1 }, name, r, def,
-            AudioParameterFloatAttributes().withLabel(unit).withStringFromValueFunction([text](float v, int) { return text(v); }).withValueFromStringFunction(from ? from : Parse(parse)));
+            AudioParameterFloatAttributes().withStringFromValueFunction([text](float v, int) { return text(v); }).withValueFromStringFunction(from ? from : Parse(parse)));
     };
     auto choice = [](int i, const char* name, StringArray items, int def) { return std::make_unique<AudioParameterChoice>(ParameterID { ids[i], 1 }, name, items, def); };
     auto toggle = [](int i, const char* name, bool def) { return std::make_unique<AudioParameterBool>(ParameterID { ids[i], 1 }, name, def); };
@@ -52,25 +53,25 @@ AudioProcessorValueTreeState::ParameterLayout layout(const SiltProcessor& self)
                 if (text.trim() == silt::noteNames[k]) return (float) sizeTravel.from(std::pow((double) k / (silt::numNotes - 1), 1 / 1.6));
         return parse(text) * (text.endsWithIgnoreCase(" s") ? 1000 : 1);
     };
-    return { num(Mix,"Mix",0,100,100,.1f,{},"%",percent),
-        num(Output,"Output",-24,12,0,.1f,{},"dB",[](float v) { return String(v,1) + " dB"; }),
-        num(Size,"Size",.5f,4000,51.78f,.01f,sizeTravel,"ms",sizeText,sizeFrom),
+    return { num(Mix,"Mix",0,100,100,.1f,{},percent),
+        num(Output,"Output",-24,12,0,.1f,{},[](float v) { return String(v,1) + " dB"; }),
+        num(Size,"Size",.5f,4000,51.78f,.01f,sizeTravel,sizeText,sizeFrom),
         choice(SizeSync,"Size Mode",{"sync","free"},0),
         // In sync the engine plays whole grains per quarter and a position quantised to them: say so.
-        num(Density,"Density",1,64,24,.1f,Travel {1,64,1.26,false},"/s",[sync](float v) { return sync() ? String(jmax(1,roundToInt(v/2)))+"/beat" : String(v,std::abs(v-std::round(v))<.05f?0:1)+"/s"; },
+        num(Density,"Density",1,64,24,.1f,Travel {1,64,1.26,false},[sync](float v) { return sync() ? String(jmax(1,roundToInt(v/2)))+"/beat" : String(v,std::abs(v-std::round(v))<.05f?0:1)+"/s"; },
             [sync,parse](const String& t) { return parse(t)*(sync() && !t.endsWithIgnoreCase("/s")?2:1); }),
-        num(Position,"Position",0,4000,1200,.1f,{},"ms",[sync,perQuarter](float v) { const int q=perQuarter(); return sync() ? String(std::round(v*q/125)*.25/q,2)+" beats" : msText(v); },
+        num(Position,"Position",0,4000,1200,.1f,{},[sync,perQuarter](float v) { const int q=perQuarter(); return sync() ? String(std::round(v*q/125)*.25/q,2)+" beats" : msText(v); },
             [sync,parse](const String& t) { return parse(t)*(t.endsWithIgnoreCase("ms")?1:t.endsWithIgnoreCase("s") && !t.containsIgnoreCase("beat")?1000:sync()?500:1); }),
-        num(Scatter,"Scatter",0,100,45,.1f,{},"%",percent),
-        num(Pitch,"Pitch",-48,48,12,.01f,{},"st",[](float v) { return (v>0?"+":"")+String(v,std::abs(v-std::round(v))<.005f?0:2)+" st"; }),
+        num(Scatter,"Scatter",0,100,45,.1f,{},percent),
+        num(Pitch,"Pitch",-48,48,12,.01f,{},[](float v) { return (v>0?"+":"")+String(v,std::abs(v-std::round(v))<.005f?0:2)+" st"; }),
         choice(PitchMode,"Pitch Mode",{"shift","tape"},0),
         choice(Trigger,"Trigger",{"clock","transient","sidechain"},0),
         toggle(ReverbOn,"Reverb On",true),
-        num(ReverbAmount,"Reverb",0,100,30,.1f,{},"%",percent),
+        num(ReverbAmount,"Reverb",0,100,30,.1f,{},percent),
         choice(Oversample,"Oversample",{"off","2x","4x","8x"},1),
         toggle(Freeze,"Freeze",false),
-        num(Motion,"Motion",0,100,0,.1f,{},"%",percent),num(Texture,"Texture",0,100,0,.1f,{},"%",percent),
-        num(Bloom,"Bloom",0,100,0,.1f,{},"%",percent),num(Chaos,"Chaos",0,100,0,.1f,{},"%",percent) };
+        num(Motion,"Motion",0,100,0,.1f,{},percent),num(Texture,"Texture",0,100,0,.1f,{},percent),
+        num(Bloom,"Bloom",0,100,0,.1f,{},percent),num(Chaos,"Chaos",0,100,0,.1f,{},percent) };
 }
 
 std::optional<double> number(const String& t) // the whole text is one finite number (C locale); else nothing
@@ -168,7 +169,6 @@ struct Capture
         const double whole = std::floor(j);
         const auto i = (int64) whole; const float fraction = (float) (j - whole);
         l = hermite(data[k][0], mask[k], i, fraction), r = hermite(data[k][1], mask[k], i, fraction);
-
     }
     void read(double t, int k, float& l, float& r, double atHead) const
     {
@@ -217,7 +217,7 @@ struct Capture
             fraction[i] = (float) (t - (double) index);
             for (int ch = 0; ch < 2; ++ch)
             {
-                const auto& d = data[k][ch];const auto m = mask[k];
+                const auto& d = data[k][ch]; const auto m = mask[k];
                 a[ch][i] = d[(size_t) (index - 1) & m], b[ch][i] = d[(size_t) index & m];
                 c[ch][i] = d[(size_t) (index + 1) & m], e[ch][i] = d[(size_t) (index + 2) & m];
             }
@@ -315,7 +315,6 @@ struct SiltProcessor::Engine
     std::array<std::unique_ptr<dsp::Oversampling<float>>, 4> oversamplers;
     int quality = -1, previousQuality = 0, qualityFade = 0;
     float meters[3] {};
-    
     float fbRing[2][K] {};
     int64 now = 0;               // samples since reset
     double overlap = 0;          // smoothed sum of the windows sounding
@@ -323,8 +322,9 @@ struct SiltProcessor::Engine
     OnePole lows[2], highs[2], dc[2], outputDc[2];
     std::vector<float> diffusion[4];
     size_t diffusionAt[4] {};
-    float level = 0, inputLevel = 0, levelGlide = 0, inputAttack = 0, inputRelease = 0;
-    SmoothedValue<float> mix, gain, verb, width, feedback, lowpass, highpass, power;
+    float level = 0, inputLevel = 0, levelGlide = 0, inputAttack = 0, inputRelease = 0, meterDecay = 0;
+    float lowpass = 0, highpass = 0, dcCoef = 0, outputDcCoef = 0; // the fixed feedback band and DC blockers
+    SmoothedValue<float> mix, gain, verb, width, feedback, power;
     SiltReverb reverb; // SILT_REVERB
 
     void prepare(double sr, silt::Feed& feed)
@@ -346,7 +346,9 @@ struct SiltProcessor::Engine
         overlapAttack = (float) (1 - std::exp(-1 / (0.002 * fs))), overlapRelease = (float) (1 - std::exp(-1 / (0.08 * fs)));
         levelGlide = (float) (1 - std::exp(-1 / (0.1 * fs)));
         inputAttack = (float) (1 - std::exp(-1 / (0.01 * fs))), inputRelease = (float) (1 - std::exp(-1 / (2.0 * fs)));
-        for (auto* s : { &mix, &gain, &verb, &width, &feedback, &lowpass, &highpass, &power }) s->reset(fs, 0.02);
+        meterDecay = std::pow(0.9995f, (float) (48000 / fs)); // the same 42 ms fall at every rate
+        lowpass = coefficient(4000, fs), highpass = coefficient(30, fs), dcCoef = coefficient(20, fs), outputDcCoef = coefficient(8, fs);
+        for (auto* s : { &mix, &gain, &verb, &width, &feedback, &power }) s->reset(fs, 0.02);
         for (size_t j = 0; j < taps.size(); ++j)
         {
             taps[j] = (float) std::pow(std::sin(pi * (double) j / 1024), 2);
@@ -373,7 +375,6 @@ struct SiltProcessor::Engine
         read();
         width.setCurrentAndTargetValue(0.8f);
         feedback.setCurrentAndTargetValue((0.12f + 0.48f * macro(Bloom)));
-        lowpass.setCurrentAndTargetValue(coefficient(4000, fs)), highpass.setCurrentAndTargetValue(coefficient(30, fs));
         power.setCurrentAndTargetValue((float) (1 - 0.5 * jlimit(0.0, 1.0, separation()
                     + (std::abs(v[Pitch]) > .005f || heldCount > 0 || v[Freeze] > .5f ? 1 : 0))));
         mix.setCurrentAndTargetValue(v[Mix] / 100), gain.setCurrentAndTargetValue(Decibels::decibelsToGain(v[Output])), verb.setCurrentAndTargetValue(0);
@@ -608,9 +609,6 @@ struct SiltProcessor::Engine
         const int trigger = roundToInt(v[Trigger]);
         const float threshold = Decibels::decibelsToGain(-50.0f);
         mix.setTargetValue(v[Mix] / 100), gain.setTargetValue(Decibels::decibelsToGain(v[Output]));
-        // Fixed feedback band; bloom increases diffusion/feedback, leaving cutoff coefficients block-invariant.
-        lowpass.setTargetValue(coefficient(4000, fs)), highpass.setTargetValue(coefficient(30, fs));
-        const float dcCoef = coefficient(20, fs), outputDcCoef = coefficient(8, fs);
         // Similar grains add in amplitude; scattered/pitched grains add mostly in power. Interpolate the overlap
         // law using their source separation, preserving level without analysing or limiting the output.
         const int selectedQuality = roundToInt(v[Oversample]);
@@ -735,12 +733,13 @@ struct SiltProcessor::Engine
                 const float norm = 0.85f / (exponent <= .500001f ? std::sqrt(base) : exponent >= .999999f ? base : std::pow(base, exponent));
                 const float mid = 0.5f * (y[0] + y[1]) * norm, sd = 0.5f * (y[0] - y[1]) * norm * width.getNextValue();
                 y[0] = mid + sd, y[1] = mid - sd;
-                const float lp = lowpass.getNextValue(), hp = highpass.getNextValue(), fbAmount = feedback.getNextValue();
+                const float fbAmount = feedback.getNextValue();
                 float f[2];
                 for (int c = 0; c < 2; ++c)
                 {
                     y[c] -= dc[c].low(y[c], dcCoef);
-                    const float low = lows[c].low(y[c], lp), high = low - highs[c].low(low, hp);
+                    // A fixed 30 Hz - 4 kHz band; bloom raises diffusion and feedback, never the cutoffs.
+                    const float low = lows[c].low(y[c], lowpass), high = low - highs[c].low(low, highpass);
                     const float diffused = diffuse(diffuse(high, (size_t) c), (size_t) c + 2);
                     f[c] = high + (0.2f + 0.8f * macro(Bloom)) * (diffused - high);
                 }
@@ -799,8 +798,8 @@ struct SiltProcessor::Engine
                 if (outs == 1) y[0] = 0.5f * (y[0] + y[1]);
                 for (int c = 0; c < outs; ++c)
                     buffer.setSample(c, t, exactlyEqual(m, 0.0f) ? dry[c] : exactlyEqual(m, 1.0f) ? y[c] * out : dry[c] + m * (y[c] * out - dry[c]));
-                for (int c = 0; c < 2; ++c) meters[c] = jmax(std::abs(buffer.getSample(jmin(c, outs - 1), t)), meters[c] * .9995f);
-                meters[2] = jmax(sideFrames[i], meters[2] * .9995f);
+                for (int c = 0; c < 2; ++c) meters[c] = jmax(std::abs(buffer.getSample(jmin(c, outs - 1), t)), meters[c] * meterDecay);
+                meters[2] = jmax(sideFrames[i], meters[2] * meterDecay);
             }
             chunk += count;
         }
@@ -888,27 +887,29 @@ void SiltProcessor::getStateInformation(MemoryBlock& dest)
         copyXmlToBinary(*xml, dest);
 }
 
-void SiltProcessor::applyParams(const XmlElement& state)
+void SiltProcessor::applyParams(const XmlElement& state, bool gestures)
 {
     // Migration hook: v1 and future versions load known IDs; missing/nonfinite values use v1 defaults.
     // Add explicit migrations here before bumping stateVersion.
+    float normalised[silt::numParams];
     for (int i = 0; i < silt::numParams; ++i)
     {
         auto* p = apvts.getParameter(ids[i]);
         const auto* e = state.getChildByAttribute("id", ids[i]);
         const auto v = number(e != nullptr ? e->getStringAttribute("value") : String());
-        p->setValueNotifyingHost(v ? p->convertTo0to1(p->getNormalisableRange().snapToLegalValue((float) *v)) : p->getDefaultValue());
+        normalised[i] = v ? p->convertTo0to1(p->getNormalisableRange().snapToLegalValue((float) *v)) : p->getDefaultValue();
+        if (!gestures) p->setValueNotifyingHost(normalised[i]); // a host restoring state: no gestures
     }
+    if (gestures) setAll(normalised); // a user's choice: touch/latch automation records it like a factory preset
 }
 
 // Malformed documents leave state untouched. Future versions load known IDs and ignore new ones.
-
 void SiltProcessor::setStateInformation(const void* data, int size)
 {
     const auto tree = getXmlFromBinary(data, size);
     if (tree == nullptr || !tree->hasTagName("SILT"))
         return;
-    applyParams(*tree);
+    applyParams(*tree, false);
     const ScopedLock sl(lock);
     for (int k = 0; k < 2; ++k)
     {
@@ -966,7 +967,15 @@ void SiltProcessor::setCurrentProgram(int index)
 
 const String SiltProcessor::getProgramName(int index) { return isPositiveAndBelow(index, silt::numPresets) ? String::fromUTF8(silt::presets[index].name) : String(); }
 
-File SiltProcessor::presetFolder() const { return presetDirectory != File() ? presetDirectory : File::getSpecialLocation(File::userApplicationDataDirectory).getChildFile("daveydidit/silt/Presets"); }
+File SiltProcessor::presetFolder() const
+{
+    if (presetDirectory != File()) return presetDirectory;
+   #if JUCE_MAC // where macOS keeps audio plug-in presets
+    return File::getSpecialLocation(File::userHomeDirectory).getChildFile("Library/Audio/Presets/daveydidit/silt");
+   #else
+    return File::getSpecialLocation(File::userApplicationDataDirectory).getChildFile("daveydidit/silt/Presets");
+   #endif
+}
 
 String SiltProcessor::presetName() const
 {
@@ -983,11 +992,11 @@ void SiltProcessor::stepPreset(int delta)
     int at = preset;
     for (int k = 0; k < files.size() && at < 0; ++k)
         at = files[k].getFileNameWithoutExtension() == current ? silt::numPresets + k : at;
-    at = (jmax(0, at) + delta + count) % count; // an unknown position steps from "init"
+    at = (jmax(0, at) + delta + count) % count; // a custom or random sound steps from the first preset
     if (at < silt::numPresets)
         return setCurrentProgram(at);
     if (const auto xml = parseXML(files[at - silt::numPresets]); xml != nullptr && xml->hasTagName("SILT"))
-        applyParams(*xml), setIdentity(-1, files[at - silt::numPresets].getFileNameWithoutExtension());
+        applyParams(*xml, true), setIdentity(-1, files[at - silt::numPresets].getFileNameWithoutExtension());
 }
 
 File SiltProcessor::saveUserPreset()
