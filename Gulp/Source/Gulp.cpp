@@ -225,7 +225,7 @@ struct GulpProcessor::Dsp
         for (auto& s : colours)
             s.reset(fs, 0.01);
         due.assign((size_t) std::ceil(24 * fs) + 2, false);
-        lookahead = jmax(1, roundToInt(gulp::lookaheadMs / 1000 * fs));
+        lookahead = jmax(1, (int) (fs * gulp::lookaheadMs / 1000)); // exact and deterministic: 44.1 k -> 220
         for (auto& l : late)
             l.assign((size_t) lookahead.load(), 0.0f);
     }
