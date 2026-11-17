@@ -225,8 +225,7 @@ struct Cloud : Group
         const auto cell=[&](double sec) {return x+(int)std::nearbyint(dot(sec))/2;};
         const int xa=roundToInt(dot(jmin(4.0,pos+scatter*2))),xb=roundToInt(dot(jmax(0.0,pos-scatter*2)));
         const double mid=hh/2.0-.5;
-        // Read-window wash, faint mirrored input waveform, then grain spindles, as silt3.py.
-        for(int j=0;j<h;++j) for(int k=xa/2;k<=xb/2 && k<w;++k) g.cell(x+k,y+j).bg=Colour(0xff121212);
+        // Faint mirrored input waveform (brighter inside the read window), then grain spindles, as silt3.py.
         for(int shade=0;shade<5;++shade)
         {
             Dots pts;
@@ -237,9 +236,9 @@ struct Cloud : Group
                 const bool inside=xa<=k && k<=xb;
                 if((inside?4:jmin(3,k*4/ww))!=shade)continue;
                 const double e=amplitude*hh*.34;
-                for(int t=(int)(mid-e);t<=(int)(mid+e);++t) if((t+k/2)%2==0 && ((uint32)(k*73+t*193)*2654435761u>>28)<6)pts.push_back({k,t});
+                for(int t=(int)(mid-e);t<=(int)(mid+e);++t) if((t+k/2)%2==0)pts.push_back({k,t});
             }
-            const uint32 shades[]{0xff171717,0xff1c1c1c,0xff232323,0xff272727,0xff303030};
+            const uint32 shades[]{0xff171717,0xff1c1c1c,0xff232323,0xff2d2d2d,0xff3a3a3a};
             g.braille(x,y,w,h,pts,Colour(frozen && shade<4?0xff333333:shades[shade]));
         }
         Dots zero;for(int k=0;k<ww;k+=4)zero.push_back({k,roundToInt(mid)});g.braille(x,y,w,h,zero,rule);
@@ -268,7 +267,7 @@ struct Cloud : Group
                 const double jitter=std::sqrt(-2*std::log(jmax(.001,(double)(hash>>8)*0x1p-24)))*std::cos((hash&255)*MathConstants<double>::twoPi/256)*(1.8+scatter*hh*.27);
                 const double py=jlimit(4.0,(double)hh-4,mid-eventPitch/24.0*(hh/2-3)*.3+jitter);
                 const int len=jmax(2,roundToInt(eventSize/4*ww));
-                const double amp=shade==0?.85:.3+.7*(double)(hash&255)/255;
+                const double u=(double)(hash&255)/255,amp=shade==0?jmax(.8,std::pow(u,1.5)):std::pow(u,1.5); // mostly thin spindles
                 for(int k=0;k<len;++k)
                 {
                     const int thickness=(int)(std::sin(MathConstants<double>::pi*(k+.5)/len)*amp*jmin(2.0,len/6.0)+.35);
@@ -283,7 +282,6 @@ struct Cloud : Group
             for(int k=1;k<4;++k) for(int t:{0,hh-1})ends.push_back({edge+dir*k,t});
             g.braille(x,y,w,h,dots,Colour(0xff4a4a4a),under),g.braille(x,y,w,h,ends,Colour(0xff8a8a8a),over);
         }
-        for(int j=0;j<h;++j)for(int k=xa/2;k<=xb/2 && k<w;++k)g.cell(x+k,y+j).bg=Colour(0xff121212);
         Dots marker;for(int t=0;t<hh;t+=3)for(int d:{0,1})marker.push_back({2*(cell(pos)-x)+d,t});
         g.braille(x,y,w,h,marker,Colour(0xff5c1d12),under);
         Dots edge;const double e=jlimit(0.0,1.0,(double)f.wave[(size_t)((f.at.load()+silt::Feed::bins-1)%silt::Feed::bins)].load()*3)*hh*.34;
@@ -300,7 +298,7 @@ struct Cloud : Group
         g.put(cell(pos),ry,u("▲"),red);
     }
 };
-struct Dial { const char *id,*name; int cx; bool centred=false; };
+struct Dial { const char *id,*name; int cx; bool centred=false; std::function<bool()> dim={}; }; // dim: the control does nothing now
 struct Controls : Group
 {
     std::vector<Dial> dials;
@@ -328,7 +326,7 @@ struct Controls : Group
         {
             auto* q=p.apvts.getParameter(d.id);
             const int cx=d.cx;
-            if(!fader)knob(g,cx-4,1,q->getValue(),d.name,q->getCurrentValueAsText(),d.centred,false);
+            if(!fader)knob(g,cx-4,1,q->getValue(),d.name,q->getCurrentValueAsText(),d.centred,d.dim && d.dim());
             else
             {
                 g.put(cx,0,d.name,grey);
@@ -355,7 +353,7 @@ struct TriggerGroup : Group
         const char* names[]{"clock","transient","sidechain"};
         for(int i=0;i<3;++i){const bool selected=roundToInt(value("trigger"))==i;g.put(0,1+i,names[i],selected?red:grey);if(selected)g.put(14,1+i,u("◀"),red);}
         const auto note=MidiMessage::getMidiNoteName(p.feed.note.load(),true,true,3).toLowerCase();
-        g.put(0,5,"midi",grey),g.put(5,5,u("●"),red),g.put(7,5,note,white),g.put(0,6,"sc",grey);
+        g.put(0,5,"midi",grey),g.put(5,5,u("●"),p.feed.held?red:dark),g.put(7,5,note,white),g.put(0,6,"sc",grey);
         Dots off,on,tick;for(int k=0;k<18;++k)for(int t:{1,2})(k<p.feed.meter[2].load()*3*18?on:off).push_back({k,t});
         for(int t=0;t<4;++t)tick.push_back({8,t});
         g.braille(3,6,9,1,off,rule),g.braille(3,6,9,1,on,grey,over),g.braille(3,6,9,1,tick,white);
@@ -387,6 +385,8 @@ struct Editor : AudioProcessorEditor, Timer
         grain.word("sizeSync",0,4,6,"sync"),grain.word("sizeSync",1,9,6,"free");
         pitch.word("pitchMode",0,1,6,"shift"),pitch.word("pitchMode",1,7,6,"tape");
         space.toggle("reverbOn","reverb",1,0);
+        grain.dials[1].dim=[this] {return grain.value("trigger")>.5f;}; // transient/sidechain: one grain per onset
+        space.dials[0].dim=[this] {return space.value("reverbOn")<.5f;};
         grain.extra=[this](Grid& g) {g.put(4,6,"sync",grain.value("sizeSync")<.5f?red:grey),g.put(9,6,"free",grain.value("sizeSync")>.5f?red:grey);};
         pitch.extra=[this](Grid& g) {g.put(1,6,"shift",pitch.value("pitchMode")<.5f?red:grey),g.put(7,6,"tape",pitch.value("pitchMode")>.5f?red:grey);};
         space.extra=[this](Grid& g) {
@@ -419,7 +419,7 @@ struct Editor : AudioProcessorEditor, Timer
         std::vector<float> now;
         for (auto* param : proc.getParameters()) now.push_back(param->getValue());
         auto& f = proc.feed;
-        now.insert(now.end(), { (float) f.time.load(), (float) f.events.load(), (float) f.note.load(), f.meter[0].load(), f.meter[1].load(), f.meter[2].load(), (float) f.at.load(), f.centre.load(), (float) f.frozen.load(), (float) proc.showMacros.load(), (float) proc.abSlot(), (float) proc.preset.load() });
+        now.insert(now.end(), { (float) f.time.load(), (float) f.events.load(), (float) f.note.load(), (float) f.held.load(), f.meter[0].load(), f.meter[1].load(), f.meter[2].load(), (float) f.at.load(), f.centre.load(), (float) f.frozen.load(), (float) proc.showMacros.load(), (float) proc.abSlot(), (float) proc.preset.load() });
         for (size_t k = 0; k < silt::Feed::bins; ++k) now.insert(now.end(), { f.wave[k].load() });
         if (now == drawnFrom && proc.presetName() == drawnName) return;
         drawnFrom = std::move(now), drawnName = proc.presetName();
@@ -522,7 +522,10 @@ struct Editor : AudioProcessorEditor, Timer
                     {
                         const Point<float> centre {x+w*(.3f+.4f*(float)dx),y+h*(.125f+.25f*(float)dy)};
                         if(c.fg==Colour(0xffff5a33))
-                        {g.setColour(red.withAlpha(.12f));g.fillEllipse(Rectangle<float>(w*.62f,w*.62f).withCentre(centre));g.setColour(c.fg);}
+                        { // the newest grains glow (silt3.py's drop shadow), still clipped to the cell
+                            g.setColour(red.withAlpha(.18f)),g.fillEllipse(Rectangle<float>(w*.95f,w*.95f).withCentre(centre));
+                            g.setColour(red.withAlpha(.35f)),g.fillEllipse(Rectangle<float>(w*.55f,w*.55f).withCentre(centre)),g.setColour(c.fg);
+                        }
                         g.fillEllipse(Rectangle<float>(.3f*w,.3f*w).withCentre(centre));
                     }
         }

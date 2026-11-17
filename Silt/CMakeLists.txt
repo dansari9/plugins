@@ -66,6 +66,13 @@ target_compile_definitions(Silt
         JUCE_REPORT_APP_USAGE=0
 )
 
+# Every block size must render bit-identically (SiltTests' dense block equivalence). With FMA targets (e.g. GCC 15
+# -march=x86-64-v3 reproduces the ubuntu-26.04 runner exactly) the default -ffp-contract=fast fuses the scalar and
+# batched grain readers differently (2.98e-08 mismatches).
+if(NOT MSVC)
+    target_compile_options(Silt PRIVATE -ffp-contract=off)
+endif()
+
 target_link_libraries(Silt
     PRIVATE
         SiltFonts

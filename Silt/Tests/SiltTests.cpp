@@ -56,7 +56,7 @@ constexpr double pi = juce::MathConstants<double>::pi;
 struct Contract { const char* id; float lo, hi, def; const char* choices = nullptr; };
 static const Contract contract[] {
     {"mix",0,100,100},{"output",-24,12,0},{"size",.5f,4000,51.78f},{"sizeSync",0,1,0,"sync,free"},
-    {"density",1,64,24},{"position",0,4000,1200},{"scatter",0,100,45},{"pitch",-48,48,7},
+    {"density",1,64,24},{"position",0,4000,1200},{"scatter",0,100,45},{"pitch",-48,48,12},
     {"pitchMode",0,1,0,"shift,tape"},{"trigger",0,2,0,"clock,transient,sidechain"},{"reverbOn",0,1,1,""},
     {"reverb",0,100,30},{"oversample",0,3,1,"off,2x,4x,8x"},{"freeze",0,1,0,""},
     {"motion",0,100,0},{"texture",0,100,0},{"bloom",0,100,0},{"chaos",0,100,0}
@@ -211,6 +211,11 @@ static void testParameterText()
         auto* q=p.apvts.getParameter(id);
         q->setValueNotifyingHost(q->getValueForText(text));
     };
+    // Sync shows what plays: whole grains per beat and a position in beats; typed values read back the same way.
+    const auto shown=[&](const char* id){return p.apvts.getParameter(id)->getCurrentValueAsText();};
+    CHECK(shown("density")=="12/beat" && shown("position")=="2.40 beats");
+    parse("density","8/beat"),parse("position","3 beats");CHECK(get(p,"density")==16 && get(p,"position")==1500);
+    set(p,"sizeSync",1);CHECK(shown("density")=="16/s" && shown("position")=="1.5 s");
     set(p,"sizeSync",1);parse("size","2.5 s");CHECK(get(p,"size")==2500);
     parse("size","0.5 ms");CHECK(get(p,"size")==.5f);
     parse("position","1.25 s");CHECK(get(p,"position")==1250);
@@ -465,14 +470,15 @@ static void testFreezeAndWindows()
     Proc p,reference;
     for(auto* q:{&p,&reference})set(*q,plain),set(*q,{{"size",600},{"density",24},{"bloom",50},{"scatter",25}}),prepare(*q);
     Run r;r.input=[](int i,int){return (float)(.15*std::sin(2*pi*110*i/48000));};
-    run(p,48000,64,r),run(reference,48000,64,r);
-    r.offset=48000;const auto live=run(reference,72000,64,r);
+    const int warm=201600; // freeze holds once 4 s are captured
+    run(p,warm,64,r),run(reference,warm,64,r);
+    r.offset=warm;const auto live=run(reference,72000,64,r);
     r.perBlock=[&](int){set(p,"freeze",1);};const auto held=run(p,24000,64,r);
     const double bound=2*maxStep(live);
     std::cout<<"Freeze steps: live "<<maxStep(live)<<" held "<<maxStep(held);
     CHECK(p.feed.frozen && maxStep(held)<bound);
-    const int head=p.feed.at;r.offset=72000;run(p,24000,64,r);CHECK(p.feed.at==head);
-    r.offset=96000;r.perBlock=[&](int){set(p,"freeze",0);};const auto released=run(p,24000,64,r);
+    const int head=p.feed.at;r.offset=warm+24000;run(p,24000,64,r);CHECK(p.feed.at==head);
+    r.offset=warm+48000;r.perBlock=[&](int){set(p,"freeze",0);};const auto released=run(p,24000,64,r);
     std::cout<<" released "<<maxStep(released)<<"\n";
     CHECK(maxStep(released)<bound && !p.feed.frozen);
     set(p,plain),set(p,{{"trigger",2},{"size",4000},{"pitch",-48},{"pitchMode",1}}),prepare(p,96000,4096);
@@ -650,6 +656,40 @@ static void testLoudness(bool tableOnly=false)
     CHECK(endEnergy/48000<1e-8);
     std::cout<<"60 s feedback: peak "<<longLevel.peakDb()<<" dBFS; final second RMS "<<10*std::log10(endEnergy/48000+1e-30)<<" dBFS\n";
 }
+// Edge cases from the design review: randomize spread, freeze across a re-prepare, cloud history depth, quiet onsets.
+static void testEdges()
+{
+    {
+        Proc p;set(p,"trigger",2);float lo=1e9f,hi=0;
+        for(int seed=0;seed<50;++seed)
+        {
+            p.randomise(seed);lo=std::min(lo,get(p,"size")),hi=std::max(hi,get(p,"size"));
+            CHECK(get(p,"trigger")==2 && get(p,"size")*get(p,"density")>1490);
+        }
+        std::cout<<"Randomize sizes over 50 seeds: "<<lo<<" .. "<<hi<<" ms\n";CHECK(hi-lo>300);
+    }
+    {
+        Proc p;prepare(p);run(p,5*48000);set(p,"freeze",1);Run r;r.offset=5*48000;run(p,48000,512,r);CHECK(p.feed.frozen);
+        prepare(p,48000,256);r.offset=6*48000;run(p,5*48000,256,r);
+        r.offset=11*48000;const Level held(run(p,48000,256,r));
+        std::cout<<"Freeze after a re-prepare: "<<held.rmsDb()<<" dBFS\n";CHECK(p.feed.frozen && held.rmsDb()>-40);
+    }
+    for(int kind:{0,1})
+    {
+        Proc p;if(kind==0)p.setCurrentProgram(9);else set(p,plain),set(p,{{"size",4000},{"density",64},{"scatter",100},{"pitch",12}});
+        prepare(p);run(p,230400);
+        juce::int64 oldest=p.feed.time;const auto count=p.feed.events.load();
+        for(auto i=std::max<juce::int64>(0,count-(juce::int64)silt::Feed::historySize);i<count;++i)oldest=std::min(oldest,p.feed.history[(size_t)i%silt::Feed::historySize].frame.load());
+        const double span=(double)(p.feed.time-oldest)/48000;
+        std::cout<<(kind==0?"drift":"dense")<<" cloud history: "<<span<<" s\n";CHECK(span>=3);
+    }
+    for(float peak:{.01f,.001f})
+    {
+        Proc p;set(p,plain),set(p,"trigger",1),prepare(p);
+        Run r;r.input=[peak](int i,int){const int k=i%12000;return peak==.01f?(float)(peak*std::exp(-k/2400.0)*std::sin(2*pi*220*k/48000)):peak*noise(i);};
+        run(p,16*12000,64,r);CHECK(p.feed.fired==(peak==.01f?16:0)); // a -40 dBFS pluck fires; -60 dBFS noise never
+    }
+}
 // A sustained full-voice workload at 96 kHz guards the cost behind the pluginval watchdog failure.
 static void testPerformance()
 {
@@ -672,17 +712,17 @@ static void testDenseBlocks()
 {
     for (bool frozen : { false, true })
     {
-        Run r;
-        for (int note=0;note<128;++note) r.events.push_back({24000,juce::MidiMessage::noteOn(1,note,(juce::uint8)100)});
-        r.events.push_back({24000,juce::MidiMessage::allNotesOff(1)});
-        r.events.push_back({41001,juce::MidiMessage::controllerEvent(1,1,100)});
+        Run r;const int warm=194000; // freeze holds once 4 s are captured
+        for (int note=0;note<128;++note) r.events.push_back({warm,juce::MidiMessage::noteOn(1,note,(juce::uint8)100)});
+        r.events.push_back({warm,juce::MidiMessage::allNotesOff(1)});
+        r.events.push_back({warm+17001,juce::MidiMessage::controllerEvent(1,1,100)});
         Audio reference;
         for(int block : {512,1,17,0})
         {
             Proc p;set(p,plain);set(p,{{"size",4000},{"pitch",12},{"pitchMode",0},{"density",64},{"bloom",100},{"oversample",3},{"position",0}});prepare(p);
-            run(p,24000,block);
+            run(p,warm,block);
             if(frozen)set(p,"freeze",1);
-            r.offset=24000;
+            r.offset=warm;
             const auto output=run(p,36000,block,r);
             if(block==512)reference=output;
             else
@@ -696,6 +736,7 @@ static void testDenseBlocks()
                 }
                 CHECK(output==reference);
             }
+            CHECK(p.feed.frozen==frozen);
         }
     }
     for(int mode:{0,1})for(float pitch:{7.0f,24.0f,48.0f})
@@ -862,12 +903,14 @@ static void testEditor()
     }
     folder.deleteRecursively();
 }
-static juce::Image snapshot(int percent=100,bool macros=false)
+// 4.8 s of pad fills the cloud's 4 s span; freeze then holds it for one more second.
+static juce::Image snapshot(int percent=100,bool macros=false,bool freeze=false,float scale=2)
 {
     Proc p;prepare(p);run(p,230400);p.showMacros=macros;
+    if(freeze){set(p,"freeze",1);Run r;r.offset=230400;run(p,48000,512,r);}
     std::unique_ptr<juce::AudioProcessorEditor> editor(p.createEditor());
     editor->setSize(1024*percent/100,410*percent/100);
-    return editor->createComponentSnapshot(editor->getLocalBounds(),true,2.0f);
+    return editor->createComponentSnapshot(editor->getLocalBounds(),true,scale);
 }
 static juce::String soundHash()
 {
@@ -894,8 +937,8 @@ static void testGoldens(bool record=false)
     const auto renderer=pixels(probe);
     const bool ci=std::getenv("GITHUB_ACTIONS")!=nullptr;
     const char* expectedEnvironment="14.2.0/Release/07adb83962bd7f372226ea055bca705c159534fa4a19d3279488b12cd95eea5c", *expectedRenderer="506141d22f79fb1886eb4dec6e8e40da3c3c48e3df63f1f3d60e979dd78361b5";
-    const char* expectedSound="fcb195d513a30e7218f22fae43f1ec69bcb38390dfb4dd78ceb6f57d44d8d831";
-    const char* expectedShots[]{"ce8254e6680beb9b91b43334e5de2b0459159dd1f134d7afd525b44f14bc08b9","83626f7c99fb9acb6bed9c2afb58e44ffb203a4a21287edac94cf33ab31de67d","a87da81d62fe9c1f3640fd4948f6a796a02c199f50ecd6d28475232c46276ed2"};
+    const char* expectedSound="c84295f77b28dd4228a7fe471bf7e41937303f55ff5663e927482f9dca5907da";
+    const char* expectedShots[]{"03c1267a53e020ac141dd43b3fc7f19032595a4cef35ba60a7392df930093463","16e2c80b54d29ef2a7b0987c4411b50ab275fb3e9ea404b7faf68cd31edcf415","c3eabceccba6d36a308e2afb1eccb026a3cd1b26845191afef88565950ce5399"};
     std::cout<<"Golden environment: "<<environment<<"\nGolden renderer: "<<renderer<<"\n";
     if(record || (!ci && environment==expectedEnvironment))
     {
@@ -930,10 +973,13 @@ int main(int argc,char** argv)
 #endif
     std::cout<<std::unitbuf;
     const juce::ScopedJuceInitialiser_GUI init;
-    if(argc>=3 && (juce::String(argv[1])=="--screenshot" || juce::String(argv[1])=="--screenshot-macros"))
+    if(const juce::String mode=argc>=3?argv[1]:"";mode=="--screenshot" || mode=="--screenshot-macros" || mode=="--screenshot-freeze")
     {
+        // An optional scale: 1 = 1024 x 410 pixels at device scale 1, 2 (default) = 2048 x 820.
+        const float scale=argc>=4?juce::jlimit(1.0f,4.0f,juce::String(argv[3]).getFloatValue()):2.0f;
         juce::File file=juce::File::getCurrentWorkingDirectory().getChildFile(argv[2]);file.deleteFile();
-        juce::FileOutputStream output(file);return output.openedOk() && juce::PNGImageFormat().writeImageToStream(snapshot(100,juce::String(argv[1])=="--screenshot-macros"),output)?0:1;
+        juce::FileOutputStream output(file);
+        return output.openedOk() && juce::PNGImageFormat().writeImageToStream(snapshot(100,mode=="--screenshot-macros",mode=="--screenshot-freeze",scale),output)?0:1;
     }
     if(argc>=2 && (juce::String(argv[1])=="--bench" || juce::String(argv[1])=="--profile")){bench(juce::String(argv[1])=="--profile");return failures?1:0;}
     if(argc>=3 && juce::String(argv[1])=="--renders"){renderFiles(juce::File(argv[2]));return failures?1:0;}
@@ -945,7 +991,7 @@ int main(int argc,char** argv)
     onAudioThread=true;void* probe=::operator new(64);escape(probe);::operator delete(probe);onAudioThread=false;
     CHECK(audioAllocations>0);audioAllocations=0;
     testContract();testParameterText();testState();testPresets();testDryAndLifecycle();testTimingAndMidi();testRatios();testOnsetsAndSource();testFreezeAndWindows();
-    testSound();testDenseBlocks();
+    testSound();testEdges();testDenseBlocks();
     if(argc>=2 && juce::String(argv[1])=="--core")return failures?1:0;
     testEditor();testGoldens();testPerformance();testLoudness();
     CHECK(audioAllocations==0);

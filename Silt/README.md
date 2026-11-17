@@ -1,6 +1,6 @@
 # silt 0.1.0
 
-A granular effect by daveydidit. Eight seconds of captured main input feed up to 128 stereo grains. The first instance opens **05 tide**, fully wet. Freeze holds the history while grains continue. The option-1 cloud shows buffer time, pitch, actual grain footprints and age; the editor scales from 50–200% and saves its size.
+A granular effect by daveydidit. Eight seconds of captured main input feed up to 128 stereo grains. The first instance opens **05 tide**, fully wet. Freeze holds the history while grains continue; captured audio is not saved, so after a reopened project or a re-prepare it refills 4 s of input before holding. The option-1 cloud shows buffer time, pitch, actual grain footprints and age; the editor scales from 50–200% and saves its size.
 
 Build with CMake 3.22+, C++17 and JUCE 8.0.15:
 
@@ -9,13 +9,13 @@ cmake -S Silt -B Silt/build -G Xcode -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"
 cmake --build Silt/build --config Release --target Silt_AU Silt_VST3 SiltTests
 ```
 
-For Logic Pro, copy `Silt/build/Silt_artefacts/Release/AU/silt.component` to `~/Library/Audio/Plug-Ins/Components/`, restart Logic and validate it in Plug-in Manager. The AU (`aumf`) appears under **MIDI-controlled Effects → daveydidit → silt**. Route audio to the main input; the optional Side Chain detects transients in **sidechain** trigger mode. VST3 and Standalone are also built.
+For Logic Pro, copy `Silt/build/Silt_artefacts/Release/AU/silt.component` to `~/Library/Audio/Plug-Ins/Components/`, restart Logic and validate it in Plug-in Manager. The AU (`aumf`) appears under **MIDI-controlled Effects → daveydidit → silt**. Route audio to the main input; the optional Side Chain detects transients in **sidechain** trigger mode. Transient and sidechain onsets fire above a −50 dBFS gate. VST3 and Standalone are also built.
 
-**sync** reuses size travel for 1/64 through two bars. Density follows tempo on whole subdivisions per quarter; position follows a ratio of clock spacing referenced to 120 BPM. The clock locks to host PPQ while playing and free-runs at host BPM (120 without one) while stopped. **shift** changes pitch independently of grain duration and timeline speed; **tape** couples pitch and duration. Scatter distributes readers around position. Alternating streams have a slight size difference and random pan. Overlap gain compensation and filtered, diffused, sub-unity feedback protect levels without a limiter.
+**sync** reuses size travel for 1/64 through two bars. Density follows tempo on whole subdivisions per quarter; position follows a ratio of clock spacing referenced to 120 BPM. In sync, density reads in grains per beat and position in beats. The clock locks to host PPQ while playing and free-runs at host BPM (120 without one) while stopped. **shift** changes pitch independently of grain duration and timeline speed; **tape** couples pitch and duration. Scatter distributes readers around position. Alternating streams have a slight size difference and random pan. Overlap gain compensation and filtered, diffused, sub-unity feedback protect levels without a limiter.
 
 The **macros** toggle replaces the preset row with four relative-drag faders, hidden by default. Motion adds scan, jitter, pan spread and backward spray bias; texture changes window/skew, spray slope and size spread; bloom increases feedback, diffusion, reverb size and width (0.8–1.0); chaos adds chromatically snapped pitch randomisation, reverse probability, spray and jitter. Forward-only spray and stereo narrowing are unavailable in the frozen 18-parameter set.
 
-MIDI note-on fires a grain at its sample offset in every trigger mode. Held notes transpose grains relative to note 60 (**c3**); last-note priority resumes the previous note and velocity when released. Velocity scales level. All-notes-off and all-sound-off clear the shared note stack.
+MIDI note-on fires a grain at its sample offset in every trigger mode. Held notes transpose grains relative to note 60 (**c3**; the midi dot lights while one is held); last-note priority resumes the previous note and velocity when released. Velocity scales level. All-notes-off and all-sound-off clear the shared note stack.
 
 | CC | Smoothed additive macro offset |
 | --- | --- |
@@ -26,10 +26,10 @@ MIDI note-on fires a grain at its sample offset in every trigger mode. Held note
 
 Offsets clamp at 100%, smooth over 30 ms and never write automation or saved parameters. CC121 clears them; prepare clears notes and offsets.
 
-Oversampling selects preallocated FIR paths for feedback saturation and crossfades changes inside that loop. Pitch-up grains use Hermite reads from capture levels filtered by 127-tap Kaiser halfbands, with three semitones of headroom before stepping down. Reported latency is always **0 samples**; mix zero is bit-exact dry at every quality, regardless of output trim.
+Oversampling only affects the feedback saturation: it selects preallocated FIR paths there and crossfades changes inside that loop. Grains are not oversampled. Pitch-up grains use Hermite reads from capture levels filtered by 127-tap Kaiser halfbands, with three semitones of headroom before stepping down. Reported latency is always **0 samples**; mix zero is bit-exact dry at every quality, regardless of output trim.
 
-Previous/next includes factory and saved user presets. **save** writes `user nn.xml` to `~/Library/daveydidit/silt/Presets` on macOS (the platform application-data directory elsewhere). **randomize** preserves mix, output, quality and macros and leaves the previous sound in the other A/B slot. State v1 saves all 18 parameters, preset identity, both A/B slots, size and macro visibility; captured audio and MIDI offsets are not embedded. The frozen contract is tested in `Tests/SiltTests.cpp`.
+Previous/next includes factory and saved user presets. **save** writes `user nn.xml` to `~/Library/daveydidit/silt/Presets` on macOS (the platform application-data directory elsewhere). **randomize** preserves mix, output, trigger, quality and macros and leaves the previous sound in the other A/B slot. State v1 saves all 18 parameters, preset identity, both A/B slots, size and macro visibility; captured audio and MIDI offsets are not embedded. The frozen contract is tested in `Tests/SiltTests.cpp`.
 
 `Source/SiltReverb.h` is self-contained and marked **SILT_REVERB: removable**. Remove its setup/process calls and file to remove the FDN; retain `reverbOn` and `reverb` as inert frozen parameters. Bloom's feedback, diffusion and stereo functions remain useful.
 
-On Linux use Ninja and run `xvfb-run -a Silt/build/SiltTests`. `--core` runs DSP/state regressions; `--screenshot path.png` and `--screenshot-macros path.png` render tide after 4.8 s of pad at 2× pixels. `--loudness`, `--bench` and `--renders /absolute/folder` provide measurements and audio exports. Goldens require the recorded compiler/math/renderer fingerprint and skip on GitHub Actions. Geist Mono is included under the SIL Open Font License in `Assets/Fonts/OFL.txt`.
+On Linux use Ninja and run `xvfb-run -a Silt/build/SiltTests`. `--core` runs DSP/state regressions; `--screenshot`, `--screenshot-macros` and `--screenshot-freeze` (`path.png [scale]`) render tide after 4.8 s of pad (freeze: then held for 1 s) at 1× (1024×410) or 2× (default, 2048×820) pixels. `--loudness`, `--bench` and `--renders /absolute/folder` provide measurements and audio exports. Goldens require the recorded compiler/math/renderer fingerprint and skip on GitHub Actions. Geist Mono is included under the SIL Open Font License in `Assets/Fonts/OFL.txt`.

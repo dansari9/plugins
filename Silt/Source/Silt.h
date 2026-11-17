@@ -45,6 +45,7 @@ struct Feed
     std::atomic<juce::int64> time { 0 }, events { 0 }, captureHead { 0 };
     std::atomic<float> sampleRate { 48000 };
     std::atomic<int> note { 60 };
+    std::atomic<bool> held { false }; // a MIDI note is transposing the grains
     std::array<std::atomic<float>, 3> meter {};
     std::atomic<int> fired { 0 }; // grains started since prepare (wraps)
 };
@@ -98,7 +99,7 @@ public:
     std::atomic<int> preset { 4 };
     int abSlot() const { return ab.load(); }
     void selectAb(int slot);
-    // A musical, loudness-safe random sound from `seed`; mix, output and the macros stay. Undo with A/B.
+    // A musical, loudness-safe random sound from `seed`; mix, output, trigger and the macros stay. Undo with A/B.
     void randomise(juce::int64 seed);
 
 private:
