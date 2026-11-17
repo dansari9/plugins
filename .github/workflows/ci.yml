@@ -80,3 +80,113 @@ jobs:
             SpringReverb/build/SpringTank_artefacts/Release/AU/**
             SpringReverb/build/SpringTank_artefacts/Release/VST3/**
             SpringReverb/artifacts/spring_tank_impulse.wav
+
+  silt-linux:
+    name: Silt Linux VST3 + tests + pluginval
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake ninja-build pkg-config xvfb unzip \
+            libasound2-dev libfreetype6-dev libfontconfig1-dev \
+            libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxext-dev \
+            libgtk-3-dev
+
+      - name: Configure
+        run: cmake -S Silt -B Silt/build -G Ninja -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build Silt/build --parallel --target Silt_VST3 Silt_Standalone SiltTests
+
+      - name: Unit tests
+        run: xvfb-run -a Silt/build/SiltTests
+
+      - name: Unit tests under ASan + UBSan
+        run: |
+          S="-fsanitize=address,undefined,float-cast-overflow -fno-sanitize-recover=all -fno-omit-frame-pointer"
+          cmake -S Silt -B Silt/build-asan -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            "-DCMAKE_C_FLAGS=$S" "-DCMAKE_CXX_FLAGS=$S" "-DCMAKE_EXE_LINKER_FLAGS=-fsanitize=address,undefined"
+          cmake --build Silt/build-asan --parallel 2 --target SiltTests
+          xvfb-run -a Silt/build-asan/SiltTests
+
+      - name: pluginval (strictness 10)
+        run: |
+          curl -sL -o pluginval.zip https://github.com/Tracktion/pluginval/releases/latest/download/pluginval_Linux.zip
+          unzip -q pluginval.zip
+          xvfb-run -a ./pluginval --strictness-level 10 --validate-in-process \
+            --validate Silt/build/Silt_artefacts/Release/VST3/silt.vst3
+
+      - name: Package (tar keeps the executable bit)
+        run: tar -C Silt/build/Silt_artefacts/Release -czf silt-linux.tar.gz VST3 Standalone
+
+      - name: Upload VST3 + Standalone
+        uses: actions/upload-artifact@v4
+        with:
+          name: silt-linux
+          if-no-files-found: error
+          path: silt-linux.tar.gz
+
+  silt-macos:
+    name: Silt macOS universal AU + VST3 + auval
+    runs-on: macos-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake -S Silt -B Silt/build -G Xcode -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"
+
+      - name: Build AU, VST3, tests
+        run: cmake --build Silt/build --config Release --parallel --target Silt_AU Silt_VST3 SiltTests
+
+      - name: Ad-hoc sign and verify AU and VST3
+        run: |
+          codesign --force --sign - --timestamp=none Silt/build/Silt_artefacts/Release/AU/silt.component
+          codesign --verify --deep --strict --verbose=2 Silt/build/Silt_artefacts/Release/AU/silt.component
+          codesign --force --sign - --timestamp=none Silt/build/Silt_artefacts/Release/VST3/silt.vst3
+          codesign --verify --deep --strict --verbose=2 Silt/build/Silt_artefacts/Release/VST3/silt.vst3
+
+      - name: Unit tests
+        run: |
+          BIN="$(find Silt/build -type f -name SiltTests -perm +111 | head -n 1)"
+          test -n "$BIN"
+          "$BIN"
+
+      - name: Universal binary check
+        run: |
+          lipo Silt/build/Silt_artefacts/Release/AU/silt.component/Contents/MacOS/silt -verify_arch arm64 x86_64
+          lipo Silt/build/Silt_artefacts/Release/VST3/silt.vst3/Contents/MacOS/silt -verify_arch arm64 x86_64
+
+      - name: auval
+        run: |
+          mkdir -p ~/Library/Audio/Plug-Ins/Components
+          cp -R Silt/build/Silt_artefacts/Release/AU/silt.component ~/Library/Audio/Plug-Ins/Components/
+          killall -9 AudioComponentRegistrar 2>/dev/null || true
+          sleep 3
+          auval -a | grep -i Dwks || true
+          auval -v aumf Silt Dwks
+
+      - name: pluginval (strictness 10, AU + VST3)
+        run: |
+          curl -sL -o pluginval.zip https://github.com/Tracktion/pluginval/releases/latest/download/pluginval_macOS.zip
+          unzip -q pluginval.zip
+          PV=pluginval.app/Contents/MacOS/pluginval
+          $PV --strictness-level 10 --validate-in-process --validate ~/Library/Audio/Plug-Ins/Components/silt.component
+          $PV --strictness-level 10 --validate-in-process --validate Silt/build/Silt_artefacts/Release/VST3/silt.vst3
+
+      - name: Package (zip keeps bundle permissions)
+        run: cd Silt/build/Silt_artefacts/Release && ditto -c -k --keepParent AU/silt.component "$GITHUB_WORKSPACE/Silt-AU-macos.zip" && ditto -c -k --keepParent VST3/silt.vst3 "$GITHUB_WORKSPACE/Silt-VST3-macos.zip"
+
+      - name: Upload AU + VST3
+        uses: actions/upload-artifact@v4
+        with:
+          name: silt-macos-universal
+          if-no-files-found: error
+          path: |
+            Silt-AU-macos.zip
+            Silt-VST3-macos.zip
