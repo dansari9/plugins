@@ -1,5 +1,5 @@
 #pragma once
-// SILT_REVERB: removable - delete this file, the verbSize / verbMix handling marked SILT_REVERB in Silt.cpp and the
+// SILT_REVERB: removable - delete this file, the reverbOn / reverb handling marked SILT_REVERB in Silt.cpp and the
 // reverb.process call there. The two parameters stay in the frozen list (inert once removed).
 //
 // A small stereo feedback delay network: two allpass diffusers per side, four lines mixed by a 4 x 4 Hadamard

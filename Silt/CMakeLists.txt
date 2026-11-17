@@ -70,6 +70,7 @@ target_link_libraries(Silt
     PRIVATE
         SiltFonts
         juce::juce_audio_utils
+        juce::juce_dsp
         juce::juce_recommended_config_flags
         juce::juce_recommended_warning_flags
 )
@@ -83,6 +84,7 @@ target_link_libraries(SiltTests
         juce::juce_cryptography
         Silt
         juce::juce_audio_utils
+        juce::juce_dsp
         juce::juce_recommended_config_flags
         juce::juce_recommended_warning_flags
 )

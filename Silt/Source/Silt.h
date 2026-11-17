@@ -7,15 +7,12 @@
 // (APVTS XML <SILT stateVersion="1"> plus additive root attributes). Never rename, remove or reorder; only append.
 namespace silt
 {
-inline constexpr int numParams = 36, numPresets = 10, numWindows = 12, numNotes = 17, numRatios = 13, maxGrains = 128;
+inline constexpr int numParams = 18, numPresets = 10, numWindows = 12, numNotes = 17, maxGrains = 128;
 extern const char* const windowNames[numWindows];
 extern const char* const noteNames[numNotes]; // 1/64 .. 2 bars, incl. triplets (T) and dotted (D)
 // Note values in whole notes: noteNum / noteDen.
 inline constexpr int noteNum[numNotes] { 1, 1, 1, 1, 1, 3, 1, 1, 3, 1, 1, 3, 1, 1, 3, 1, 2 };
 inline constexpr int noteDen[numNotes] { 64, 48, 32, 24, 16, 32, 12, 8, 16, 6, 4, 8, 3, 2, 4, 1, 1 };
-// grid "lock": size in grain spacings, position in clock periods.
-inline constexpr double sizeRatio[numRatios] { 0.25, 1 / 3.0, 0.5, 2 / 3.0, 1, 1.5, 2, 3, 4, 6, 8, 12, 16 };
-inline constexpr double backRatio[numRatios] { 0, 0.25, 0.5, 1, 2, 3, 4, 6, 8, 12, 16, 24, 32 };
 inline constexpr double maxBackSeconds = 8; // the capture buffer grains read from
 
 // A grain window at x in 0..1: a decay curve f (1 at its peak, 0 at its end) mirrored around the peak at `skew`
@@ -38,6 +35,18 @@ struct Feed
     std::atomic<juce::int64> lastFire { -1 };
     std::atomic<float> lastPitch { 0 };
     std::atomic<int> lastLength { 0 };
+    struct Event
+    {
+        std::atomic<unsigned> sequence { 0 };
+        std::atomic<juce::int64> frame { -1 }, captureHead { 0 };
+        std::atomic<float> back { 0 }, pitch { 0 }, size { 0 };
+    };
+    static constexpr size_t historySize = 2048;
+    std::array<Event, historySize> history;
+    std::atomic<juce::int64> time { 0 }, events { 0 }, captureHead { 0 };
+    std::atomic<float> sampleRate { 48000 };
+    std::atomic<int> note { 60 };
+    std::array<std::atomic<float>, 3> meter {};
     std::atomic<int> fired { 0 }; // grains started since prepare (wraps)
 };
 
@@ -87,7 +96,7 @@ public:
     void stepPreset(int delta); // through the factory presets, then the user files
     juce::File saveUserPreset();
     juce::String presetName() const;
-    std::atomic<int> preset { 0 };
+    std::atomic<int> preset { 4 };
     int abSlot() const { return ab.load(); }
     void selectAb(int slot);
     // A musical, loudness-safe random sound from `seed`; mix, output and the macros stay. Undo with A/B.

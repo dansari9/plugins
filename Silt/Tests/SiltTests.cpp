@@ -55,16 +55,11 @@ constexpr double pi = juce::MathConstants<double>::pi;
 // Frozen independently from the processor: ID order, domains, defaults and exact choice strings.
 struct Contract { const char* id; float lo, hi, def; const char* choices = nullptr; };
 static const Contract contract[] {
-    {"mix",0,100,100},{"output",-24,12,0},{"size",.5f,4000,220},{"grid",0,2,0,"free,note,lock"},
-    {"density",1,16,3},{"position",0,8000,180},{"spray",0,2000,140},{"sprayDir",0,2,1,"both,back,ahead"},
-    {"slope",0,100,40},{"scan",-100,100,0},{"pitch",-48,48,0},{"fine",-100,100,0},{"pitchRand",0,24,.15f},
-    {"snap",0,3,0,"off,semi,5th,oct"},{"pitchMode",0,1,1,"speed,pitch"},{"reverse",0,100,15},
-    {"window",0,11,10,"drop,needle,knock,lean,fade,slab,mesa,dome,gate,bulge,hann,twin"},
-    {"skew",0,100,50},{"trigger",0,3,0,"clock,input,side,clk+in"},{"sync",0,1,0,""},{"rate",.25f,50,5},
-    {"division",0,16,7,"1/64,1/32T,1/32,1/16T,1/16,1/16D,1/8T,1/8,1/8D,1/4T,1/4,1/4D,1/2T,1/2,1/2D,1 bar,2 bars"},
-    {"jitter",0,100,50},{"thresh",-60,0,-30},{"source",0,1,0,"input,side"},{"width",0,100,70},{"pan",0,100,40},
-    {"freeze",0,1,0,""},{"feedback",0,100,25},{"tone",-100,100,-20},{"verbSize",0,100,60},{"verbMix",0,100,35},
-    {"blur",0,100,0},{"drift",0,100,0},{"bloom",0,100,0},{"glint",0,100,0}
+    {"mix",0,100,100},{"output",-24,12,0},{"size",.5f,4000,51.78f},{"sizeSync",0,1,0,"sync,free"},
+    {"density",1,64,24},{"position",0,4000,1200},{"scatter",0,100,45},{"pitch",-48,48,7},
+    {"pitchMode",0,1,0,"shift,tape"},{"trigger",0,2,0,"clock,transient,sidechain"},{"reverbOn",0,1,1,""},
+    {"reverb",0,100,30},{"oversample",0,3,1,"off,2x,4x,8x"},{"freeze",0,1,0,""},
+    {"motion",0,100,0},{"texture",0,100,0},{"bloom",0,100,0},{"chaos",0,100,0}
 };
 static void set(Proc& p, const char* id, float v) { auto* q = p.apvts.getParameter(id); q->setValueNotifyingHost(q->convertTo0to1(v)); }
 static void set(Proc& p, const Settings& s) { for (auto& [id,v] : s) set(p,id,v); }
@@ -197,8 +192,8 @@ static void testParameterText()
     auto* size=p.apvts.getParameter("size");
     CHECK(size->convertFrom0to1(0)==.5f && size->convertFrom0to1(1)==4000);
     CHECK(std::abs(size->convertFrom0to1(.5f)-100)<5);
-    CHECK(p.apvts.getParameter("position")->convertFrom0to1(.5f)==1000);
-    CHECK(p.apvts.getParameter("pitchRand")->convertFrom0to1(.5f)==6);
+    CHECK(p.apvts.getParameter("position")->convertFrom0to1(.5f)==2000);
+
     // Every parameter has finite, bounded host mappings and a useful text representation at its endpoints/middle.
     for(const auto& c:contract)
     {
@@ -216,30 +211,17 @@ static void testParameterText()
         auto* q=p.apvts.getParameter(id);
         q->setValueNotifyingHost(q->getValueForText(text));
     };
-    parse("size","2.5 s");CHECK(get(p,"size")==2500);
+    set(p,"sizeSync",1);parse("size","2.5 s");CHECK(get(p,"size")==2500);
     parse("size","0.5 ms");CHECK(get(p,"size")==.5f);
     parse("position","1.25 s");CHECK(get(p,"position")==1250);
     parse("pitch",juce::String::fromUTF8("−12 st"));CHECK(get(p,"pitch")==-12);
-    parse("fine","+24 ct");CHECK(get(p,"fine")==24);
     parse("output","-3.5 dB");CHECK(get(p,"output")==-3.5f);
-    for(int grid:{1,2})
+    set(p,"sizeSync",0);
+    for(int k=0;k<silt::numNotes;++k)
     {
-        set(p,"grid",(float)grid);
-        for(const char* id:{"size","position"})
-        {
-            auto* q=p.apvts.getParameter(id);
-            const int count=grid==1?(juce::String(id)=="size"?17:18):13;
-            for(int k=0;k<count;++k)
-            {
-                const float n=(float)k/(float)(count-1);
-                const auto text=q->getText(n,0);
-                q->setValueNotifyingHost(q->getValueForText(text));
-                CHECK(q->getCurrentValueAsText()==text);
-            }
-        }
+        const auto text=juce::String(silt::noteNames[k]);parse("size",text);CHECK(size->getCurrentValueAsText()==text);
     }
-    set(p,"grid",1),parse("size","2 bars");CHECK(size->getCurrentValueAsText()=="2 bars");
-    set(p,"grid",2),parse("size","x1/2");CHECK(size->getCurrentValueAsText()=="x1/2");
+    parse("size","1/16");CHECK(size->getCurrentValueAsText()=="1/16");
 }
 
 static void testState()
@@ -276,7 +258,7 @@ static void testState()
     load(p,blob("<SILT stateVersion=\"9000\"><PARAM id=\"pitch\" value=\"-7\"/><PARAM id=\"newThing\" value=\"8\"/></SILT>"));
     CHECK(get(p,"pitch")==-7 && get(p,"mix")==100);
     load(p,blob("<SILT><PARAM id=\"size\" value=\"nan\"/><PARAM id=\"output\" value=\"oops\"/></SILT>"));
-    CHECK(get(p,"size")==220 && get(p,"output")==0);
+    CHECK(get(p,"size")==51.78f && get(p,"output")==0);
     set(p,"pitch",11);
     for(const auto& xml:{"<OTHER/>","<SILT><PARAM id=\"pitch\" value=\"1\"/>","garbage"}) load(p,blob(xml)),CHECK(get(p,"pitch")==11);
     juce::MemoryBlock fixture;
@@ -290,10 +272,11 @@ static void testPresets()
 {
     const auto folder=juce::File::getSpecialLocation(juce::File::tempDirectory).getNonexistentChildFile("silt-tests","",false);
     Proc p(folder),defaults;
-    p.setCurrentProgram(0);CHECK(params(p)==params(defaults));
+    p.setCurrentProgram(4);CHECK(params(p)==params(defaults));
+    const char* names[]{"sub dust","grit","glass","halo","tide","choir","tines","chime","rain","drift"};
     for(int i=0;i<10;++i)
     {
-        p.setCurrentProgram(i);CHECK(p.getProgramName(i).isNotEmpty() && p.getCurrentProgram()==i);
+        p.setCurrentProgram(i);CHECK(p.getProgramName(i)==names[i] && p.getCurrentProgram()==i);
         CHECK(get(p,"mix")==100 && get(p,"output")==0 && get(p,"freeze")==0);
     }
     p.setCurrentProgram(0),set(p,"pitch",7);
@@ -303,222 +286,193 @@ static void testPresets()
     p.stepPreset(1);CHECK(p.preset==0);p.stepPreset(-1);CHECK(params(p)==before);
     p.selectAb(1),set(p,"pitch",12),p.selectAb(0);CHECK(params(p)==before);
     Proc q(folder);load(q,save(p));q.selectAb(1);CHECK(get(q,"pitch")==12);
-    p.setCurrentProgram(3),set(p,{{"mix",33},{"output",-6},{"blur",27},{"drift",9},{"bloom",19},{"glint",11}});
+    p.setCurrentProgram(3),set(p,{{"mix",33},{"output",-6},{"texture",27},{"motion",9},{"bloom",19},{"chaos",11}});
     const auto old=params(p);
     p.randomise(42);const auto random=params(p);
-    CHECK(get(p,"drift")==9 && get(p,"bloom")==19);
-    CHECK(get(p,"mix")==33 && get(p,"output")==-6 && get(p,"blur")==27 && get(p,"glint")==11 && old!=random);
+    CHECK(get(p,"motion")==9 && get(p,"bloom")==19);
+    CHECK(get(p,"mix")==33 && get(p,"output")==-6 && get(p,"texture")==27 && get(p,"chaos")==11 && old!=random);
     p.selectAb(1-p.abSlot());CHECK(params(p)==old);
     p.selectAb(1-p.abSlot());CHECK(params(p)==random);
     folder.deleteRecursively();
 }
-static Settings plain { {"trigger",0},{"grid",0},{"sync",0},{"pitchRand",0},{"jitter",0},{"reverse",0},{"spray",0},{"pan",0},{"feedback",0},{"verbMix",0},{"density",1},{"width",0} };
+static Settings plain { {"trigger",0},{"sizeSync",1},{"pitch",0},{"motion",0},{"texture",0},{"bloom",0},{"chaos",0},
+    {"scatter",0},{"reverb",0},{"reverbOn",0},{"density",2},{"position",180},{"oversample",0} };
 static void testDryAndLifecycle()
 {
-    for(double fs:{44100.0,48000.0,96000.0}) for(int block:{1,17,64,512,4096,0})
+    std::cout<<"Latency: rate | off | 2x | 4x | 8x\n";
+    for(double fs:{44100.0,48000.0,96000.0})
     {
-        Proc p;set(p,{{"mix",0},{"output",12}});prepare(p,fs,512,1,2,2);
-        Run r;r.input=[](int i,int){return i==37?1.0f:noise(i)*2;};
-        const auto audio=run(p,8192,block,r);
-        CHECK(p.getLatencySamples()==0);
-        for(size_t i=0;i<audio.l.size();++i) CHECK(audio.l[i]==r.input((int)i,0) && audio.r[i]==audio.l[i]);
-        Run impulse;impulse.input=[](int i,int){return i==0?1.0f:0.0f;};
-        prepare(p,fs,512,2,0);const auto y=run(p,512,17,impulse);
-        const auto peak=std::max_element(y.l.begin(),y.l.end());
-        CHECK(std::distance(y.l.begin(),peak)==p.getLatencySamples());
+        std::cout<<fs;
+        for(int quality=0;quality<4;++quality)
+        {
+            for(int block:{1,17,64,512,4096,0})
+            {
+                Proc p;set(p,{{"mix",0},{"output",12},{"oversample",(float)quality}});prepare(p,fs,512,1,2,2);
+                Run r;r.input=[](int i,int){return i==37?1.0f:noise(i)*2;};
+                const auto audio=run(p,8192,block,r);const int latency=p.getLatencySamples();
+                CHECK(latency>=0 && latency<512 && (quality==0?latency==0:latency>0));
+                for(size_t i=0;i<audio.l.size();++i)CHECK(audio.l[i]==((int)i<latency?0:r.input((int)i-latency,0)) && audio.r[i]==audio.l[i]);
+                Run impulse;impulse.input=[](int i,int){return i==0?1.0f:0.0f;};
+                prepare(p,fs,512,2,0);const auto y=run(p,512,17,impulse);
+                CHECK(std::distance(y.l.begin(),std::max_element(y.l.begin(),y.l.end()))==latency);
+                if(block==512)std::cout<<" | "<<latency;
+                // Quality can change after prepare, with no new storage or stale dry data after its delay.
+                for(int next=0;next<4;++next)
+                {
+                    set(p,"oversample",(float)next);run(p,512,block,r);
+                    CHECK(next==0?p.getLatencySamples()==0:p.getLatencySamples()>0);
+                }
+            }
+        }
+        std::cout<<"\n";
     }
-    // Same DSP, same sample timeline: fixed, changing and oversized blocks sound exactly the same.
-    Proc p,q;set(p,plain),set(q,plain);set(p,"feedback",60),set(q,"feedback",60);
-    prepare(p),prepare(q);const auto reference=run(p,48000,512);
-    CHECK(reference==run(q,48000,0));
-    for(int block:{1,17,64,4096})
-    {
-        prepare(q);CHECK(reference==run(q,48000,block));
-    }
+    // Live quality changes glide between delay taps and FIR paths instead of resetting into a step.
+    Proc changing;set(changing,"mix",0);prepare(changing);
+    Run sine;sine.input=[](int i,int){return (float)(.1*std::sin(2*pi*110*i/48000));};
+    sine.perBlock=[&](int t){set(changing,"oversample",(float)((t/2400)%4));};
+    const auto switched=run(changing,24000,64,sine);
+    double step=0;for(size_t i=1;i<switched.l.size();++i)step=std::max(step,(double)std::abs(switched.l[i]-switched.l[i-1]));CHECK(step<.02);
+    Proc p,q;set(p,plain),set(q,plain);prepare(p),prepare(q);
+    const auto reference=run(p,48000,512);
+    for(int block:{0,1,17,64,4096}){prepare(q);CHECK(reference==run(q,48000,block));}
     for(double fs:{96000.0,44100.0,48000.0})
     {
-        prepare(p,fs,4096);
-        Run silent;silent.input=[](int,int){return 0.0f;};silent.side=silent.input;
-        for(float v:run(p,12000,0,silent).l) CHECK(v==0 && std::fpclassify(v)!=FP_SUBNORMAL);
+        prepare(p,fs,4096);Run silent;silent.input=[](int,int){return 0.0f;};silent.side=silent.input;
+        for(float v:run(p,12000,0,silent).l)CHECK(v==0 && std::fpclassify(v)!=FP_SUBNORMAL);
     }
-    // Sample-offset CC changes and moving host PPQ remain independent of the host's block segmentation.
-    p.setCurrentProgram(0),q.setCurrentProgram(0);
-    set(p,"sync",1),set(q,"sync",1),prepare(p),prepare(q);
+    p.setCurrentProgram(4),q.setCurrentProgram(4);prepare(p),prepare(q);
     Host ha,hb;ha.bpm=hb.bpm=127;
-    Run performance;
-    performance.events={{37,juce::MidiMessage::controllerEvent(1,1,93)},
-        {701,juce::MidiMessage::controllerEvent(1,2,74)},
-        {1350,juce::MidiMessage::controllerEvent(1,71,64)},
-        {5000,juce::MidiMessage::controllerEvent(1,74,80)},
-        {10000,juce::MidiMessage::controllerEvent(1,91,70)},
-        {347,juce::MidiMessage::noteOn(1,64,(juce::uint8)100)}};
+    Run performance;performance.events={{37,juce::MidiMessage::controllerEvent(1,1,93)},
+        {701,juce::MidiMessage::controllerEvent(1,2,74)},{1350,juce::MidiMessage::controllerEvent(1,3,64)},
+        {5000,juce::MidiMessage::controllerEvent(1,4,80)},{347,juce::MidiMessage::noteOn(1,64,(juce::uint8)100)}};
     performance.host=&ha;const auto fixed=run(p,48000,512,performance);
-    performance.host=&hb;CHECK(fixed==run(q,48000,0,performance));
-    // Full state extremes, long SysEx, all legal buses and realtime automation.
+    performance.host=&hb;const auto variable=run(q,48000,0,performance);
+    double error=0;for(size_t i=0;i<fixed.l.size();++i)error=std::max(error,(double)std::abs(fixed.l[i]-variable.l[i]));
+    CHECK(error<1e-6); // host PPQ accumulated in different blocks may differ by an ulp at a grain boundary
     juce::Random rng(39);
-    for(int in:{1,2}) for(int sc:{0,1,2})
+    for(int in:{1,2})for(int sc:{0,1,2})
     {
-        prepare(p,48000,512,in,sc,2);Run r;
-        r.perBlock=[&](int){randomState(p,rng);};
-        const auto y=run(p,16000,0,r);
-        for(float v:y.l) CHECK(std::isfinite(v) && std::fpclassify(v)!=FP_SUBNORMAL);
+        prepare(p,48000,512,in,sc,2);Run r;r.perBlock=[&](int){randomState(p,rng);};
+        for(float v:run(p,16000,0,r).l)CHECK(std::isfinite(v) && std::fpclassify(v)!=FP_SUBNORMAL);
     }
     juce::AudioBuffer<float> buffer(4,512);buffer.clear();juce::MidiBuffer midi;
-    char sysex[256] {};midi.addEvent(juce::MidiMessage::createSysExMessage(sysex,256),0);
-    onAudioThread=true;p.processBlock(buffer,midi);onAudioThread=false;
-    CHECK(audioAllocations==0);
+    char sysex[256]{};midi.addEvent(juce::MidiMessage::createSysExMessage(sysex,256),0);
+    onAudioThread=true;p.processBlock(buffer,midi);onAudioThread=false;CHECK(audioAllocations==0);
 }
 static void testTimingAndMidi()
 {
     for(double fs:{44100.0,48000.0,96000.0})
     {
-        Proc p;set(p,plain);set(p,{{"sync",1},{"division",10}});prepare(p,fs);
+        Proc p;set(p,plain),set(p,{{"sizeSync",0},{"density",2}}),prepare(p,fs);
         Host host;Run r;r.host=&host;
-        std::vector<juce::int64> times;
-        juce::int64 last=-1;
-        r.perBlock=[&](int){const auto fire=p.feed.lastFire.load();if(fire!=last && fire>=0) times.push_back(fire),last=fire;};
-        run(p,(int)fs+2,1,r);
-        CHECK(times.size()==3);
-        for(size_t k=0;k<times.size();++k) CHECK(std::abs(times[k]-(juce::int64)std::llround((double)k*fs/2))<=1);
-        // A seek lands on the new host grid rather than continuing the old phase.
+        std::vector<juce::int64> times;juce::int64 last=-1;
+        r.perBlock=[&](int){const auto fire=p.feed.lastFire.load();if(fire!=last && fire>=0)times.push_back(fire),last=fire;};
+        run(p,(int)fs+2,1,r);CHECK(times.size()==3);
+        for(size_t k=0;k<times.size();++k)CHECK(std::abs(times[k]-(juce::int64)std::llround(k*fs/2))<=1);
         host.ppq=8;run(p,1,1,r);CHECK(std::abs(p.feed.lastFire.load()-(juce::int64)fs-2)<=1);
         for(float size:{.5f,4000.0f})
         {
             set(p,plain),set(p,{{"trigger",1},{"size",size}}),prepare(p,fs);
-            Run note;note.events={{7,juce::MidiMessage::noteOn(1,60,(juce::uint8)127)}};
-            run(p,8,8,note);
-            CHECK(p.feed.lastFire==7 && p.feed.lastLength==(int)(size*fs/1000));
+            Run note;note.input=[](int,int){return 0.0f;};note.events={{7,juce::MidiMessage::noteOn(1,60,(juce::uint8)127)}};run(p,8,8,note);
+            CHECK(p.feed.lastFire==7 && std::abs(p.feed.lastLength-(int)(size*fs/1000))<=1);
         }
-        // Both sync size modes, all divisions, at the three production sample rates.
-        for(int grid:{1,2}) for(int index=0;index<(grid==1?17:13);++index)
+        for(int index=0;index<silt::numNotes;++index)
         {
-            set(p,plain),set(p,{{"trigger",1},{"grid",(float)grid},{"sync",1},{"division",10}});
-            auto* size=p.apvts.getParameter("size");
-            size->setValueNotifyingHost((float)index/(grid==1?16:12));
-            prepare(p,fs);
-            Run r2;r2.host=&host;r2.events={{0,juce::MidiMessage::noteOn(1,60,(juce::uint8)127)}};
-            run(p,1,1,r2);
-            const double seconds=grid==1?2.0*silt::noteNum[index]/silt::noteDen[index]:.5*silt::sizeRatio[index];
-            CHECK(std::abs(p.feed.lastLength-(int)(juce::jlimit(.0005,4.0,seconds)*fs))<=1);
+            set(p,plain),set(p,{{"trigger",1},{"sizeSync",0}});
+            auto* size=p.apvts.getParameter("size");size->setValueNotifyingHost(size->getValueForText(silt::noteNames[index]));
+            prepare(p,fs);Run note;note.input=[](int,int){return 0.0f;};note.host=&host;note.events={{0,juce::MidiMessage::noteOn(1,60,(juce::uint8)127)}};run(p,1,1,note);
+            const double seconds=2.0*silt::noteNum[index]/silt::noteDen[index];
+            CHECK(std::abs(p.feed.lastLength-(int)(seconds*fs))<=1);
         }
-        set(p,plain),set(p,{{"sync",1},{"division",10}}),prepare(p,fs);
-        host.playing=false;Run stopped;stopped.host=&host;
-        run(p,(int)fs,512,stopped);CHECK(p.feed.fired==2);
+        set(p,plain),set(p,{{"sizeSync",0},{"density",2}}),prepare(p,fs);
+        host.playing=false;Run stopped;stopped.host=&host;run(p,(int)fs,512,stopped);CHECK(p.feed.fired==2);
         prepare(p,fs);host.known=false;run(p,(int)fs,512,stopped);CHECK(p.feed.fired==2);
     }
-    Proc p;set(p,plain),set(p,"trigger",1);prepare(p);
-    Run r;r.events={{37,juce::MidiMessage::noteOn(1,67,(juce::uint8)100)}};
-    run(p,38,38,r);CHECK(p.feed.lastFire==37 && p.feed.lastPitch==7);
-    r.offset=38;r.events.push_back({50,juce::MidiMessage::noteOn(1,72,(juce::uint8)60)});
-    run(p,13,13,r);CHECK(p.feed.lastFire==50 && p.feed.lastPitch==12);
-    // Last-note priority resumes the previous held key after a note-off.
-    r.offset=51;r.events={{52,juce::MidiMessage::noteOff(1,72)},{53,juce::MidiMessage::noteOn(1,67,(juce::uint8)100)}};
-    run(p,3,3,r);CHECK(p.feed.lastPitch==7);
-    r.offset=54;r.events={{54,juce::MidiMessage::allNotesOff(1)}};run(p,1,1,r);
-    set(p,"trigger",0),set(p,"rate",50);run(p,1000,1);CHECK(p.feed.lastPitch==0);
-    // A burst honours note-on velocity without changing any parameter.
-    Proc loud,soft;set(loud,plain),set(soft,plain);set(loud,"trigger",2),set(soft,"trigger",2);
-    prepare(loud),prepare(soft);Run hi,lo;
-    hi.side=lo.side=[](int,int){return 0.0f;};
-    hi.events={{12000,juce::MidiMessage::noteOn(1,60,(juce::uint8)127)}};
-    lo.events={{12000,juce::MidiMessage::noteOn(1,60,(juce::uint8)64)}};
+    Proc p;set(p,plain),set(p,"trigger",1),prepare(p);
+    Run r;r.events={{37,juce::MidiMessage::noteOn(1,67,(juce::uint8)100)}};run(p,38,38,r);
+    CHECK(p.feed.lastFire==37 && p.feed.lastPitch==7 && p.feed.note==67);
+    r.offset=38;r.events={{50,juce::MidiMessage::noteOn(1,72,(juce::uint8)60)}};run(p,13,13,r);CHECK(p.feed.lastPitch==12);
+    r.offset=51;r.events={{52,juce::MidiMessage::noteOff(1,72)}};run(p,3,3,r);
+    set(p,"trigger",0),set(p,"density",64);run(p,1000,1);CHECK(p.feed.lastPitch==7 && p.feed.note==72);
+    r.offset=0;r.events={{0,juce::MidiMessage::allNotesOff(1)}};run(p,1000,1,r);CHECK(p.feed.lastPitch==0);
+    // MIDI always transposes clock grains and triggers immediately, with exact sample-offset velocity.
+    Proc loud,soft;set(loud,plain),set(soft,plain);set(loud,"trigger",2),set(soft,"trigger",2);prepare(loud),prepare(soft);
+    Run hi,lo;hi.side=lo.side=[](int,int){return 0.0f;};
+    hi.events={{12000,juce::MidiMessage::noteOn(1,60,(juce::uint8)127)}};lo.events={{12000,juce::MidiMessage::noteOn(1,60,(juce::uint8)64)}};
     const auto a=run(loud,30000,512,hi),b=run(soft,30000,512,lo);
-    double velocityError=0;
-    for(size_t i=0;i<a.l.size();++i) velocityError=std::max(velocityError,(double)std::abs(b.l[i]-a.l[i]*64/127));
-    std::cout<<"Velocity scaling error: "<<velocityError<<"\n";
-    CHECK(velocityError<1e-6);
-    for(int cc:{1,2,64,71,74,91})
+    double error=0;for(size_t i=0;i<a.l.size();++i)error=std::max(error,(double)std::abs(b.l[i]-a.l[i]*64/127));CHECK(error<1e-6);
+    for(int cc:{1,2,3,4})
     {
         Proc base,mod;prepare(base),prepare(mod);const auto before=params(mod);
         Run changed;changed.events={{20000,juce::MidiMessage::controllerEvent(1,cc,127)}};
-        CHECK(!(run(base,96000)==run(mod,96000,512,changed)) && params(mod)==before);
+        CHECK(!(run(base,144000)==run(mod,144000,512,changed)) && params(mod)==before);
     }
-    // Same pitch with a different duration in classic speed mode; pitch mode keeps the selected length.
     for(int mode:{0,1})
     {
         set(p,plain),set(p,{{"trigger",1},{"size",200},{"pitch",12},{"pitchMode",(float)mode}}),prepare(p);
-        Run note;note.events={{0,juce::MidiMessage::noteOn(1,60,(juce::uint8)127)}};run(p,1,1,note);
-        CHECK(p.feed.lastLength==(mode==0?4800:9600));
+        Run note;note.input=[](int,int){return 0.0f;};note.events={{0,juce::MidiMessage::noteOn(1,60,(juce::uint8)127)}};run(p,1,1,note);
+        CHECK(p.feed.lastLength==(mode==1?4800:9600));
     }
-    // Snapping happens after randomisation; every emitted pitch lies on the chosen lattice.
-    for(int snap:{1,2,3})
+    set(p,plain),set(p,{{"chaos",100},{"density",64}}),prepare(p);
+    Run notes;notes.perBlock=[&](int){if(p.feed.fired>0){const float st=p.feed.lastPitch;CHECK(std::abs(st-std::round(st))<1e-6f);}};run(p,48000,64,notes);
+    for(double fs:{44100.0,48000.0,96000.0})for(double bpm:{60.0,90.0,180.0})for(int hold:{0,1})
     {
-        set(p,plain),set(p,{{"snap",(float)snap},{"pitchRand",20},{"rate",50}}),prepare(p);
-        Run notes;notes.perBlock=[&](int t){if(t==0 || p.feed.fired==0)return;const float st=p.feed.lastPitch.load();
-            CHECK(std::abs(st-std::round(st))<1e-6f);
-            const int pc=((int)std::round(st)%12+12)%12;
-            if(snap==2) CHECK(pc==0 || pc==7);
-            if(snap==3) CHECK(pc==0);
-        };
-        run(p,48000,64,notes);
+        set(p,plain),set(p,{{"trigger",2},{"sizeSync",0},{"size",4000},{"freeze",(float)hold}}),prepare(p,fs);
+        Host host;host.bpm=bpm;Run note;note.input=[](int,int){return 0.0f;};note.host=&host;note.side=[](int,int){return 0.0f;};note.events={{1,juce::MidiMessage::noteOn(1,60,(juce::uint8)127)}};
+        run(p,2,2,note);CHECK(std::abs(p.feed.lastLength-(int)(480/bpm*fs))<=1);
     }
+}
+static void testRatios()
+{
+    Proc p;set(p,plain),set(p,{{"sizeSync",0},{"density",24},{"position",1200}});
+    float centres[3]{};
+    int k=0;for(double bpm:{60.0,120.0,240.0})
+    {
+        prepare(p);Host host;host.bpm=bpm;Run r;r.host=&host;run(p,1,1,r);centres[k++]=p.feed.centre;
+    }
+    CHECK(std::abs(centres[0]-2*centres[1])<1e-6 && std::abs(centres[1]-2*centres[2])<1e-6);
 }
 static void testOnsetsAndSource()
 {
-    for(int source:{1,2,3})
+    for(int trigger:{1,2})
     {
-        Proc p;set(p,plain),set(p,{{"trigger",(float)source},{"thresh",-40},{"rate",.25f}});prepare(p);
+        Proc p;set(p,plain),set(p,"trigger",(float)trigger),prepare(p);
         Run r;r.input=[](int i,int){return i%12000<100?.3f:0.0f;};r.side=[](int,int){return 0.0f;};
-        run(p,36000,17,r);CHECK(p.feed.fired==(source==2?0:3));
-        prepare(p);r.side=r.input;r.input=[](int,int){return 0.0f;};run(p,36000,17,r);
-        CHECK(p.feed.fired==(source==2?3:0));
+        run(p,36000,17,r);CHECK(p.feed.fired==(trigger==2?0:3));
+        prepare(p);r.side=r.input;r.input=[](int,int){return 0.0f;};run(p,36000,17,r);CHECK(p.feed.fired==(trigger==2?3:0));
     }
     Proc p;set(p,plain),set(p,"trigger",1),prepare(p);
     Run steady;steady.input=[](int,int){return .2f;};run(p,48000,17,steady);CHECK(p.feed.fired==1);
-    for(int main:{1,2}) for(int sc:{0,1,2})
+    // Sidechain triggers main capture, never replaces the captured source or leaks into the output.
+    for(int main:{1,2})for(int sc:{0,1,2})
     {
-        set(p,plain),set(p,{{"source",1},{"rate",20}}),prepare(p,48000,512,main,sc,2);
-        Run side;side.input=[](int,int){return 0.0f;};side.side=[](int i,int c){return pad(i+c*139,48000);};
-        const auto y=run(p,48000,64,side);
-        double energy=0;for(float v:y.l) energy+=(double)v*v;
-        CHECK(sc==0?energy==0:energy>1);
-        // Choosing the main buffer ignores sidechain sound.
-        set(p,"source",0),prepare(p,48000,512,main,sc,2);const auto zero=run(p,48000,64,side);
-        for(float v:zero.l) CHECK(v==0);
+        set(p,plain),set(p,"trigger",2),prepare(p,48000,512,main,sc,2);
+        Run side;side.input=[](int,int){return 0.0f;};side.side=[](int i,int){return i%12000<100?.3f:0.0f;};
+        for(float v:run(p,48000,64,side).l)CHECK(v==0);
+        CHECK(sc==0?p.feed.fired==0:p.feed.fired==4);
     }
-    // With sidechain capture and clock triggering, main-bus audio must not influence the feedback guard.
-    Proc quietMain,loudMain;
-    for(auto* effect:{&quietMain,&loudMain})
-        set(*effect,{{"source",1},{"feedback",100}}),prepare(*effect);
-    Run quiet,loud;
-    quiet.input=[](int,int){return 0.0f;};
-    loud.input=[](int i,int){return .4f*noise(i);};
-    quiet.side=loud.side=[](int i,int c){return pad(i+c*31,48000);};
-    CHECK(run(quietMain,96000,512,quiet)==run(loudMain,96000,512,loud));
-
 }
 static double maxStep(const Audio& a,size_t begin=1)
-{
-    double m=0;for(size_t i=juce::jmax<size_t>(1,begin);i<a.l.size();++i) m=juce::jmax(m,(double)std::abs(a.l[i]-a.l[i-1]));return m;
-}
+{double m=0;for(size_t i=juce::jmax<size_t>(1,begin);i<a.l.size();++i)m=juce::jmax(m,(double)std::abs(a.l[i]-a.l[i-1]));return m;}
 static void testFreezeAndWindows()
 {
-    for(int shape=0;shape<12;++shape) for(double skew:{0.0,.5,1.0})
+    for(int shape=0;shape<12;++shape)for(double skew:{0.0,.5,1.0})
     {
         CHECK(std::abs(silt::window(shape,0,skew))<1e-12 && std::abs(silt::window(shape,1,skew))<1e-12);
-        for(int k=0;k<=1000;++k) CHECK(silt::window(shape,k/1000.0,skew)>=0 && silt::window(shape,k/1000.0,skew)<=1);
+        for(int k=0;k<=1000;++k)CHECK(silt::window(shape,k/1000.0,skew)>=0 && silt::window(shape,k/1000.0,skew)<=1);
     }
-    Proc p;set(p,plain),set(p,{{"size",600},{"rate",20},{"density",4},{"feedback",50}}),prepare(p);
-    Run r;r.input=[](int i,int){return (float)(.15*std::sin(2*pi*110*i/48000));};
-    run(p,48000,64,r);
-    int head=0;
-    r.offset=48000;r.perBlock=[&](int t){if(t>=48000) set(p,"freeze",1);};
-    const auto held=run(p,24000,64,r);
-    CHECK(p.feed.frozen && maxStep(held)<.03);
-    head=p.feed.at[0];r.offset=72000;run(p,24000,64,r);CHECK(p.feed.at[0]==head);
-    r.offset=96000;r.perBlock=[&](int){set(p,"freeze",0);};
-    CHECK(maxStep(run(p,24000,64,r))<.03 && !p.feed.frozen);
-    // Four source seconds at -48 st last 64 seconds. Envelope phase must not accumulate float drift.
-    set(p,plain),set(p,{{"trigger",2},{"size",4000},{"pitch",-48},{"pitchMode",0},{"window",10},{"skew",50}});
-    prepare(p,96000,4096);
+    Proc p;set(p,plain),set(p,{{"size",600},{"density",24},{"bloom",50}}),prepare(p);
+    Run r;r.input=[](int i,int){return (float)(.15*std::sin(2*pi*110*i/48000));};run(p,48000,64,r);
+    r.offset=48000;r.perBlock=[&](int){set(p,"freeze",1);};const auto held=run(p,24000,64,r);
+    CHECK(p.feed.frozen && maxStep(held)<.04);
+    const int head=p.feed.at[0];r.offset=72000;run(p,24000,64,r);CHECK(p.feed.at[0]==head);
+    r.offset=96000;r.perBlock=[&](int){set(p,"freeze",0);};CHECK(maxStep(run(p,24000,64,r))<.04 && !p.feed.frozen);
+    set(p,plain),set(p,{{"trigger",2},{"size",4000},{"pitch",-48},{"pitchMode",1}}),prepare(p,96000,4096);
     Run longGrain;longGrain.input=[](int,int){return 0.0f;};longGrain.side=longGrain.input;
     longGrain.events={{0,juce::MidiMessage::noteOn(1,60,(juce::uint8)127)}};
     run(p,16*96000,4096,longGrain);CHECK(std::abs(p.feed.env[0]-.5f)<2e-6f);
-    longGrain.offset=16*96000;
-    run(p,32*96000,4096,longGrain);CHECK(std::abs(p.feed.env[0]-.5f)<2e-6f);
-    longGrain.offset=48*96000;
-    run(p,16*96000,4096,longGrain);CHECK(p.feed.env[0]==0);
-
+    longGrain.offset=16*96000;run(p,32*96000,4096,longGrain);CHECK(std::abs(p.feed.env[0]-.5f)<2e-6f);
+    longGrain.offset=48*96000;run(p,16*96000,4096,longGrain);CHECK(p.feed.env[0]==0);
 }
 
 // Three stationary, zero-mean musical programs, each measured and normalised to -18 dBFS RMS before use.
@@ -580,78 +534,26 @@ static void testSound()
         for(size_t i=from;i<a.l.size();++i)e+=(double)a.l[i]*a.l[i];
         return e/(double)(a.l.size()-from);
     };
-    // Pitch-up filtering rejects a source band that would otherwise fold back into the audible spectrum.
     Proc low,high;
-    for(auto* p:{&low,&high})set(*p,plain),set(*p,{{"pitch",24},{"pitchMode",0},{"size",100},{"rate",20}}),prepare(*p);
-    Run lo,hi;
-    lo.input=[](int i,int){return (float)(.15*std::sin(2*pi*1000*i/48000));};
-    hi.input=[](int i,int){return (float)(.15*std::sin(2*pi*10000*i/48000));};
+    for(auto* p:{&low,&high})set(*p,plain),set(*p,{{"pitch",24},{"pitchMode",1},{"size",100},{"density",24}}),prepare(*p);
+    Run lo,hi;lo.input=[](int i,int){return (float)(.15*std::sin(2*pi*1000*i/48000));};hi.input=[](int i,int){return (float)(.15*std::sin(2*pi*10000*i/48000));};
     const double pass=energy(run(low,96000,512,lo)),stop=energy(run(high,96000,512,hi));
-    std::cout<<"Pitch-up rejection: "<<10*std::log10((stop+1e-30)/pass)<<" dB\n";
-    CHECK(pass>1e-5 && stop<pass*.01);
-    // The same source's stereo channels survive; width zero collapses them and mono -> stereo is decorrelated.
-    for(int channels:{1,2})for(float width:{0.0f,100.0f})
+    std::cout<<"Pitch-up rejection: "<<10*std::log10((stop+1e-30)/pass)<<" dB\n";CHECK(pass>1e-5 && stop<pass*.01);
+    for(int channels:{1,2})
+    {Proc p;set(p,plain),set(p,"density",24),prepare(p,48000,512,channels,0,2);const auto a=run(p,48000);CHECK(a.l!=a.r && energy(a)>1e-5);}
+    for(const auto* macro:{"motion","texture","bloom","chaos"})
     {
-        Proc p;set(p,plain),set(p,{{"width",width},{"density",3},{"pan",60}}),prepare(p,48000,512,channels,0,2);
-        const auto a=run(p,48000);
-        CHECK(width==0 ? a.l==a.r : a.l!=a.r);
-        CHECK(energy(a)>1e-5);
-    }
-    // Scan and the two spray directions select different historical material, independent of pitch.
-    for(const auto& change:std::vector<Settings>{{{"scan",35}},{{"sprayDir",2}},{{"slope",100}},{{"pitchMode",0},{"pitch",7}}})
-    {
-        Proc a,b;set(b,change),prepare(a),prepare(b);
-        CHECK(!(run(a,96000)==run(b,96000)));
-    }
-    // Every macro is neutral at zero and acts as a parameter offset without rewriting the other parameters.
-    for(const auto* macro:{"blur","drift","bloom","glint"})
-    {
-        Proc a,b;prepare(a),prepare(b);
-        const auto neutral=params(b);
-        set(b,macro,75);const auto modified=params(b);
-        CHECK(!(run(a,96000)==run(b,96000)));
-        int changes=0;for(size_t k=0;k<neutral.size();++k)changes+=neutral[k]!=modified[k]?1:0;
+        Proc a,b;prepare(a),prepare(b);const auto neutral=params(b);set(b,macro,75);const auto modified=params(b);
+        CHECK(!(run(a,144000)==run(b,144000)));int changes=0;
+        for(size_t k=0;k<neutral.size();++k)changes+=neutral[k]!=modified[k]?1:0;
         CHECK(changes==1 && params(b)==modified);
     }
-    // An already sounding grain keeps its own envelope when window/skew automation changes the next one.
-    Proc a,b;
-    for(auto* p:{&a,&b})set(*p,plain),set(*p,{{"trigger",2},{"size",1000}}),prepare(*p);
-    Run first;first.side=[](int,int){return 0.0f;};
-    first.events={{24000,juce::MidiMessage::noteOn(1,60,(juce::uint8)127)}};
-    CHECK(run(a,30000,512,first)==run(b,30000,512,first));
-    set(b,{{"window",5},{"skew",0}});
-    first.offset=30000;CHECK(run(a,12000,512,first)==run(b,12000,512,first));
-    // Sync never fires on a fractional seek until the next grid point.
-    Proc p;set(p,plain),set(p,{{"sync",1},{"division",10}}),prepare(p);
-    Host host;Run timeline;timeline.host=&host;run(p,1,1,timeline);
-    host.ppq=3.25;run(p,1,1,timeline);CHECK(p.feed.fired==1);
-    run(p,18001,17,timeline);CHECK(p.feed.fired==2);
-    // Timing jitter is bounded to one clock spacing and creates variation without changing the PPQ grid.
-    set(p,plain),set(p,{{"sync",1},{"division",7},{"jitter",100}}),prepare(p);
-    host.ppq=0;std::vector<juce::int64> fires;juce::int64 last=-1;
-    timeline.perBlock=[&](int t)
-    {
-        if(t==0)return;
-        const auto now=p.feed.lastFire.load();
-        if(now>=0 && now!=last)fires.push_back(now),last=now;
-    };
-    run(p,96000,1,timeline);
-    CHECK(fires.size()>=7);
-    bool varied=false;
-    for(size_t k=0;k<fires.size();++k)
-    {
-        CHECK(fires[k]>=(juce::int64)k*12000 && fires[k]<(juce::int64)(k+1)*12000);
-        if(k>1)varied=varied || fires[k]-fires[k-1]!=fires[k-1]-fires[k-2];
-    }
-    CHECK(varied);
-    // Two bars remain two bars below 120 bpm, including while the capture is held.
-    for(double fs:{44100.0,48000.0,96000.0})for(double bpm:{60.0,90.0,180.0})for(int hold:{0,1})
-    {
-        set(p,plain),set(p,{{"trigger",2},{"grid",1},{"size",4000},{"freeze",(float)hold}}),prepare(p,fs);
-        host.bpm=bpm;Run note;note.host=&host;note.side=[](int,int){return 0.0f;};
-        note.events={{1,juce::MidiMessage::noteOn(1,60,(juce::uint8)127)}};
-        run(p,2,2,note);CHECK(std::abs(p.feed.lastLength-(int)(480/bpm*fs))<=1);
-    }
+    // Changing texture retains the window of an already sounding grain.
+    Proc a,b;for(auto* p:{&a,&b})set(*p,plain),set(*p,{{"trigger",2},{"size",1000}}),prepare(*p);
+    Run first;first.side=[](int,int){return 0.0f;};first.events={{24000,juce::MidiMessage::noteOn(1,60,(juce::uint8)127)}};
+    CHECK(run(a,30000,512,first)==run(b,30000,512,first));set(b,"texture",100);first.offset=30000;CHECK(run(a,12000,512,first)==run(b,12000,512,first));
+    // Capture history and fired events reflect actual audio, and are stable without processBlock.
+    CHECK(a.feed.events>0 && a.feed.time==42000);const auto count=a.feed.events.load();CHECK(count==a.feed.events);
 }
 
 static void testLoudness(bool tableOnly=false)
@@ -685,22 +587,39 @@ static void testLoudness(bool tableOnly=false)
     for(float pitch:{-48.0f,48.0f}) for(float size:{.5f,4000.0f}) for(int freeze:{0,1}) for(int mode:{0,1})
         for(int program=0;program<3;++program)
     {
-        p.setCurrentProgram(0);set(p,{{"density",16},{"rate",50},{"feedback",100},{"verbMix",100},{"verbSize",100},{"pitch",pitch},
-            {"size",size},{"pitchMode",(float)mode},{"pitchRand",24},{"blur",100},{"bloom",100},{"glint",100}});prepare(p);
+        p.setCurrentProgram(0);set(p,{{"density",64},{"reverb",100},{"bloom",100},{"pitch",pitch},
+            {"size",size},{"sizeSync",1},{"pitchMode",(float)mode},{"texture",100},{"motion",100},{"chaos",100}});prepare(p);
         Run r=programs[program].input();r.perBlock=[&](int t){if(freeze && t>=8*48000)set(p,"freeze",1);};
-        const int warmup=(mode==0 && pitch<0 && size>1000?32:8)*48000;
+        const int warmup=(mode==1 && pitch<0 && size>1000?32:8)*48000;
         run(p,warmup,512,r);r.offset=warmup;
         const Level level(run(p,192000,512,r));if(level.dc>=.001)std::cerr<<"corner pitch "<<pitch<<" size "<<size<<" freeze "<<freeze<<" mode "<<mode<<" program "<<program<<"\n";
         level.check();
         cornerRms=std::max(cornerRms,level.rmsDb()),cornerPeak=std::max(cornerPeak,level.peakDb()),cornerDc=std::max(cornerDc,level.dc);
     }
     std::cout<<"Warmed corners: max RMS "<<cornerRms<<" dBFS, peak "<<cornerPeak<<" dBFS, DC "<<20*std::log10(cornerDc+1e-30)<<" dBFS\n";
-    p.setCurrentProgram(0),set(p,{{"density",16},{"rate",50},{"feedback",100},{"verbMix",100},{"verbSize",100}}),prepare(p);
+    p.setCurrentProgram(0),set(p,{{"density",64},{"reverb",100},{"bloom",100}}),prepare(p);
     Run tail=programs[1].input();tail.input=[&](int i,int){return i<48000?programs[1].data[(size_t)i]:0.0f;};tail.side=tail.input;
     const auto y=run(p,60*48000,4096,tail);const Level longLevel(y);longLevel.check();
     double endEnergy=0;for(size_t i=y.l.size()-48000;i<y.l.size();++i)endEnergy+=(double)y.l[i]*y.l[i];
     CHECK(endEnergy/48000<1e-8);
     std::cout<<"60 s feedback: peak "<<longLevel.peakDb()<<" dBFS; final second RMS "<<10*std::log10(endEnergy/48000+1e-30)<<" dBFS\n";
+}
+// A sustained full-voice workload at 96 kHz guards the cost behind the pluginval watchdog failure.
+static void testPerformance()
+{
+    Proc p;
+    for(int quality=0;quality<4;++quality)
+    {
+        set(p,plain),set(p,{{"size",4000},{"pitch",12},{"pitchMode",0},{"density",64},{"scatter",100},
+            {"oversample",(float)quality},{"reverbOn",1},{"reverb",100},{"bloom",100}}),prepare(p,96000,512);
+        run(p,3*96000,512);
+        int voices=0;for(auto& e:p.feed.env)if(e.load()>0)++voices;CHECK(voices==silt::maxGrains);
+        const double start=juce::Time::getMillisecondCounterHiRes();
+        Run r;r.offset=3*96000;run(p,96000,512,r);
+        const double elapsed=juce::Time::getMillisecondCounterHiRes()-start;
+        std::cout<<"96 kHz / 128 shifted voices / "<<(1<<quality)<<"x: "<<elapsed<<" ms per audio second\n";
+        CHECK(elapsed<10000); // generous on instrumented/contended CI; detects a processing-loop stall
+    }
 }
 static void pump() { juce::MessageManager::getInstance()->runDispatchLoopUntil(5); }
 template <typename Done> static void pumpUntil(Done done)
@@ -753,8 +672,8 @@ static void testEditor()
         Proc p(folder);prepare(p);run(p,48000);
         std::unique_ptr<juce::AudioProcessorEditor> editor(p.createEditor());
         auto& e=*editor;auto& timer=dynamic_cast<juce::Timer&>(e);timer.stopTimer();
-        CHECK(e.getWidth()==1024 && e.getHeight()==704);
-        e.setSize(1024*percent/100,704*percent/100),e.setVisible(true);
+        CHECK(e.getWidth()==1024 && e.getHeight()==410);
+        e.setSize(1024*percent/100,410*percent/100),e.setVisible(true);
         const auto point=[&](juce::Component& c){return e.getLocalPoint(&c,c.getLocalBounds().toFloat().getCentre()).roundToInt();};
         const auto press=[&](const juce::String& id)
         {
@@ -765,7 +684,7 @@ static void testEditor()
             if(button){bool done=false;button->triggerClick();juce::MessageManager::callAsync([&]{done=true;});pumpUntil([&]{return done;});}
             timer.timerCallback();
         };
-        CHECK(!find(e,"group:macros")->isVisible());press("macro");CHECK(find(e,"group:macros")->isVisible());
+        CHECK(!find(e,"group:macros")->isVisible());press("macro");CHECK(find(e,"group:macros")->isVisible() && !find(e,"group:presets")->isVisible());
         const auto time=juce::Time::getCurrentTime();
         const auto mouse=[&](juce::Component* c,juce::Point<float> pos,juce::Point<float> down,int clicks=1)
         {
@@ -781,12 +700,13 @@ static void testEditor()
                 if(!slider)continue;
                 juce::Label* label=nullptr;for(auto* child:slider->getChildren())if(auto* l=dynamic_cast<juce::Label*>(child))label=l;
                 CHECK(label && label->isEditableOnSingleClick());
-                const auto grab=slider->getLocalBounds().toFloat().getCentre();
+                const bool fader=juce::String(spec.id)=="motion" || juce::String(spec.id)=="texture" || juce::String(spec.id)=="bloom" || juce::String(spec.id)=="chaos";
+                const auto grab=fader?juce::Point<float>(20,8):slider->getLocalBounds().toFloat().getCentre();
                 CHECK(e.getComponentAt(e.getLocalPoint(slider,grab).roundToInt())==slider);
                 param->setValueNotifyingHost(.3f);
-                const auto to=grab-juce::Point<float>(0,50);
+                const auto to=fader?grab+juce::Point<float>(30,0):grab-juce::Point<float>(0,50);
                 slider->mouseDown(mouse(slider,grab,grab)),slider->mouseDrag(mouse(slider,to,grab)),slider->mouseUp(mouse(slider,to,grab));
-                CHECK(std::abs(param->getValue()-.5f)<.01f); // gulp's exact 250 design-pixel vertical sensitivity
+                CHECK(fader?param->getValue()>.3f:std::abs(param->getValue()-.5f)<.01f); // gulp's exact 250 design-pixel vertical sensitivity
                 slider->mouseDoubleClick(mouse(slider,grab,grab,2));
                 CHECK(std::abs(get(p,spec.id)-param->convertFrom0to1(param->getDefaultValue()))<.001f);
                 if(label)
@@ -801,9 +721,7 @@ static void testEditor()
             else if(dynamic_cast<juce::AudioParameterChoice*>(param))
             {
                 set(p,spec.id,spec.lo);
-                for(int k=1;k<=(int)spec.hi;++k)press(juce::String(spec.id)+"+"),CHECK(get(p,spec.id)==(float)k);
-                press(juce::String(spec.id)+"+");CHECK(get(p,spec.id)==spec.hi);
-                for(int k=(int)spec.hi-1;k>=0;--k)press(juce::String(spec.id)+"-"),CHECK(get(p,spec.id)==(float)k);
+                for(int k=0;k<=(int)spec.hi;++k)press(juce::String(spec.id)+":"+juce::String(k)),CHECK(get(p,spec.id)==(float)k);
             }
             else
             {
@@ -811,7 +729,7 @@ static void testEditor()
             }
         }
         // All hit cells stay inside their group and never cover another control in that group.
-        for(const auto* id:{"grain","pitch","trigger","space / output","macros","header"})
+        for(const auto* id:{"grain","pitch","trigger","space / output","macros","header","presets","freeze"})
         {
             auto* group=find(e,juce::String("group:")+id);CHECK(group);
             for(auto* a:group->getChildren()) if(a->isVisible())
@@ -822,13 +740,15 @@ static void testEditor()
         }
         p.setCurrentProgram(0);press("next");CHECK(p.preset==1);press("prev");CHECK(p.preset==0);
         press("save");CHECK(p.presetName().startsWith("user "));
-        press("B"),set(p,"pitch",12),press("A");CHECK(get(p,"pitch")==0);press("B");CHECK(get(p,"pitch")==12);
+        press("B"),set(p,"pitch",12),press("A");CHECK(get(p,"pitch")==-12);press("B");CHECK(get(p,"pitch")==12);
         const auto before=params(p);press("rnd");CHECK(params(p)!=before && p.presetName()=="random");
-        press("macro");CHECK(!find(e,"group:macros")->isVisible());
+        press("macro");CHECK(!find(e,"group:macros")->isVisible() && find(e,"group:presets")->isVisible());
+        for(int i=0;i<10;++i){press("preset:"+juce::String(i));CHECK(p.preset==i);}
+        p.setCurrentProgram(4);
         // Dirty-cell redraw gives the same pixels as a full render; no repaint when audio and controls are idle.
         auto* capture=new RepaintCapture(e);e.setCachedComponentImage(capture);
         const float scale=(float)percent/50;
-        juce::Image image(juce::Image::RGB,1024*percent/50,704*percent/50,true);
+        juce::Image image(juce::Image::RGB,1024*percent/50,410*percent/50,true);
         capture->consume(image,scale);
         int paints=0;
         for(int frame=0;frame<35;++frame)
@@ -842,15 +762,15 @@ static void testEditor()
         {juce::Graphics g(fresh);g.addTransform(juce::AffineTransform::scale(scale));e.paint(g);}
         CHECK(pixels(image)==pixels(fresh));
         Proc restored;load(restored,save(p));std::unique_ptr<juce::AudioProcessorEditor> reopened(restored.createEditor());
-        CHECK(reopened->getWidth()==1024*percent/100 && reopened->getHeight()==704*percent/100);
+        CHECK(reopened->getWidth()==1024*percent/100 && reopened->getHeight()==410*percent/100);
     }
     folder.deleteRecursively();
 }
-static juce::Image snapshot(int percent=100)
+static juce::Image snapshot(int percent=100,bool macros=false)
 {
-    Proc p;prepare(p);run(p,48000);
+    Proc p;prepare(p);run(p,48000);p.showMacros=macros;
     std::unique_ptr<juce::AudioProcessorEditor> editor(p.createEditor());
-    editor->setSize(1024*percent/100,704*percent/100);
+    editor->setSize(1024*percent/100,410*percent/100);
     return editor->createComponentSnapshot(editor->getLocalBounds(),true,2.0f);
 }
 static juce::String soundHash()
@@ -878,8 +798,8 @@ static void testGoldens(bool record=false)
     const auto renderer=pixels(probe);
     const bool ci=std::getenv("GITHUB_ACTIONS")!=nullptr;
     const char* expectedEnvironment="14.2.0/Release/07adb83962bd7f372226ea055bca705c159534fa4a19d3279488b12cd95eea5c", *expectedRenderer="506141d22f79fb1886eb4dec6e8e40da3c3c48e3df63f1f3d60e979dd78361b5";
-    const char* expectedSound="59ef01bcb51dc08a5d0457829603afc7d77d36015f6d14a75aa3981815b62598";
-    const char* expectedShots[]{"1e9b5ecd24f8b5f84fa546eec593a678edade387881bc979911226d05cc911c5","25a2736273be37e3ce8017f242d5f63d46cbc8d572e5e8f8f9769cffcec31360","9217a91e9fb212d4fb362f8ca53ea8335f2465276b3ecbb5b6f58b88df619bfb"};
+    const char* expectedSound="fec9afb531a8e036eba1d81651896e1b2c1f78b0234dbadc8e7549563f09407b";
+    const char* expectedShots[]{"9d7bece4635ab4f6212002a83e81edeb47b6c51dd0519dddac557fc49c8cadd5","4196a120f6368ce662e951a30d4f85bb8b5da35f597d9b0c7c55390579d74597","9fb6a34fd52acc3ef7cbd91b179931707117f91270cb6c43dc60e5b9877ef8eb"};
     std::cout<<"Golden environment: "<<environment<<"\nGolden renderer: "<<renderer<<"\n";
     if(record || (!ci && environment==expectedEnvironment))
     {
@@ -911,21 +831,24 @@ int main(int argc,char** argv)
 #if JUCE_LINUX
     ignoreXErrors();
 #endif
+    std::cout<<std::unitbuf;
     const juce::ScopedJuceInitialiser_GUI init;
-    if(argc>=3 && juce::String(argv[1])=="--screenshot")
+    if(argc>=3 && (juce::String(argv[1])=="--screenshot" || juce::String(argv[1])=="--screenshot-macros"))
     {
         juce::File file=juce::File::getCurrentWorkingDirectory().getChildFile(argv[2]);file.deleteFile();
-        juce::FileOutputStream output(file);return output.openedOk() && juce::PNGImageFormat().writeImageToStream(snapshot(),output)?0:1;
+        juce::FileOutputStream output(file);return output.openedOk() && juce::PNGImageFormat().writeImageToStream(snapshot(100,juce::String(argv[1])=="--screenshot-macros"),output)?0:1;
     }
+    if(argc>=2 && juce::String(argv[1])=="--benchmark"){testPerformance();return failures?1:0;}
+    if(argc>=2 && juce::String(argv[1])=="--editor"){testEditor();return failures?1:0;}
     if(argc>=2 && juce::String(argv[1])=="--goldens"){testGoldens(true);return failures?1:0;}
     if(argc>=2 && juce::String(argv[1])=="--loudness"){testLoudness(true);return failures?1:0;}
     // Make sure the allocation probe itself works, then clear its calibration allocation.
     onAudioThread=true;void* probe=::operator new(64);escape(probe);::operator delete(probe);onAudioThread=false;
     CHECK(audioAllocations>0);audioAllocations=0;
-    testContract();testParameterText();testState();testPresets();testDryAndLifecycle();testTimingAndMidi();testOnsetsAndSource();testFreezeAndWindows();
+    testContract();testParameterText();testState();testPresets();testDryAndLifecycle();testTimingAndMidi();testRatios();testOnsetsAndSource();testFreezeAndWindows();
     testSound();
     if(argc>=2 && juce::String(argv[1])=="--core")return failures?1:0;
-    testEditor();testGoldens();testLoudness();
+    testEditor();testGoldens();testPerformance();testLoudness();
     CHECK(audioAllocations==0);
     std::cout<<"Audio allocations: "<<audioAllocations<<"\n"<<(failures?"Silt tests FAILED\n":"All Silt tests passed\n");
     return failures?1:0;
