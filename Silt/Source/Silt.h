@@ -37,7 +37,7 @@ struct Feed
     std::atomic<int> lastLength { 0 };
     struct Event
     {
-        std::atomic<unsigned> sequence { 0 };
+        std::atomic<unsigned> sequence { 0 }, grain { 0 };
         std::atomic<juce::int64> frame { -1 }, captureHead { 0 };
         std::atomic<float> back { 0 }, pitch { 0 }, size { 0 };
     };

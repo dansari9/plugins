@@ -277,7 +277,7 @@ static void testPresets()
     for(int i=0;i<10;++i)
     {
         p.setCurrentProgram(i);CHECK(p.getProgramName(i)==names[i] && p.getCurrentProgram()==i);
-        CHECK(get(p,"mix")==100 && get(p,"output")==0 && get(p,"freeze")==0);
+        CHECK(get(p,"mix")==100 && get(p,"output")==(i==1?3:i==6?6:0) && get(p,"freeze")==0);
     }
     p.setCurrentProgram(0),set(p,"pitch",7);
     const auto before=params(p);
@@ -576,6 +576,7 @@ static void testLoudness(bool tableOnly=false)
     // Warm the selected history and grain overlaps before measuring each random sound.
     for(int seed=0;seed<500;++seed) for(int program=0;program<3;++program)
     {
+        if(program==0 && seed%50==0)std::cout<<"Random loudness seed "<<seed<<" / 500\n";
         p.setCurrentProgram(0),p.randomise(seed),prepare(p);
         Run material=programs[program].input();
         run(p,96000,512,material);material.offset=96000;
@@ -619,6 +620,49 @@ static void testPerformance()
         const double elapsed=juce::Time::getMillisecondCounterHiRes()-start;
         std::cout<<"96 kHz / 128 shifted voices / "<<(1<<quality)<<"x: "<<elapsed<<" ms per audio second\n";
         CHECK(elapsed<10000); // generous on instrumented/contended CI; detects a processing-loop stall
+    }
+}
+// Dense vector reads and lookahead must agree with single-sample processing, including a held capture.
+static void testDenseBlocks()
+{
+    for (bool frozen : { false, true })
+    {
+        Run r;
+        for (int note=0;note<128;++note) r.events.push_back({24000,juce::MidiMessage::noteOn(1,note,(juce::uint8)100)});
+        r.events.push_back({24000,juce::MidiMessage::allNotesOff(1)});
+        r.events.push_back({41001,juce::MidiMessage::controllerEvent(1,1,100)});
+        Audio reference;
+        for(int block : {512,1,17,0})
+        {
+            Proc p;set(p,plain);set(p,{{"size",4000},{"pitch",12},{"pitchMode",0},{"density",64},{"bloom",100},{"oversample",3},{"position",0}});prepare(p);
+            run(p,24000,block);
+            if(frozen)set(p,"freeze",1);
+            r.offset=24000;
+            const auto output=run(p,36000,block,r);
+            if(block==512)reference=output;
+            else
+            {
+                if(!(output==reference))
+                {
+                    double difference=0;size_t first=output.l.size();
+                    for(size_t j=0;j<output.l.size();++j) if(output.l[j]!=reference.l[j] || output.r[j]!=reference.r[j])
+                    { first=std::min(first,j);difference=std::max({difference,std::abs((double)output.l[j]-reference.l[j]),std::abs((double)output.r[j]-reference.r[j])}); }
+                    std::cerr<<"Dense block mismatch: freeze "<<frozen<<" block "<<block<<" first "<<first<<" max "<<difference<<"\n";
+                }
+                CHECK(output==reference);
+            }
+        }
+    }
+    for(int mode:{0,1})for(float pitch:{7.0f,24.0f,48.0f})
+    {
+        Proc low,high;const double ratio=std::exp2(pitch/12.0);
+        for(auto* p:{&low,&high})set(*p,plain),set(*p,{{"pitch",pitch},{"pitchMode",(float)mode},{"size",1000},{"density",12}}),prepare(*p);
+        Run pass,stop;pass.input=[=](int i,int){return (float)(.15*std::sin(2*pi*1000/ratio*i/48000));};
+        stop.input=[=](int i,int){return (float)(.15*std::sin(2*pi*26000/ratio*i/48000));};
+        run(low,96000,512,pass),run(high,96000,512,stop);pass.offset=stop.offset=96000;
+        const double passEnergy=std::pow(Level(run(low,48000,512,pass)).rms,2),stopEnergy=std::pow(Level(run(high,48000,512,stop)).rms,2);
+        std::cout<<"Near-fold rejection "<<mode<<" / "<<pitch<<": "<<10*std::log10((stopEnergy+1e-30)/passEnergy)<<" dB\n";
+        CHECK(stopEnergy<passEnergy*1e-6);
     }
 }
 static void pump() { juce::MessageManager::getInstance()->runDispatchLoopUntil(5); }
@@ -768,7 +812,7 @@ static void testEditor()
 }
 static juce::Image snapshot(int percent=100,bool macros=false)
 {
-    Proc p;prepare(p);run(p,48000);p.showMacros=macros;
+    Proc p;prepare(p);run(p,230400);p.showMacros=macros;
     std::unique_ptr<juce::AudioProcessorEditor> editor(p.createEditor());
     editor->setSize(1024*percent/100,410*percent/100);
     return editor->createComponentSnapshot(editor->getLocalBounds(),true,2.0f);
@@ -778,7 +822,7 @@ static juce::String soundHash()
     Proc p;prepare(p);Host h;Run r;r.host=&h;
     r.events={{1701,juce::MidiMessage::noteOn(1,64,(juce::uint8)100)},{12001,juce::MidiMessage::controllerEvent(1,1,64)},
         {30000,juce::MidiMessage::noteOff(1,64)}};
-    const auto a=run(p,48000,512,r);juce::MemoryOutputStream bytes;
+    const auto a=run(p,230400,512,r);CHECK(Level(a).rms>.001);juce::MemoryOutputStream bytes;
     bytes.write(a.l.data(),a.l.size()*sizeof(float)),bytes.write(a.r.data(),a.r.size()*sizeof(float));return sha(bytes);
 }
 static void testGoldens(bool record=false)
@@ -798,8 +842,8 @@ static void testGoldens(bool record=false)
     const auto renderer=pixels(probe);
     const bool ci=std::getenv("GITHUB_ACTIONS")!=nullptr;
     const char* expectedEnvironment="14.2.0/Release/07adb83962bd7f372226ea055bca705c159534fa4a19d3279488b12cd95eea5c", *expectedRenderer="506141d22f79fb1886eb4dec6e8e40da3c3c48e3df63f1f3d60e979dd78361b5";
-    const char* expectedSound="fec9afb531a8e036eba1d81651896e1b2c1f78b0234dbadc8e7549563f09407b";
-    const char* expectedShots[]{"9d7bece4635ab4f6212002a83e81edeb47b6c51dd0519dddac557fc49c8cadd5","4196a120f6368ce662e951a30d4f85bb8b5da35f597d9b0c7c55390579d74597","9fb6a34fd52acc3ef7cbd91b179931707117f91270cb6c43dc60e5b9877ef8eb"};
+    const char* expectedSound="3545774254763dc86b8b7c7eeb00d3fd0fd032c1b8f0efa24dba0d6f89988cf5";
+    const char* expectedShots[]{"ce8254e6680beb9b91b43334e5de2b0459159dd1f134d7afd525b44f14bc08b9","83626f7c99fb9acb6bed9c2afb58e44ffb203a4a21287edac94cf33ab31de67d","a87da81d62fe9c1f3640fd4948f6a796a02c199f50ecd6d28475232c46276ed2"};
     std::cout<<"Golden environment: "<<environment<<"\nGolden renderer: "<<renderer<<"\n";
     if(record || (!ci && environment==expectedEnvironment))
     {
@@ -826,6 +870,7 @@ static void ignoreXErrors()
         if(auto handler=(void* (*)(int (*)(void*,void*)))dlsym(x11,"XSetErrorHandler"))handler([](void*,void*){return 0;});
 }
 #endif
+#include "SiltOffline.h"
 int main(int argc,char** argv)
 {
 #if JUCE_LINUX
@@ -838,6 +883,8 @@ int main(int argc,char** argv)
         juce::File file=juce::File::getCurrentWorkingDirectory().getChildFile(argv[2]);file.deleteFile();
         juce::FileOutputStream output(file);return output.openedOk() && juce::PNGImageFormat().writeImageToStream(snapshot(100,juce::String(argv[1])=="--screenshot-macros"),output)?0:1;
     }
+    if(argc>=2 && (juce::String(argv[1])=="--bench" || juce::String(argv[1])=="--profile")){bench(juce::String(argv[1])=="--profile");return failures?1:0;}
+    if(argc>=3 && juce::String(argv[1])=="--renders"){renderFiles(juce::File(argv[2]));return failures?1:0;}
     if(argc>=2 && juce::String(argv[1])=="--benchmark"){testPerformance();return failures?1:0;}
     if(argc>=2 && juce::String(argv[1])=="--editor"){testEditor();return failures?1:0;}
     if(argc>=2 && juce::String(argv[1])=="--goldens"){testGoldens(true);return failures?1:0;}
@@ -846,7 +893,7 @@ int main(int argc,char** argv)
     onAudioThread=true;void* probe=::operator new(64);escape(probe);::operator delete(probe);onAudioThread=false;
     CHECK(audioAllocations>0);audioAllocations=0;
     testContract();testParameterText();testState();testPresets();testDryAndLifecycle();testTimingAndMidi();testRatios();testOnsetsAndSource();testFreezeAndWindows();
-    testSound();
+    testSound();testDenseBlocks();
     if(argc>=2 && juce::String(argv[1])=="--core")return failures?1:0;
     testEditor();testGoldens();testPerformance();testLoudness();
     CHECK(audioAllocations==0);

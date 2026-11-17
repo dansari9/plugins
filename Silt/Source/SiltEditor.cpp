@@ -219,9 +219,9 @@ struct Cloud : Group
                 const bool inside=xa<=k && k<=xb;
                 if((inside?4:jmin(3,k*4/ww))!=shade)continue;
                 const double e=amplitude*hh*.34;
-                for(int t=(int)(mid-e);t<=(int)(mid+e);++t) if((t+k/2)%2==0)pts.push_back({k,t});
+                for(int t=(int)(mid-e);t<=(int)(mid+e);++t) if((t+k/2)%2==0 && ((uint32)(k*73+t*193)*2654435761u>>28)<6)pts.push_back({k,t});
             }
-            const uint32 shades[]{0xff171717,0xff1c1c1c,0xff232323,0xff2d2d2d,0xff3a3a3a};
+            const uint32 shades[]{0xff171717,0xff1c1c1c,0xff232323,0xff272727,0xff303030};
             g.braille(x,y,w,h,pts,Colour(frozen && shade<4?0xff333333:shades[shade]));
         }
         Dots zero;for(int k=0;k<ww;k+=4)zero.push_back({k,roundToInt(mid)});g.braille(x,y,w,h,zero,rule);
@@ -238,14 +238,15 @@ struct Cloud : Group
                 if(sequence&1u)continue;
                 const auto frame=e.frame.load(std::memory_order_relaxed);
                 const auto eventHead=e.captureHead.load();
+                const auto grain=e.grain.load(std::memory_order_relaxed);
                 const float eventBack=e.back.load(),eventPitch=e.pitch.load(),eventSize=e.size.load();
                 if(sequence!=e.sequence.load(std::memory_order_acquire))continue;
-                const double seconds=(now-frame)/fs,age=seconds/1.25;
+                const double seconds=(now-frame)/fs,age=seconds/3.0;
                 if(age<limits[shade] || age>=limits[shade+1])continue;
                 const double back=eventBack+(f.captureHead.load()-eventHead)/fs;
                 if(back<0 || back>4)continue;
                 // Stable scatter gives each actual grain a legible pitch lane; pitch remains the y-axis.
-                const uint32 hash=(uint32)i*2654435761u;
+                const uint32 hash=grain*2654435761u;
                 const double jitter=std::sqrt(-2*std::log(jmax(.001,(double)(hash>>8)*0x1p-24)))*std::cos((hash&255)*MathConstants<double>::twoPi/256)*(1.8+scatter*hh*.27);
                 const double py=jlimit(4.0,(double)hh-4,mid-eventPitch/24.0*(hh/2-3)*.3+jitter);
                 const int len=jmax(2,roundToInt(eventSize/4*ww));

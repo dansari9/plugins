@@ -3,6 +3,11 @@
 #include <optional>
 #include <juce_dsp/juce_dsp.h>
 #include <sstream>
+#include <cstdlib>
+#if JUCE_INTEL && (defined(__GNUC__) || defined(__clang__))
+ #include <immintrin.h>
+ #define SILT_AVX2 1
+#endif
 
 using namespace juce;
 
@@ -79,16 +84,17 @@ std::optional<double> number(const String& t) // the whole text is one finite nu
 double release(double p, double hold, double k) { return p < hold ? 1 : std::pow(std::max(0.0, 1 - (p - hold) / (1 - hold)), k); } // gulp's, normalised
 
 // ================================ The capture buffer ================================
-// A ring of the input per channel plus four mipmaps (each a halfband-filtered half of the one above), so grains
-// pitched up read a band-limited copy: pitch r in (2^k, 2^(k+1)] crossfades levels k and k + 1 by log2 r - k, and
-// every read is a 4-point Hermite. Level k's sample j sits at time 2^k j - delay[k] (the filters' linear phase).
-// This band-limits pitched reads independently of the oversampled feedback saturation / wet FIR path.
+// The input ring plus four halfband-filtered mipmaps. Each grain selects ceil(log2 pitch ratio), so every
+// pitched-up reader is band-limited before resampling. Level k's sample j sits at 2^k j - delay[k].
+// Four-point Hermite reads share stereo coordinates; only the nonlinear feedback needs oversampling.
 constexpr int levels = 5;
-constexpr int delay[levels] { 0, 7, 21, 49, 105 };
-constexpr float halfband[4] { 0.298482f, -0.058813f, 0.010946f, -0.000665f }; // taps 1, 3, 5, 7 (centre 0.5), Blackman sinc
-constexpr int margin = 192; // samples a read keeps from the write head: the filters' delay and the interpolation
+constexpr double scale[levels] { 1, .5, .25, .125, .0625 };
+constexpr int delay[levels] { 0, 63, 189, 441, 945 };
+// 127-tap Kaiser halfband: steep enough to reject the first fold above Nyquist, not just distant tones.
+constexpr float halfband[32] { 0.3179876426f, -0.1051353898f, 0.06205975135f, -0.0432535297f, 0.03255484816f, -0.0255600393f, 0.02057837779f, -0.0168229528f, 0.01387852327f, -0.011505438f, 0.009555592982f, -0.007932243802f, 0.006569126778f, -0.005418887495f, 0.004446332002f, -0.003624329037f, 0.002931242885f, -0.002349286908f, 0.001863449945f, -0.001460788898f, 0.001129960166f, -0.0008609088363f, 0.0006446625028f, -0.0004731940527f, 0.0003393290235f, -0.0002366806736f, 0.0001596010718f, -0.0001031401866f, 6.300762406e-05f, -3.553363926e-05f, 1.7627528e-05f, -6.732614478e-06f };
+constexpr int margin = 192; // minimum read distance; higher mips add their FIR delay and the lookahead span
 
-float hermite(const std::vector<float>& d, size_t mask, int64 i, float f)
+inline __attribute__((always_inline)) float hermite(const std::vector<float>& d, size_t mask, int64 i, float f)
 {
     const float a = d[(size_t) (i - 1) & mask], b = d[(size_t) i & mask], c = d[(size_t) (i + 1) & mask], e = d[(size_t) (i + 2) & mask];
     return b + f * (0.5f * (c - a) + f * (a - 2.5f * b + 2 * c - 0.5f * e + f * (0.5f * (e - a) + 1.5f * (b - c))));
@@ -96,12 +102,13 @@ float hermite(const std::vector<float>& d, size_t mask, int64 i, float f)
 
 struct Capture
 {
+    bool wide = false;
     std::vector<float> data[levels][2];
     size_t mask[levels] {};
     int64 head = 0;        // frames written
     float gain = 1;        // the write crossfade: 1 live, 0 frozen (writing stops)
     float peak = 0;        // the editor's waveform: the peak of the slice being written
-    int count = 0, slice = 1;
+    int count = 0, slice = 1, startup = 240;
     double history = 384000;
     std::array<std::atomic<float>, silt::Feed::bins>* wave = nullptr;
     std::atomic<int>* at = nullptr;
@@ -112,6 +119,8 @@ struct Capture
             for (auto& c : data[k]) c.assign(size >> k, 0.0f);
         for (int k = 0; k < levels; ++k) mask[k] = (size >> k) - 1;
         slice = jmax(1, sliceLength), history = frames;
+        startup = jmax(1, roundToInt(frames / silt::maxBackSeconds * .005));
+        wide = SystemStats::hasAVX2() && std::getenv("SILT_PORTABLE") == nullptr;
     }
     void reset()
     {
@@ -121,6 +130,9 @@ struct Capture
     // One frame, mixed into what is there by the write gain, then each mipmap sample it completes.
     void write(float l, float r)
     {
+        // History before prepare is silence: join an already-playing input to it without a recorded step.
+        const float start = head < startup ? (float) head / (float) startup : 1.0f;
+        l *= start, r *= start;
         auto& d = data[0];
         const size_t i = (size_t) head & mask[0];
         d[0][i] += gain * (l - d[0][i]), d[1][i] += gain * (r - d[1][i]);
@@ -129,8 +141,13 @@ struct Capture
             {
                 const auto& x = data[k - 1][c];
                 const auto at_ = [&](int o) { return x[(size_t) (j - o) & mask[k - 1]]; };
-                data[k][c][(size_t) (j / 2) & mask[k]] = 0.5f * at_(7) + halfband[0] * (at_(6) + at_(8)) + halfband[1] * (at_(4) + at_(10))
-                                                       + halfband[2] * (at_(2) + at_(12)) + halfband[3] * (at_(0) + at_(14));
+                float sample = .5f * at_(63);
+                for (int tap = 0; tap < 32; ++tap)
+                {
+                    const int offset = 2 * tap + 1;
+                    sample += halfband[tap] * (at_(63 - offset) + at_(63 + offset));
+                }
+                data[k][c][(size_t) (j / 2) & mask[k]] = sample;
             }
         ++head;
         peak = jmax(peak, std::abs(d[0][i]), std::abs(d[1][i]));
@@ -141,37 +158,113 @@ struct Capture
             peak = 0, count = 0;
         }
     }
-    // Both channels at time t (frames, fractional) from level k, crossfaded by b towards level k + 1.
-    void readAt(double t, int k, float b, float& l, float& r) const
+    // Both channels at fractional capture time t from the grain's band-limited level.
+    void readAt(double t, int k, float& l, float& r) const
     {
-        const double j = (t + delay[k]) / (1 << k);
+        const double j = (t + delay[k]) * scale[k];
         const double whole = std::floor(j);
         const auto i = (int64) whole; const float fraction = (float) (j - whole);
         l = hermite(data[k][0], mask[k], i, fraction), r = hermite(data[k][1], mask[k], i, fraction);
-        if (b > 0)
-        {
-            const double j2 = (t + delay[k + 1]) / (2 << k);
-            const double w2 = std::floor(j2); const auto i2 = (int64) w2; const float f2 = (float) (j2 - w2);
-            l += b * (hermite(data[k + 1][0], mask[k + 1], i2, f2) - l), r += b * (hermite(data[k + 1][1], mask[k + 1], i2, f2) - r);
-        }
+
     }
-    void read(double t, int k, float b, float& l, float& r) const
+    void read(double t, int k, float& l, float& r, double atHead) const
     {
         // Very long synced / reverse / frozen grains loop within recent history. A short splice avoids a step
         // when a reader crosses either edge; ordinary reads away from the edges are unchanged.
         constexpr double fade = 128;
-        const double lo = (double) head - history + margin, hi = (double) head - margin, period = hi - lo - fade;
+        const int readMargin = jmax(margin, delay[k] + 4 * (1 << k) + batch);
+        const double lo = atHead - history + readMargin, hi = atHead - readMargin, period = hi - lo - fade;
         if (t < lo + fade || t >= hi) t -= period * std::floor((t - lo - fade) / period);
-        readAt(t, k, b, l, r);
+        readAt(t, k, l, r);
         if (t > hi - fade)
         {
             float l2, r2;
-            readAt(t - period, k, b, l2, r2);
+            readAt(t - period, k, l2, r2);
             const float mix = (float) ((t - hi + fade) / fade);
             l += mix * (l2 - l), r += mix * (r2 - r);
         }
     }
-
+#if defined(SILT_AVX2)
+    __attribute__((target("avx2"))) static __m256 wideCubic(__m256 a, __m256 b, __m256 c, __m256 e, __m256 f)
+    {
+        const auto half = _mm256_set1_ps(.5f), oneHalf = _mm256_set1_ps(1.5f);
+        const auto inner = _mm256_add_ps(_mm256_mul_ps(half, _mm256_sub_ps(e, a)), _mm256_mul_ps(oneHalf, _mm256_sub_ps(b, c)));
+        const auto middle = _mm256_add_ps(_mm256_sub_ps(_mm256_add_ps(_mm256_sub_ps(a, _mm256_mul_ps(_mm256_set1_ps(2.5f), b)), _mm256_mul_ps(_mm256_set1_ps(2), c)), _mm256_mul_ps(half, e)), _mm256_mul_ps(f, inner));
+        return _mm256_add_ps(b, _mm256_mul_ps(f, _mm256_add_ps(_mm256_mul_ps(half, _mm256_sub_ps(c, a)), _mm256_mul_ps(f, middle))));
+    }
+    // Runtime dispatch preserves older Intel hosts and the portable/NEON compiler path on Apple Silicon.
+    __attribute__((target("avx2"))) void wideRead(const double* positions, int k,
+                                                float* l, float* r, int length) const
+    {
+        const double base = (double) ((int64) ((positions[0] + delay[k]) * scale[k]) & ~(int64) mask[k]);
+        int j = 0;
+        for (; j + 8 <= length; j += 8)
+        {
+            const auto t0 = _mm256_sub_pd(_mm256_mul_pd(_mm256_add_pd(_mm256_loadu_pd(positions + j), _mm256_set1_pd(delay[k])), _mm256_set1_pd(scale[k])), _mm256_set1_pd(base));
+            const auto t1 = _mm256_sub_pd(_mm256_mul_pd(_mm256_add_pd(_mm256_loadu_pd(positions + j + 4), _mm256_set1_pd(delay[k])), _mm256_set1_pd(scale[k])), _mm256_set1_pd(base));
+            const auto whole0 = _mm256_floor_pd(t0), whole1 = _mm256_floor_pd(t1);
+            const auto index = _mm256_inserti128_si256(_mm256_castsi128_si256(_mm256_cvttpd_epi32(whole0)), _mm256_cvttpd_epi32(whole1), 1);
+            const auto f = _mm256_insertf128_ps(_mm256_castps128_ps256(_mm256_cvtpd_ps(_mm256_sub_pd(t0, whole0))), _mm256_cvtpd_ps(_mm256_sub_pd(t1, whole1)), 1);
+            const auto m = _mm256_set1_epi32((int) mask[k]);
+            for (int c = 0; c < 2; ++c)
+            {
+                const auto* d = data[k][c].data();
+                const auto a = _mm256_i32gather_ps(d, _mm256_and_si256(_mm256_sub_epi32(index, _mm256_set1_epi32(1)), m), 4);
+                const auto b = _mm256_i32gather_ps(d, _mm256_and_si256(index, m), 4);
+                const auto cv = _mm256_i32gather_ps(d, _mm256_and_si256(_mm256_add_epi32(index, _mm256_set1_epi32(1)), m), 4);
+                const auto e = _mm256_i32gather_ps(d, _mm256_and_si256(_mm256_add_epi32(index, _mm256_set1_epi32(2)), m), 4);
+                const auto value = wideCubic(a, b, cv, e, f);
+                _mm256_storeu_ps((c == 0 ? l : r) + j, value);
+            }
+        }
+        for (; j < length; ++j) readAt(positions[j], k, l[j], r[j]);
+    }
+#endif
+    static constexpr int batch = 128;
+    void readBatch(const double* positions, int k, float* l, float* r, int length,
+                   bool frozen, float freezeStep) const
+    {
+        alignas(16) float a[2][batch], b[2][batch], c[2][batch], e[2][batch], fraction[batch];
+        const int readMargin = jmax(margin, delay[k] + 4 * (1 << k) + batch);
+        bool safe = true;
+        for (int i = 0; i < length; ++i)
+            safe = safe && positions[i] >= head - history + readMargin + 128 + batch && positions[i] <= head - readMargin - 128;
+        if (!safe)
+        {
+            float futureGain = gain;
+            double futureHead = (double) head;
+            for (int i = 0; i < length; ++i)
+            {
+                read(positions[i], k, l[i], r[i], futureHead);
+                if (frozen) futureGain = jmax(0.0f, futureGain - freezeStep);
+                if (!frozen || futureGain > 0) ++futureHead;
+            }
+            return;
+        }
+#if defined(SILT_AVX2)
+        if (wide && length >= 8) { wideRead(positions, k, l, r, length); return; }
+#endif
+        float* out[] { l, r };
+        for (int i = 0; i < length; ++i)
+        {
+            const double t = (positions[i] + delay[k]) * scale[k];
+            auto index = (int64) t;
+            if ((double) index > t) --index; // exact floor, including negative capture times
+            fraction[i] = (float) (t - (double) index);
+            for (int ch = 0; ch < 2; ++ch)
+            {
+                const auto& d = data[k][ch];const auto m = mask[k];
+                a[ch][i] = d[(size_t) (index - 1) & m], b[ch][i] = d[(size_t) index & m];
+                c[ch][i] = d[(size_t) (index + 1) & m], e[ch][i] = d[(size_t) (index + 2) & m];
+            }
+        }
+        for (int ch = 0; ch < 2; ++ch)
+            for (int i = 0; i < length; ++i)
+            {
+                const float f = fraction[i], av = a[ch][i], bv = b[ch][i], cv = c[ch][i], ev = e[ch][i];
+                out[ch][i] = bv + f * (0.5f * (cv - av) + f * (av - 2.5f * bv + 2 * cv - 0.5f * ev + f * (0.5f * (ev - av) + 1.5f * (bv - cv))));
+            }
+    }
 };
 
 // ================================ Grains ================================
@@ -181,8 +274,9 @@ struct Grain
     double phase = 0, inc = 0;  // through the window
     double pos = 0, step = 1;  // speed: the read position and its step (+-r); pitch: the anchor, moving +-1
     float tap = 0, tapStep = 0, span = 0; // pitch: the first tap's distance behind the anchor, its step, the tap window
-    float gl = 0, gr = 0, blend = 0, pitch = 0;
+    float gl = 0, gr = 0, pitch = 0;
     float peak = 0.5f, attack = 1, decay = 1;
+    unsigned tag = 0;
     int shape = 10;
     int level = 0, source = 0;
     bool shifted = false;      // pitch mode: two crossfaded taps keep the timeline while the pitch moves
@@ -259,7 +353,7 @@ struct SiltProcessor::Engine
     bool wasPlaying = false;
     int stream = 0;
     double scanned = 0;          // the scan's extra distance back (samples)
-    uint32 seed = 1;
+    uint32 seed = 1, nextGrain = 0;
     // MIDI: held notes (last-note priority) and the fixed controller map's smoothed values, -1 until received.
     std::array<int, 128> held {};
     std::array<float, 128> velocities {};
@@ -270,7 +364,7 @@ struct SiltProcessor::Engine
     // All quality paths are prepared once; changing quality never allocates on the audio thread.
     std::array<std::unique_ptr<dsp::Oversampling<float>>, 4> oversamplers;
     int quality = -1, latency = 0, previousQuality = 0, previousLatency = 0, qualityFade = 0;
-    std::array<float, 512> dryDelay[2] {};
+    std::array<float, 512> dryDelay[2] {}, wetDelay[2] {};
     size_t dryAt = 0;
     float meters[3] {};
     
@@ -297,8 +391,8 @@ struct SiltProcessor::Engine
         for (int k = 0; k < 4; ++k) diffusion[k].assign((size_t) (fs * (k < 2 ? 0.0047 : 0.0071)) + 1, 0.0f);
         for (size_t q = 0; q < oversamplers.size(); ++q)
         {
-            oversamplers[q] = std::make_unique<dsp::Oversampling<float>>(4, q, dsp::Oversampling<float>::filterHalfBandFIREquiripple, true, true);
-            oversamplers[q]->initProcessing(1);
+            oversamplers[q] = std::make_unique<dsp::Oversampling<float>>(2, q, dsp::Oversampling<float>::filterHalfBandFIREquiripple, true, true);
+            oversamplers[q]->initProcessing(K);
         }
         reverb.prepare(fs); // SILT_REVERB
         fastRelease = (float) std::exp(-1 / (0.015 * fs)), slowAttack = (float) (1 - std::exp(-1 / (0.03 * fs)));
@@ -318,8 +412,9 @@ struct SiltProcessor::Engine
     {
         for (auto& c : capture) c.reset();
         voiceCount = 0, grains = {}, onsets[0] = onsets[1] = {}, phase = 0, lastTick = -1, wasPlaying = false, stream = 1, scanned = 0, seed = 0x5117u;
+        nextGrain = 0;
         heldCount = 0, velocity = 1, now = 0, overlap = 0, level = inputLevel = 0, lastNote = 60;
-        quality = -1, qualityFade = 0, dryAt = 0, dryDelay[0].fill(0), dryDelay[1].fill(0);
+        quality = -1, qualityFade = 0, dryAt = 0, dryDelay[0].fill(0), dryDelay[1].fill(0), wetDelay[0].fill(0), wetDelay[1].fill(0);
         for (auto& os : oversamplers) os->reset();
         std::fill(std::begin(meters), std::end(meters), 0.0f);
         feed.note.store(60), feed.time.store(0), feed.events.store(0);
@@ -380,6 +475,7 @@ struct SiltProcessor::Engine
     {
         if (voiceCount == silt::maxGrains) return; // all voices busy: skip this one, never steal (no clicks)
         auto* g = &grains[(size_t) voiceCount++];
+        g->tag = ++nextGrain;
         const double stereo = 0.8 + 0.2 * macro(Bloom);
         const int noteIndex = syncIndex(sizeTravel.to(v[Size]));
         const auto note = [&](int k) { return 240.0 * silt::noteNum[k] / silt::noteDen[k] / bpm * fs; };
@@ -392,10 +488,14 @@ struct SiltProcessor::Engine
         st += heldCount > 0 ? held[(size_t) heldCount - 1] - 60 : 0;
         st = jlimit(-48.0, 48.0, st);
         const double r = std::exp2(st / 12);
+        const int mip = r <= 1 ? 0 : jmin(levels - 1, (int) std::ceil(std::log2(r)));
+        const int readMargin = jmax(margin, delay[mip] + 4 * (1 << mip) + Capture::batch);
         const bool reverse = random() < 0.65f * macro(Chaos), shifted = v[PitchMode] < 0.5f;
         const double dir = reverse ? -1 : 1;
+        // Keep the tap modulation below 25 Hz even at +48 st. Grain length stays independent of pitch;
+        // a tiny grain can still read through a longer, smooth pitch crossfade.
         // The read: how long it sounds and how much source it covers.
-        const double dur = jmin(2.0e9, shifted ? size : size / r), span = shifted ? jmin(0.04 * fs, size) : 0;
+        const double dur = jmin(2.0e9, shifted ? size : size / r), span = shifted ? .04 * fs * jmax(1.0, r - 1) : 0;
         // How far back it starts: position (+ the scan) + spray, kept inside what the buffer holds for the whole grain
         // (live, the head moves on while it plays; frozen, it stands still). a: room needed ahead, b: behind.
         const double maxBack = silt::maxBackSeconds * fs;
@@ -412,7 +512,7 @@ struct SiltProcessor::Engine
         else if (reverse) a = extent, b = dur;
         else a = jmax(0.0, dur * (r - 1)), b = jmax(0.0, dur * (1 - r));
         // Fit the whole segment when possible; longer notes retain their duration and use the capture's splice.
-        back = a + b < maxBack - 2 * margin ? jlimit(margin + a, maxBack - margin - b, back) : jlimit((double) margin, maxBack - margin, back);
+        back = a + b < maxBack - 2 * readMargin ? jlimit(readMargin + a, maxBack - readMargin - b, back) : jlimit((double) readMargin, maxBack - readMargin, back);
         const double start = (double) capture[source()].head + (frozen ? 0 : wait) - back;
         g->wait = wait, g->traceIn = 0, g->length = jmax(2, (int) dur), g->left = g->length, g->phase = 0, g->inc = 1.0 / g->left;
         g->shape = macro(Texture) < .33f ? 10 : macro(Texture) < .66f ? 7 : 3, g->peak = 0.5f - 0.3f * macro(Texture);
@@ -421,8 +521,9 @@ struct SiltProcessor::Engine
         g->step = shifted ? dir : dir * r;
         g->pos = shifted ? (reverse ? start + size : start) : (reverse ? start + dur * r : start);
         g->span = (float) jmax(2.0, 2 * std::round(span / 2)), g->tap = 0, g->tapStep = (float) (1 - r);
-        g->level = r <= 1 ? 0 : jmin(levels - 1, (int) std::floor(std::log2(r)));
-        g->blend = r <= 1 || g->level == levels - 1 ? 0.0f : (float) (std::log2(r) - g->level);
+        // The lower mip of a crossfade still aliases for fractional pitch ratios. A single band-limited
+        // level rejects that fold and halves the read work; Hermite preserves smooth sub-sample motion.
+        g->level = mip;
         // Pan: the stream's side of the width plus a random spread; equal power, unity in the middle.
         const double pan = jlimit(-1.0, 1.0, (side == 0 ? -0.6 : 0.6) * stereo + (2 * random() - 1) * jmin(1.0, 0.25 + 0.7 * macro(Motion)));
         const double angle = (pan + 1) * pi / 4;
@@ -464,6 +565,83 @@ struct SiltProcessor::Engine
                 }
             if (m.getControllerNumber() == 121)
                 std::fill(std::begin(cc), std::end(cc), -1.0f), std::fill(std::begin(ccTarget), std::end(ccTarget), -1.0f);
+        }
+    }
+
+    void trace(Grain& g, silt::Feed& feed, int64 frame, int64 head)
+    {
+        if (exactlyEqual(g.phase, 0.0))
+        {
+            feed.fired.fetch_add(1, std::memory_order_relaxed);
+            feed.lastFire.store(frame, std::memory_order_relaxed);
+            feed.lastPitch.store(g.pitch, std::memory_order_relaxed);
+            feed.lastLength.store(g.left, std::memory_order_relaxed);
+        }
+        if (--g.traceIn <= 0)
+        {
+            g.traceIn = jmax(1, (int) (fs * .016));
+            const auto serial = feed.events.load(std::memory_order_relaxed);
+            auto& e = feed.history[(size_t) serial % silt::Feed::historySize];
+            // A seqlock per slot prevents a GUI frame combining data from two ring generations.
+            e.sequence.fetch_add(1, std::memory_order_acq_rel);
+            e.grain.store(g.tag, std::memory_order_relaxed);
+            e.frame.store(frame, std::memory_order_relaxed);
+            e.captureHead.store(head, std::memory_order_relaxed);
+            e.back.store((float) ((head - g.pos) / fs), std::memory_order_relaxed);
+            e.pitch.store(g.pitch, std::memory_order_relaxed);
+            e.size.store((float) (g.length / fs), std::memory_order_relaxed);
+            e.sequence.fetch_add(1, std::memory_order_release);
+            feed.events.store(serial + 1, std::memory_order_release);
+        }
+    }
+    // No event or voice completion lies inside this span. Read each voice in time order, then accumulate
+    // contiguous samples in the original voice order. Reads stay at least `margin` behind the write head.
+    void cloud(int length, bool frozen, silt::Feed& feed, float out[2][Capture::batch], float* weights)
+    {
+        for (int c = 0; c < 2; ++c) std::fill_n(out[c], length, 0.0f);
+        std::fill_n(weights, length, 0.0f);
+        int frozenHeads[Capture::batch] {}, advance = 0;
+        float futureGain = capture[0].gain;
+        if (frozen)
+            for (int j = 0; j < length; ++j)
+            {
+                frozenHeads[j] = advance;
+                futureGain = jmax(0.0f, futureGain - freezeStep);
+                if (futureGain > 0) ++advance;
+            }
+        for (int k = 0; k < voiceCount; ++k)
+        {
+            auto& g = grains[(size_t) k];
+            if (g.wait > 0) { g.wait -= length; continue; }
+            double positions[Capture::batch], positions2[Capture::batch];
+            alignas(16) float w[Capture::batch], a[Capture::batch], audio[2][Capture::batch], other[2][Capture::batch];
+            for (int j = 0; j < length; ++j)
+            {
+                trace(g, feed, now + j, capture[0].head + (frozen ? frozenHeads[j] : j));
+                w[j] = envelope(g);
+                positions[j] = g.pos;
+                if (g.shifted)
+                {
+                    const float second = g.tap + 0.5f * g.span >= g.span ? g.tap - 0.5f * g.span : g.tap + 0.5f * g.span;
+                    a[j] = lookup(taps, g.tap / g.span);
+                    positions[j] -= g.step * g.tap, positions2[j] = g.pos - g.step * second;
+                    g.tap += g.tapStep;
+                    if (g.tap < 0 || g.tap >= g.span) g.tap -= g.span * std::floor(g.tap / g.span);
+                }
+                g.phase += g.inc, g.pos += g.step, --g.left;
+            }
+            capture[0].readBatch(positions, g.level, audio[0], audio[1], length, frozen, freezeStep);
+            if (g.shifted)
+            {
+                capture[0].readBatch(positions2, g.level, other[0], other[1], length, frozen, freezeStep);
+                for (int c = 0; c < 2; ++c)
+                    for (int j = 0; j < length; ++j) audio[c][j] = a[j] * audio[c][j] + (1 - a[j]) * other[c][j];
+            }
+            for (int j = 0; j < length; ++j)
+            {
+                out[0][j] += w[j] * g.gl * audio[0][j], out[1][j] += w[j] * g.gr * audio[1][j];
+                weights[j] += w[j];
+            }
         }
     }
 
@@ -514,167 +692,208 @@ struct SiltProcessor::Engine
         }
         const double spacing = period(bpm);
         const double quartersPerGrain = 1.0 / jmax(1, roundToInt(v[Density] / 2));
+        verb.setTargetValue(v[ReverbOn] > .5f ? v[ReverbAmount] / 100 : 0.0f);
+        const double scanRange = jmax(1.0, silt::maxBackSeconds * fs - v[Position] * fs / 1000);
         auto event = midiBuffer.cbegin();
-        for (int t = 0; t < n; ++t)
+        float cloudFrames[2][Capture::batch] {}, cloudWeights[Capture::batch] {};
+        int cloudAt = 0, cloudLength = 0;
+        for (int chunk = 0; chunk < n;)
         {
-            bool frozen = v[Freeze] > 0.5f;
-            for (; event != midiBuffer.cend() && (*event).samplePosition <= t; ++event)
-                if ((*event).numBytes <= 3) midi((*event).getMessage(), 0, bpm, frozen); // ignore SysEx without allocating
-            for (int k = 0; k < 4; ++k)
-                if (ccTarget[k] >= 0) cc[k] += ccGlide * (ccTarget[k] - cc[k]);
-            frozen = v[Freeze] > 0.5f;
-            float x[2], side[2] {}, dry[2];
-            for (int c = 0; c < 2; ++c)
+            const int count = jmin(K - (int) (now % K), n - chunk);
+            const int64 chunkTime = now;
+            float frames[4][K] {}, old[4][K] {}, dryFrames[2][K] {}, sideFrames[K] {}, bloomFrames[K] {};
+            for (int i = 0; i < count; ++i)
             {
-                dry[c] = buffer.getSample(jmin(c, ins - 1), t);
-                x[c] = std::isfinite(dry[c]) ? jlimit(-8.0f, 8.0f, dry[c]) : 0.0f;
-                const float z = scs > 0 ? sc.getSample(jmin(c, scs - 1), t) : 0.0f;
-                side[c] = std::isfinite(z) ? jlimit(-8.0f, 8.0f, z) : 0.0f;
-            }
-            const bool hitIn = onsets[0].step(jmax(std::abs(x[0]), std::abs(x[1])), threshold, fastRelease, slowAttack, slowRelease, holdoff);
-            const bool hitSide = onsets[1].step(jmax(std::abs(side[0]), std::abs(side[1])), threshold, fastRelease, slowAttack, slowRelease, holdoff);
-            const float* selected = source() == 0 ? x : side;
-            const float input = 0.5f * (std::abs(selected[0]) + std::abs(selected[1]));
-            inputLevel += (input > inputLevel ? inputAttack : inputRelease) * (input - inputLevel);
-            for (int c = 0; c < 1; ++c)
-            {
-                auto& cap = capture[c];
-                cap.gain = jlimit(0.0f, 1.0f, cap.gain + (frozen ? -freezeStep : freezeStep));
-                const float* in = c == 0 ? x : side;
-                const float add = c == source() ? 1.0f : 0.0f;
-                if (cap.gain > 0) cap.write(in[0] + add * fbRing[0][now % K], in[1] + add * fbRing[1][now % K]);
-            }
-            const double scan = -0.25 * macro(Motion);
-            if (std::abs(scan) < 1e-9) scanned = 0;
-            else
-            {
-                const double range = jmax(1.0, silt::maxBackSeconds * fs - v[Position] * fs / 1000);
-                scanned -= scan, scanned -= range * std::floor(scanned / range);
-            }
-            if (trigger == 0)
-            {
-                bool tick = false;
-                if (synced)
+                const int t = chunk + i;
+                bool frozen = v[Freeze] > 0.5f;
+                for (; event != midiBuffer.cend() && (*event).samplePosition <= t; ++event)
+                    if ((*event).numBytes <= 3) midi((*event).getMessage(), 0, bpm, frozen); // ignore SysEx without allocating
+                for (int k = 0; k < 4; ++k)
+                    if (ccTarget[k] >= 0) cc[k] += ccGlide * (ccTarget[k] - cc[k]);
+                frozen = v[Freeze] > 0.5f;
+                float x[2], side[2] {}, dry[2];
+                for (int c = 0; c < 2; ++c)
                 {
-                    phase = (ppq + t * bpm / 60 / fs) / quartersPerGrain;
-                    const double whole = std::floor(phase + 1e-9);
-                    tick = !exactlyEqual(whole, lastTick), lastTick = whole;
-                    phase += 1 / spacing;
+                    dry[c] = buffer.getSample(jmin(c, ins - 1), t);
+                    x[c] = std::isfinite(dry[c]) ? jlimit(-8.0f, 8.0f, dry[c]) : 0.0f;
+                    const float z = scs > 0 ? sc.getSample(jmin(c, scs - 1), t) : 0.0f;
+                    side[c] = std::isfinite(z) ? jlimit(-8.0f, 8.0f, z) : 0.0f;
                 }
-                else if ((phase += 1 / spacing) >= 1 - 1e-10)
-                    tick = true, phase -= std::floor(phase + 1e-10);
-                if (tick) spawn((int) (random() * (0.4f * macro(Motion) + 0.5f * macro(Chaos)) * spacing), bpm, frozen, stream ^= 1);
-            }
-            if ((hitIn && trigger == 1) || (hitSide && trigger == 2)) burst(0, bpm, frozen);
-            feedback.setTargetValue(0.12f + 0.48f * macro(Bloom));
-            width.setTargetValue(0.8f + 0.2f * macro(Bloom));
-            float y[2] {}, weight = 0;
-            for (int k = 0; k < voiceCount; ++k)
-            {
-                auto& g = grains[(size_t) k];
-                if (g.wait > 0) { --g.wait; continue; }
-                if (exactlyEqual(g.phase, 0.0))
+                const bool hitIn = onsets[0].step(jmax(std::abs(x[0]), std::abs(x[1])), threshold, fastRelease, slowAttack, slowRelease, holdoff);
+                const bool hitSide = onsets[1].step(jmax(std::abs(side[0]), std::abs(side[1])), threshold, fastRelease, slowAttack, slowRelease, holdoff);
+                const float* selected = source() == 0 ? x : side;
+                const float input = 0.5f * (std::abs(selected[0]) + std::abs(selected[1]));
+                inputLevel += (input > inputLevel ? inputAttack : inputRelease) * (input - inputLevel);
+                for (int c = 0; c < 1; ++c)
                 {
-                    feed.fired.fetch_add(1, std::memory_order_relaxed);
-                    feed.lastFire.store(now, std::memory_order_relaxed);
-                    feed.lastPitch.store(g.pitch, std::memory_order_relaxed);
-                    feed.lastLength.store(g.left, std::memory_order_relaxed);
+                    auto& cap = capture[c];
+                    cap.gain = jlimit(0.0f, 1.0f, cap.gain + (frozen ? -freezeStep : freezeStep));
+                    const float* in = c == 0 ? x : side;
+                    const float add = c == source() ? 1.0f : 0.0f;
+                    if (cap.gain > 0) cap.write(in[0] + add * fbRing[0][now % K], in[1] + add * fbRing[1][now % K]);
                 }
-                if (--g.traceIn <= 0)
-                {
-                    g.traceIn = jmax(1, (int) (fs * .016));
-                    const auto serial = feed.events.load(std::memory_order_relaxed);
-                    auto& e = feed.history[(size_t) serial % silt::Feed::historySize];
-                    // A seqlock per slot prevents a GUI frame combining data from two ring generations.
-                    e.sequence.fetch_add(1, std::memory_order_acq_rel);
-                    e.frame.store(now, std::memory_order_relaxed);
-                    e.captureHead.store(capture[0].head, std::memory_order_relaxed);
-                    e.back.store((float) ((capture[g.source].head - g.pos) / fs), std::memory_order_relaxed);
-                    e.pitch.store(g.pitch, std::memory_order_relaxed);
-                    e.size.store((float) (g.length / fs), std::memory_order_relaxed);
-                    e.sequence.fetch_add(1, std::memory_order_release);
-                    feed.events.store(serial + 1, std::memory_order_release);
-                }
-                const auto& cap = capture[g.source];
-                const float w = envelope(g);
-                g.phase += g.inc, --g.left;
-                float l, r;
-                if (!g.shifted) cap.read(g.pos, g.level, g.blend, l, r), g.pos += g.step;
+                const double scan = -0.25 * macro(Motion);
+                if (std::abs(scan) < 1e-9) scanned = 0;
                 else
                 {
-                    float l2, r2;
-                    const float second = g.tap + 0.5f * g.span >= g.span ? g.tap - 0.5f * g.span : g.tap + 0.5f * g.span;
-                    const float a = lookup(taps, g.tap / g.span), b = 1 - a;
-                    cap.read(g.pos - g.step * g.tap, g.level, g.blend, l, r), cap.read(g.pos - g.step * second, g.level, g.blend, l2, r2);
-                    l = a * l + b * l2, r = a * r + b * r2;
-                    g.pos += g.step, g.tap += g.tapStep;
-                    if (g.tap < 0 || g.tap >= g.span) g.tap -= g.span * std::floor(g.tap / g.span);
+                    scanned -= scan;
+                    if (scanned >= scanRange) scanned -= scanRange;
                 }
-                y[0] += w * g.gl * l, y[1] += w * g.gr * r, weight += w;
-                if (g.left == 0) g = grains[(size_t) --voiceCount], --k;
+                if (trigger == 0)
+                {
+                    bool tick = false;
+                    if (synced)
+                    {
+                        phase = (ppq + t * bpm / 60 / fs) / quartersPerGrain;
+                        const double whole = std::floor(phase + 1e-9);
+                        tick = !exactlyEqual(whole, lastTick), lastTick = whole;
+                        phase += 1 / spacing;
+                    }
+                    else if ((phase += 1 / spacing) >= 1 - 1e-10)
+                        tick = true, phase -= std::floor(phase + 1e-10);
+                    if (tick) spawn((int) (random() * (0.4f * macro(Motion) + 0.5f * macro(Chaos)) * spacing), bpm, frozen, stream ^= 1);
+                }
+                if ((hitIn && trigger == 1) || (hitSide && trigger == 2)) burst(0, bpm, frozen);
+                feedback.setTargetValue(0.12f + 0.48f * macro(Bloom));
+                width.setTargetValue(0.8f + 0.2f * macro(Bloom));
+                float y[2] {}, weight = 0;
+                if (cloudAt == cloudLength)
+                {
+                    cloudAt = cloudLength = 0;
+                    if (trigger == 0 && voiceCount >= 16)
+                    {
+                        int span = jmin(n - t, (int) jlimit(1.0, (double) Capture::batch, std::floor((1 - (phase - std::floor(phase))) * spacing - 1e-6)));
+                        if (event != midiBuffer.cend()) span = jmin(span, jmax(1, (*event).samplePosition - t));
+                        for (int k = 0; k < voiceCount; ++k)
+                        {
+                            const auto& g = grains[(size_t) k];
+                            span = jmin(span, g.wait > 0 ? g.wait : g.left - 1);
+                        }
+                        if (span >= 4) cloudLength = span, cloud(span, frozen, feed, cloudFrames, cloudWeights);
+                    }
+                }
+                if (cloudAt < cloudLength)
+                {
+                    y[0] = cloudFrames[0][cloudAt], y[1] = cloudFrames[1][cloudAt], weight = cloudWeights[cloudAt++];
+                }
+                else
+                {
+                    for (int k = 0; k < voiceCount; ++k)
+                    {
+                        auto& g = grains[(size_t) k];
+                        if (g.wait > 0) { --g.wait; continue; }
+                        trace(g, feed, now, capture[0].head);
+                        const auto& cap = capture[g.source];
+                        const float w = envelope(g);
+                        g.phase += g.inc, --g.left;
+                        float l, r;
+                        if (!g.shifted) cap.read(g.pos, g.level, l, r, cap.head), g.pos += g.step;
+                        else
+                        {
+                            float l2, r2;
+                            const float second = g.tap + 0.5f * g.span >= g.span ? g.tap - 0.5f * g.span : g.tap + 0.5f * g.span;
+                            const float a = lookup(taps, g.tap / g.span), b = 1 - a;
+                            cap.read(g.pos - g.step * g.tap, g.level, l, r, cap.head), cap.read(g.pos - g.step * second, g.level, l2, r2, cap.head);
+                            l = a * l + b * l2, r = a * r + b * r2;
+                            g.pos += g.step, g.tap += g.tapStep;
+                            if (g.tap < 0 || g.tap >= g.span) g.tap -= g.span * std::floor(g.tap / g.span);
+                        }
+                        y[0] += w * g.gl * l, y[1] += w * g.gr * r, weight += w;
+                        if (g.left == 0) g = grains[(size_t) --voiceCount], --k;
+                    }
+                }
+                // Actual window overlap, with a slow release between clouds. No compressor or limiter.
+                overlap += (weight > overlap ? overlapAttack : overlapRelease) * (weight - overlap);
+                power.setTargetValue((float) (1 - 0.5 * jlimit(0.0, 1.0, separation())));
+                const float exponent = power.getNextValue();
+                const float base = jmax(1.0f, weight, (float) overlap);
+                const float norm = 0.85f / (exponent <= .500001f ? std::sqrt(base) : exponent >= .999999f ? base : std::pow(base, exponent));
+                const float mid = 0.5f * (y[0] + y[1]) * norm, sd = 0.5f * (y[0] - y[1]) * norm * width.getNextValue();
+                y[0] = mid + sd, y[1] = mid - sd;
+                const float lp = lowpass.getNextValue(), hp = highpass.getNextValue(), fbAmount = feedback.getNextValue();
+                float f[2];
+                for (int c = 0; c < 2; ++c)
+                {
+                    y[c] -= dc[c].low(y[c], dcCoef);
+                    const float low = lows[c].low(y[c], lp), high = low - highs[c].low(low, hp);
+                    const float diffused = diffuse(diffuse(high, (size_t) c), (size_t) c + 2);
+                    f[c] = high + (0.2f + 0.8f * macro(Bloom)) * (diffused - high);
+                }
+                level += levelGlide * (fbAmount * 0.5f * (std::abs(f[0]) + std::abs(f[1])) - level);
+                const float guard = level > 1e-6f ? jmin(1.0f, jmax(0.5f * inputLevel, 0.01f) / level) : 1.0f;
+                frames[0][i] = y[0], frames[1][i] = y[1];
+                frames[2][i] = fbAmount * guard * f[0], frames[3][i] = fbAmount * guard * f[1];
+                dryFrames[0][i] = dry[0], dryFrames[1][i] = dry[1];
+                sideFrames[i] = jmax(std::abs(side[0]), std::abs(side[1]));
+                bloomFrames[i] = macro(Bloom);
+                ++now;
             }
-            // Actual window overlap, with a slow release between clouds. No compressor or limiter.
-            overlap += (weight > overlap ? overlapAttack : overlapRelease) * (weight - overlap);
-            power.setTargetValue((float) (1 - 0.5 * jlimit(0.0, 1.0, separation())));
-            const float exponent = power.getNextValue();
-            const float base = jmax(1.0f, weight, (float) overlap);
-            const float norm = 0.85f / (exponent <= .500001f ? std::sqrt(base) : exponent >= .999999f ? base : std::pow(base, exponent));
-            const float mid = 0.5f * (y[0] + y[1]) * norm, sd = 0.5f * (y[0] - y[1]) * norm * width.getNextValue();
-            y[0] = mid + sd, y[1] = mid - sd;
-            const float lp = lowpass.getNextValue(), hp = highpass.getNextValue(), fbAmount = feedback.getNextValue();
-            float f[2];
-            for (int c = 0; c < 2; ++c)
-            {
-                y[c] -= dc[c].low(y[c], dcCoef);
-                const float low = lows[c].low(y[c], lp), high = low - highs[c].low(low, hp);
-                const float diffused = diffuse(diffuse(high, (size_t) c), (size_t) c + 2);
-                f[c] = high + (0.2f + 0.8f * macro(Bloom)) * (diffused - high);
-            }
-            level += levelGlide * (fbAmount * 0.5f * (std::abs(f[0]) + std::abs(f[1])) - level);
-            const float guard = level > 1e-6f ? jmin(1.0f, jmax(0.5f * inputLevel, 0.01f) / level) : 1.0f;
-            const float blend = qualityFade > 0 ? 1.0f - (float) qualityFade / 128 : 1;
-            const auto filtered = [&](int q, float* frame) {
-                float* channels[] { &frame[0], &frame[1], &frame[2], &frame[3] };
-                dsp::AudioBlock<float> sample(channels, 4, 1);
-                auto up = oversamplers[(size_t) q]->processSamplesUp(sample);
-                for (size_t c = 2; c < 4; ++c)
-                    for (size_t i = 0; i < up.getNumSamples(); ++i)
-                        up.getChannelPointer(c)[i] = 0.5f * std::tanh(2 * up.getChannelPointer(c)[i]);
-                oversamplers[(size_t) q]->processSamplesDown(sample);
+            // The feedback delay is K samples. Filter that quantum together, before any of it is read back.
+            // This keeps the feedback timing and FIR history identical for every host block size.
+            const auto filtered = [&](int q, float data[4][K], int length) {
+                float* channels[] { data[2], data[3] };
+                dsp::AudioBlock<float> samples(channels, 2, (size_t) length);
+                auto up = oversamplers[(size_t) q]->processSamplesUp(samples);
+                for (size_t c = 0; c < 2; ++c)
+                {
+                    auto* samplesUp = up.getChannelPointer(c);
+                    const auto bounds = FloatVectorOperations::findMinAndMax(samplesUp, (int) up.getNumSamples());
+                    if (jmax(std::abs(bounds.getStart()), std::abs(bounds.getEnd())) <= .5f)
+                    {
+                        // Padé tanh on [-1,1]: below float roundoff, and vectorisable across the FIR quantum.
+                        for (size_t i = 0; i < up.getNumSamples(); ++i)
+                        {
+                            const float x = 2 * samplesUp[i], xx = x * x;
+                            samplesUp[i] = .5f * x * (945 + xx * (105 + xx)) / (945 + xx * (420 + 15 * xx));
+                        }
+                    }
+                    else
+                        for (size_t i = 0; i < up.getNumSamples(); ++i) samplesUp[i] = .5f * std::tanh(2 * samplesUp[i]);
+                }
+                oversamplers[(size_t) q]->processSamplesDown(samples);
             };
-            float frame[4] { y[0], y[1], fbAmount * guard * f[0], fbAmount * guard * f[1] };
-            float old[4]; std::copy(std::begin(frame), std::end(frame), old);
-            filtered(quality, frame);
-            if (qualityFade > 0)
+            const int fading = jmin(count, qualityFade);
+            if (fading > 0)
             {
-                filtered(previousQuality, old);
-                for (int c = 0; c < 4; ++c) frame[c] = old[c] + blend * (frame[c] - old[c]);
+                for (int c = 0; c < 4; ++c) std::copy_n(frames[c], fading, old[c]);
+                filtered(previousQuality, old, fading);
             }
-            for (int c = 0; c < 2; ++c)
+            filtered(quality, frames, count);
+            for (int i = 0; i < count; ++i)
             {
-                fbRing[c][now % K] = frame[c + 2];
-                y[c] = frame[c];
-                dryDelay[c][dryAt] = dry[c];
-                const auto tap = [&](int offset) { return dryDelay[c][(dryAt + dryDelay[c].size() - (size_t) offset) % dryDelay[c].size()]; };
-                dry[c] = qualityFade > 0 ? tap(previousLatency) + blend * (tap(latency) - tap(previousLatency)) : tap(latency);
+                const int t = chunk + i;
+                const float blend = qualityFade > 0 ? 1.0f - (float) qualityFade / 128 : 1;
+                float frame[4], y[2], dry[2] { dryFrames[0][i], dryFrames[1][i] };
+                for (int c = 0; c < 4; ++c) frame[c] = i < fading ? old[c][i] + blend * (frames[c][i] - old[c][i]) : frames[c][i];
+                for (int c = 0; c < 2; ++c)
+                {
+                    fbRing[c][(chunkTime + i) % K] = frame[c + 2];
+                    // Grain readers are already band-limited. Only the nonlinear feedback needs oversampling;
+                    // keep the wet signal aligned with its declared quality latency using an exact delay.
+                    wetDelay[c][dryAt] = frames[c][i];
+                    const auto wet = [&](int offset) { return wetDelay[c][(dryAt + wetDelay[c].size() - (size_t) offset) % wetDelay[c].size()]; };
+                    y[c] = qualityFade > 0 ? wet(previousLatency) + blend * (wet(latency) - wet(previousLatency)) : wet(latency);
+                    dryDelay[c][dryAt] = dry[c];
+                    const auto tap = [&](int offset) { return dryDelay[c][(dryAt + dryDelay[c].size() - (size_t) offset) % dryDelay[c].size()]; };
+                    dry[c] = qualityFade > 0 ? tap(previousLatency) + blend * (tap(latency) - tap(previousLatency)) : tap(latency);
+                }
+                qualityFade = jmax(0, qualityFade - 1);
+                dryAt = (dryAt + 1) % dryDelay[0].size();
+                // SILT_REVERB: removable grain-output reverb; keep its frozen parameters inert if removed.
+                float rl = y[0], rr = y[1];
+                reverb.process(rl, rr, (0.45f + 0.5f * bloomFrames[i]));
+                const float vm = verb.getNextValue();
+                y[0] += vm * (rl - y[0]), y[1] += vm * (rr - y[1]);
+                // Remove subsonic drift left by long, frozen windows and a modulated reverb tail.
+                for (int c = 0; c < 2; ++c) y[c] -= outputDc[c].low(y[c], outputDcCoef);
+                const float m = mix.getNextValue(), out = gain.getNextValue();
+                if (outs == 1) y[0] = 0.5f * (y[0] + y[1]);
+                for (int c = 0; c < outs; ++c)
+                    buffer.setSample(c, t, exactlyEqual(m, 0.0f) ? dry[c] : exactlyEqual(m, 1.0f) ? y[c] * out : dry[c] + m * (y[c] * out - dry[c]));
+                for (int c = 0; c < 2; ++c) meters[c] = jmax(std::abs(buffer.getSample(jmin(c, outs - 1), t)), meters[c] * .9995f);
+                meters[2] = jmax(sideFrames[i], meters[2] * .9995f);
             }
-            qualityFade = jmax(0, qualityFade - 1);
-            dryAt = (dryAt + 1) % dryDelay[0].size();
-            // SILT_REVERB: removable grain-output reverb; keep its frozen parameters inert if removed.
-            verb.setTargetValue((v[ReverbOn] > .5f ? v[ReverbAmount] / 100 : 0.0f));
-            float rl = y[0], rr = y[1];
-            reverb.process(rl, rr, (0.45f + 0.5f * macro(Bloom)));
-            const float vm = verb.getNextValue();
-            y[0] += vm * (rl - y[0]), y[1] += vm * (rr - y[1]);
-            // Remove subsonic drift left by long, frozen windows and a modulated reverb tail.
-            for (int c = 0; c < 2; ++c) y[c] -= outputDc[c].low(y[c], outputDcCoef);
-            const float m = mix.getNextValue(), out = gain.getNextValue();
-            if (outs == 1) y[0] = 0.5f * (y[0] + y[1]);
-            for (int c = 0; c < outs; ++c)
-                buffer.setSample(c, t, exactlyEqual(m, 0.0f) ? dry[c] : exactlyEqual(m, 1.0f) ? y[c] * out : dry[c] + m * (y[c] * out - dry[c]));
-            for (int c = 0; c < 2; ++c) meters[c] = jmax(std::abs(buffer.getSample(jmin(c, outs - 1), t)), meters[c] * .9995f);
-            meters[2] = jmax(jmax(std::abs(side[0]), std::abs(side[1])), meters[2] * .9995f);
-            ++now;
+            chunk += count;
         }
         publish(feed);
     }
@@ -810,12 +1029,12 @@ void SiltProcessor::setStateInformation(const void* data, int size)
 // All factory voicing is expressed by the same 18 visible parameters; no hidden preset values.
 const silt::Preset silt::presets[] {
     {"sub dust", {100,0,90,1,16,140,12,-12,1,0,1,12,1,0,0,25,5,0}},
-    {"grit",     {100,0,14,1,42,240,38,0,1,0,0,8,1,0,12,90,5,20}},
+    {"grit",     {100,3,14,1,42,240,38,0,1,0,0,8,1,0,12,90,5,20}},
     {"glass",    {100,0,85,1,28,700,30,12,0,0,1,28,1,0,5,20,15,0}},
     {"halo",     {100,0,650,1,18,800,55,0,0,0,1,55,1,0,15,10,65,0}},
     {"tide",     {100,0,51.78f,0,24,1200,45,7,0,0,1,30,1,0,0,0,0,0}},
     {"choir",    {100,0,900,1,22,1600,32,0,0,0,1,48,1,0,20,15,45,5}},
-    {"tines",    {100,0,35,1,14,450,18,7,1,0,1,22,1,0,5,75,10,0}},
+    {"tines",    {100,6,35,1,14,450,18,7,1,0,1,22,1,0,5,75,10,0}},
     {"chime",    {100,0,160,1,12,900,25,12,0,0,1,42,1,0,10,45,45,0}},
     {"rain",     {100,0,55,1,48,1800,78,0,1,0,1,32,1,0,35,55,25,35}},
     {"drift",    {100,0,1200,1,15,2200,62,-7,0,0,1,45,1,0,65,20,55,15}}
