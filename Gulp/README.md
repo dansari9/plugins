@@ -1,7 +1,7 @@
 # gulp
 
-Sidechain pumping and ducking for dance music, by daveydidit. Version 0.2.1. Zero latency in every mode, mono or
-stereo, with an optional mono or stereo sidechain input. One screen, no menus: 12 curves, 10 factory presets, user
+Sidechain pumping and ducking for dance music, by daveydidit. Version 0.2.1. Zero latency unless audio-trigger lookahead
+is on (5 ms), mono or stereo, with an optional mono or stereo sidechain input. One screen, no menus: 12 curves, 10 factory presets, user
 presets and A/B.
 
 Drop it on a bass, pad or bus and it pumps in time with the track straight away. Pick a curve, set how deep and how
@@ -35,10 +35,11 @@ shape crossfade over 20 ms to avoid automation steps; soothe at zero preserves t
 | `tone` | unused since 0.2.0 (kept, not automatable; the modes use its old default) | 0 … 100 % | 50 % |
 | `stereo` | Stereo | both, mid, side | both |
 | `soothe` | Soothe: rounds the curve's corners | 0 … 100 % | 0 % |
+| `lookahead` | Lookahead, audio trigger only: delays the input 5 ms (reported as latency) while the sidechain is read live, so the duck lands on the kick | on/off | off |
 
 The IDs, their order, ranges and choice indices are frozen: sessions and automation depend on them. 0.1.0 sessions
 load: band lows / highs with level becomes the lows / highs mode (the same sound), band and tone are otherwise ignored,
-soothe is off.
+soothe is off. 0.1.0 and 0.2.0 sessions load with lookahead off.
 
 ## Editor
 
@@ -46,9 +47,9 @@ One 120 × 34 cell grid in Geist Mono (scales 50–200 %, the size is saved with
 Middle: one cycle as a tide — the red gain line, the audio that passes as shaded water under it, the sidechain's kick as
 a grey ghost, the playhead and a ruler in fractions of the rate. The nudge slides the curve against the beat; the kick
 and the ruler stay put. Above it: the gain reduction (dotted) and its held peak (click it, or start the transport, to
-reset), invert, the rate (‹ › step through all 16; in **free** the Hz value, drag or click to type) and sync / free.
+reset), invert, the rate (‹ › step from 1/32 to 2 bars; a session saved at 4 bars keeps it; in **free** the Hz value, drag or click to type) and sync / free.
 Drag the ◆ sideways to change the slope (double-click resets, click "slope n%" to type). Below: the modes, then
-trigger, loop (dim with the host trigger, which ignores it), the sidechain meter, stereo, nudge (ms), thresh and
+trigger, loop (dim with the host trigger, which ignores it), lookahead (under audio, dim unless the audio trigger), the sidechain meter, stereo, nudge (ms), thresh and
 soothe. Right: depth, split (live for lows and highs), output and its meter. With the host's transport stopped the graph holds still; with no transport at all (standalone) it runs.
 Every dial drags vertically, double-click resets, click its value to type.
 

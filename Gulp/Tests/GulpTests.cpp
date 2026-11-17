@@ -11,6 +11,7 @@
 #include <limits>
 #include <iostream>
 #include <new>
+#include <thread>
 
 // Real-time check: count heap allocations made on a thread flagged as "audio" (as crumb).
 static thread_local bool onAudioThread = false;
@@ -56,7 +57,7 @@ using Settings = std::vector<std::pair<const char*, float>>;
 constexpr double pi = juce::MathConstants<double>::pi;
 // FROZEN: this list is the contract with every saved session. The test fails if the plug-in's list changes.
 static const juce::StringArray ids { "trigger", "tempoSync", "rate", "freeHz", "curve", "slope", "invert", "depth", "shift",
-                                     "loop",    "thresh",    "band", "split",  "output", "color", "tone",  "stereo", "soothe" };
+                                     "loop",    "thresh",    "band", "split",  "output", "color", "tone",  "stereo", "soothe", "lookahead" };
 
 static void set(Proc& p, const char* id, float v) { auto* q = p.apvts.getParameter(id); q->setValueNotifyingHost(q->convertTo0to1(v)); }
 static void set(Proc& p, const Settings& s) { for (auto& [id, v] : s) set(p, id, v); }
@@ -193,14 +194,14 @@ static void testIdentity()
                               { "shift", -50, 50, 0, nullptr }, { "loop", 0, 1, 0, "" }, { "thresh", -60, 0, -24, nullptr },
                               { "band", 0, 2, 0, "full,lows,highs" }, { "split", 20, 5120, 120, nullptr }, { "output", -24, 12, 0, nullptr },
                               { "color", 0, 7, 0, "vol,lows,highs,dark,thin,pinch,hollow,grit" }, { "tone", 0, 100, 50, nullptr },
-                              { "stereo", 0, 2, 0, "both,mid,side" }, { "soothe", 0, 100, 0, nullptr } };
+                              { "stereo", 0, 2, 0, "both,mid,side" }, { "soothe", 0, 100, 0, nullptr }, { "lookahead", 0, 1, 0, "" } };
     Proc p;
-    CHECK(p.getParameters().size() == 18 && p.getName() == "gulp" && p.acceptsMidi() && p.getNumPrograms() == 10);
+    CHECK(p.getParameters().size() == 19 && p.getName() == "gulp" && p.acceptsMidi() && p.getNumPrograms() == 10);
     for (int i = 0; i < p.getParameters().size(); ++i)
     {
         auto* q = dynamic_cast<juce::RangedAudioParameter*>(p.getParameters()[i]);
         const auto& g = golden[i];
-        CHECK(q != nullptr && q->paramID == ids[i] && q->paramID == g.id && q->getVersionHint() == (i < 17 ? 1 : 2));
+        CHECK(q != nullptr && q->paramID == ids[i] && q->paramID == g.id && q->getVersionHint() == (i < 17 ? 1 : i < 18 ? 2 : 3));
         CHECK(q->isAutomatable() == (q->paramID != "band" && q->paramID != "tone") && !q->isMetaParameter()); // legacy: inert, kept
         const auto& r = q->getNormalisableRange();
         CHECK(r.start == g.lo && r.end == g.hi && get(p, g.id) == g.def); if (!(r.start == g.lo && r.end == g.hi && get(p, g.id) == g.def)) std::cerr << std::setprecision(10) << g.id << " " << r.start << " " << r.end << " " << get(p, g.id) << "\n";
@@ -228,6 +229,19 @@ static juce::MemoryBlock v1Fixture()
                 R"(<PARAM id="output" value="-3.5"/><PARAM id="rate" value="5.0"/><PARAM id="shift" value="12.5"/><PARAM id="slope" value="-40.0"/>)"
                 R"(<PARAM id="split" value="250.0"/><PARAM id="stereo" value="1.0"/><PARAM id="tempoSync" value="0.0"/><PARAM id="thresh" value="-30.0"/>)"
                 R"(<PARAM id="tone" value="75.0"/><PARAM id="trigger" value="2.0"/></GULP>)");
+}
+
+// Frozen v2 fixture, as gulp 0.2.0 writes it (18 parameters, slots of 18 values; no lookahead): loads with lookahead off.
+static juce::MemoryBlock v2Fixture(int ab = 1)
+{
+    return blob(juce::String(R"(<?xml version="1.0" encoding="UTF-8"?>)" "\n"
+                R"(<GULP stateVersion="2" preset="-1" presetName="user 03" ab="1" slotA="5;1,1,0.533333361,0.5,0,0.5,0,1,0.5,0,0.600000024,0.5,0.400000006,0.666666687,0.142857149,0.5,0,0.25")"
+                R"( slotNameA="" slotB="2;0.5,0,1,0.5,0,0.5,0,1,0.5,1,0.600000024,0,0.400000006,0.666666687,0,0.5,0,0")"
+                R"( slotNameB="user 03"><PARAM id="trigger" value="2.0"/><PARAM id="tempoSync" value="1.0"/><PARAM id="rate" value="15.0"/>)"
+                R"(<PARAM id="freeHz" value="2.0"/><PARAM id="curve" value="3.0"/><PARAM id="slope" value="12.5"/><PARAM id="invert" value="0.0"/>)"
+                R"(<PARAM id="depth" value="80.0"/><PARAM id="shift" value="0.0"/><PARAM id="loop" value="1.0"/><PARAM id="thresh" value="-30.0"/>)"
+                R"(<PARAM id="band" value="0.0"/><PARAM id="split" value="150.0"/><PARAM id="output" value="0.0"/><PARAM id="color" value="1.0"/>)"
+                R"(<PARAM id="tone" value="50.0"/><PARAM id="stereo" value="0.0"/><PARAM id="soothe" value="25.0"/></GULP>)").replace("ab=\"1\"", "ab=\"" + juce::String(ab) + "\""));
 }
 
 static void randomise(Proc& p, juce::Random& r) { for (auto* q : p.getParameters()) q->setValueNotifyingHost(r.nextFloat()); }
@@ -273,15 +287,16 @@ static void testState()
     load(p, blob(R"(<GULP><PARAM id="depth" value="nan"/><PARAM id="thresh" value="-1e300"/></GULP>)"));
     CHECK(get(p, "depth") == 100 && get(p, "thresh") == -60);
     p.setStateInformation("garbage!", 8), p.setStateInformation(nullptr, 0), CHECK(get(p, "thresh") == -60);
-    // The checked-in v1 blob.
-    load(p, v1Fixture());
+    // The checked-in v1 blob (lookahead was on: a missing parameter loads at its default, off).
+    set(p, "lookahead", 1), load(p, v1Fixture());
     CHECK(get(p, "trigger") == 2 && get(p, "tempoSync") == 0 && get(p, "rate") == 5 && get(p, "freeHz") == 3.5f && get(p, "curve") == 7
           && get(p, "slope") == -40 && get(p, "invert") == 1 && get(p, "depth") == 62.5f && get(p, "shift") == 12.5f && get(p, "loop") == 1
           && get(p, "thresh") == -30 && get(p, "band") == 2 && get(p, "split") == 250 && get(p, "output") == -3.5f && get(p, "color") == 5
-          && get(p, "tone") == 75 && get(p, "stereo") == 1 && get(p, "soothe") == 0); // band highs with pinch: just pinch
+          && get(p, "tone") == 75 && get(p, "stereo") == 1 && get(p, "soothe") == 0 && get(p, "lookahead") == 0); // band highs with pinch: just pinch
     CHECK(p.presetName() == "user 07" && p.abSlot() == 1 && p.editorWidth == 1536);
     // Slot A is 0.1.0's preset 03 (band lows, level): it comes back as the lows mode, soothe off.
-    p.selectAb(0), CHECK(p.getCurrentProgram() == 3 && get(p, "rate") == 8 && get(p, "band") == 1 && get(p, "color") == 1 && get(p, "soothe") == 0);
+    set(p, "lookahead", 1), p.selectAb(0);
+    CHECK(p.getCurrentProgram() == 3 && get(p, "rate") == 8 && get(p, "band") == 1 && get(p, "color") == 1 && get(p, "soothe") == 0 && get(p, "lookahead") == 0);
     p.selectAb(1), CHECK(get(p, "color") == 5 && get(p, "trigger") == 2);
     // Ducking only the lows / highs (band + level) becomes that mode; other modes on a band, and a full band, keep theirs.
     for (auto [band, colour, now] : { std::tuple { 1, 0, 1 }, { 2, 0, 2 }, { 0, 0, 0 }, { 1, 3, 3 }, { 0, 6, 6 } })
@@ -292,6 +307,88 @@ static void testState()
     }
     load(p, blob(R"(<GULP stateVersion="2"><PARAM id="band" value="1"/><PARAM id="color" value="0"/></GULP>)")); // v2: band is inert
     CHECK(get(p, "color") == 0 && get(p, "soothe") == 0);
+    // The checked-in v2 blob: everything as saved (rate 4/1 too, which the editor no longer steps to), lookahead off,
+    // also in both slots (18 values each), and it sounds as a fresh 0.2.0-style setup without lookahead.
+    Proc v2, same;
+    set(v2, "lookahead", 1), load(v2, v2Fixture());
+    CHECK(get(v2, "trigger") == 2 && get(v2, "rate") == 15 && get(v2, "curve") == 3 && get(v2, "slope") == 12.5f && get(v2, "depth") == 80
+          && get(v2, "loop") == 1 && get(v2, "thresh") == -30 && get(v2, "split") == 150 && get(v2, "color") == 1 && get(v2, "soothe") == 25
+          && get(v2, "lookahead") == 0 && v2.presetName() == "user 03" && v2.getLatencySamples() == 0);
+    set(v2, "lookahead", 1), v2.selectAb(0); // slot A (saved current: B)
+    CHECK(get(v2, "lookahead") == 0 && get(v2, "trigger") == 2 && get(v2, "soothe") == 25 && get(v2, "color") == 1 && get(v2, "rate") == 8 && v2.getCurrentProgram() == 5);
+    load(v2, v2Fixture(0)), set(v2, "lookahead", 1), v2.selectAb(1); // slot B
+    CHECK(get(v2, "lookahead") == 0 && get(v2, "loop") == 1 && get(v2, "trigger") == 1 && get(v2, "rate") == 15 && v2.getCurrentProgram() == 2);
+    load(v2, v2Fixture());
+    for (int i = 0; i < ids.size() - 1; ++i) set(same, ids[i].toRawUTF8(), get(v2, ids[i]));
+    prepare(v2, 48000, 512), prepare(same, 48000, 512);
+    CHECK(run(v2, 48000, 512) == run(same, 48000, 512) && v2.getLatencySamples() == 0);
+    // 0.2.1 saves round-trip lookahead on, in the session and in the A/B slots, and report its latency on load.
+    Proc on, back;
+    set(on, { { "trigger", 2 }, { "lookahead", 1 } }), on.selectAb(1), set(on, "lookahead", 0), on.selectAb(0);
+    load(back, save(on)), prepare(back, 48000, 512);
+    CHECK(get(back, "lookahead") == 1 && back.getLatencySamples() == 240 && save(back) == save(on));
+    back.selectAb(1), CHECK(get(back, "lookahead") == 0 && back.getLatencySamples() == 0);
+    back.selectAb(0), CHECK(get(back, "lookahead") == 1 && back.getLatencySamples() == 240);
+}
+
+// Lookahead (audio trigger only): the main input is delayed by 5 ms, reported as latency, while the sidechain is read
+// undelayed, so the duck is already down when the (delayed) transient plays. Off, or on another trigger: no latency and
+// not a bit different. The latency follows the parameters on the message thread, also when set from another thread.
+template <typename Done> static void pumpUntil(Done done);
+static void testLookahead()
+{
+    for (auto [fs, samples] : { std::pair { 44100.0, 220 }, { 48000.0, 240 }, { 96000.0, 480 } })
+    {
+        Proc p;
+        prepare(p, fs, 512), CHECK(p.getLatencySamples() == 0);
+        set(p, "lookahead", 1), CHECK(p.getLatencySamples() == 0); // host sync: nothing to look ahead of
+        set(p, "trigger", 2), CHECK(p.getLatencySamples() == samples);
+        set(p, "trigger", 1), CHECK(p.getLatencySamples() == 0);
+        set(p, "trigger", 2), set(p, "lookahead", 0), CHECK(p.getLatencySamples() == 0);
+        set(p, "lookahead", 1), prepare(p, fs, 64), CHECK(p.getLatencySamples() == samples);
+        std::thread([&] { set(p, "lookahead", 0); }).join(); // as automation on the audio thread: the message thread reports it
+        pumpUntil([&] { return p.getLatencySamples() == 0; }), CHECK(p.getLatencySamples() == 0);
+    }
+    // A step from 0.25 to 0.5 at T on the input with a kick at T on the sidechain (classic, 1/4 at 120 bpm, depth 100).
+    // gain = output / the input it played. Off, the duck starts just after the step, which passes at full level. On,
+    // the duck starts at the same sample (detection is undelayed), 240 samples before the step plays, which it ducks.
+    constexpr int T = 4800, L = 240;
+    int onset[2] {};
+    double atStep[2] {};
+    for (int on : { 0, 1 })
+    {
+        Proc p;
+        set(p, { { "trigger", 2 }, { "lookahead", (float) on }, { "curve", 0 } });
+        prepare(p, 48000, 512);
+        Run r;
+        r.in = [](int i, int) { return i < T ? 0.25f : 0.5f; }, r.sc = [](int i) { return i < T ? 0.0f : kick(i - T); };
+        const auto y = run(p, 9600, 0, r);
+        const auto gain = [&](int i) { return y[(size_t) i] / (i - on * L < T ? 0.25 : 0.5); };
+        onset[on] = L;
+        while (onset[on] < 9600 && gain(onset[on]) > 0.9999) ++onset[on];
+        atStep[on] = gain(T + on * L);
+    }
+    CHECK(onset[0] == onset[1] && onset[0] >= T && onset[0] <= T + 10); // detection: a few samples into the kick
+    CHECK(onset[1] < T + L && T + L - onset[1] >= L - 10);                // on: the duck leads the output's transient
+    CHECK(atStep[0] > 0.95 && atStep[1] < 0.2);                           // off the step passes, on it is ducked
+    // Off, or on with another trigger: bit-identical to a plug-in without it (the goldens are rendered with it off).
+    for (int trigger : { 0, 1 })
+    {
+        Proc off, on;
+        set(off, "trigger", (float) trigger), set(on, { { "trigger", (float) trigger }, { "lookahead", 1 } });
+        prepare(off, 48000, 512), prepare(on, 48000, 512);
+        Host h1, h2;
+        Run a, b;
+        a.host = &h1, b.host = &h2, a.notes.push_back(300), a.notes.push_back(20000), b.notes = a.notes;
+        CHECK(run(off, 48000, 0, a) == run(on, 48000, 0, b) && on.getLatencySamples() == 0);
+    }
+    // Switching it while playing crossfades (10 ms): no click on the bass, depth 0.
+    Proc p;
+    set(p, { { "trigger", 2 }, { "depth", 0 } });
+    prepare(p, 48000, 512);
+    Run r;
+    r.perBlock = [&](int start) { set(p, "lookahead", (float) (start / 4096 % 2)); };
+    CHECK(maxStep(run(p, 48000, 512, r)) < 0.01);
 }
 
 // Presets: names, prev/next through factory then user files, save, A/B (a fresh B starts as a copy of A).
@@ -731,7 +828,7 @@ static void testBands()
         {
             Proc p;
             randomise(p, r);
-            set(p, { { "depth", 0 }, { "color", 0 }, { "output", 0 } });
+            set(p, { { "depth", 0 }, { "color", 0 }, { "output", 0 }, { "lookahead", 0 } });
             prepare(p, 48000, 512);
             Host h;
             std::vector<float> right;
@@ -1113,15 +1210,21 @@ static void testInteraction()
         type("slope", 0.25f), CHECK(get(p, "slope") == -50);
         set(p, "slope", 0), timer.timerCallback();
 
-        // Rate: ◁ ▷ step the 16 rates (clamped); in free they walk the ladder of round Hz and the value drags and types.
+        // Rate: ‹ › step the rates up to 2/1 (2 bars, clamped); an old 4/1 shows, stays and steps down; in free they walk
+        // the ladder of round Hz and the value drags and types.
         CHECK(!find(*e, "freeHz")->isVisible());
         set(p, "rate", 8), timer.timerCallback();
         press("rate+"), CHECK(get(p, "rate") == 9);
         for (int k = 0; k < 14; ++k) press("rate-");
         CHECK(get(p, "rate") == 0), press("rate+"), CHECK(get(p, "rate") == 1);
         for (int k = 0; k < 20; ++k) press("rate+"), CHECK(!overlaps());
-        CHECK(get(p, "rate") == 15 && find(*e, "rate+")->getBounds() == cellArea(82, 3, 1, 1) && find(*e, "rate-")->getBounds() == cellArea(74, 3, 1, 1));
-        press("free"), CHECK(get(p, "tempoSync") == 0 && find(*e, "freeHz")->isVisible() && get(p, "rate") == 15);
+        CHECK(get(p, "rate") == 14 && find(*e, "rate+")->getBounds() == cellArea(82, 3, 1, 1) && find(*e, "rate-")->getBounds() == cellArea(71, 3, 1, 1)); // "2 bars"
+        load(p, blob(R"(<GULP stateVersion="2"><PARAM id="rate" value="15.0"/></GULP>)")); // a 0.2.0 session at 4/1
+        timer.timerCallback(), CHECK(get(p, "rate") == 15 && p.apvts.getParameter("rate")->getCurrentValueAsText() == "4/1" && !overlaps());
+        press("rate+"), CHECK(get(p, "rate") == 15);
+        press("rate-"), CHECK(get(p, "rate") == 14), press("rate+"), CHECK(get(p, "rate") == 14);
+        press("rate-"), CHECK(get(p, "rate") == 13 && find(*e, "rate-")->getBounds() == cellArea(72, 3, 1, 1)); // "1 bar"
+        press("rate+"), press("free"), CHECK(get(p, "tempoSync") == 0 && find(*e, "freeHz")->isVisible() && get(p, "rate") == 14);
         press("free"), CHECK(get(p, "tempoSync") == 0); // choices are idempotent, not toggles
         CHECK(!overlaps());
         set(p, "freeHz", 2), timer.timerCallback();
@@ -1129,7 +1232,7 @@ static void testInteraction()
         press("rate-"), press("rate-"), CHECK(get(p, "freeHz") == 1.5f);
         set(p, "freeHz", 2.2f), timer.timerCallback(), press("rate-"), CHECK(get(p, "freeHz") == 2);
         for (int k = 0; k < 20; ++k) press("rate+"), CHECK(!overlaps() && find(*e, "rate-")->getRight() <= find(*e, "freeHz")->getX());
-        CHECK(get(p, "freeHz") == 20 && get(p, "rate") == 15);
+        CHECK(get(p, "freeHz") == 20 && get(p, "rate") == 14);
         for (int k = 0; k < 20; ++k) press("rate-");
         CHECK(std::abs(get(p, "freeHz") - 0.1f) < 1e-6f);
         dial("freeHz");
@@ -1141,6 +1244,7 @@ static void testInteraction()
         CHECK(dynamic_cast<juce::Button*>(find(*e, "sync"))->getToggleState() && !dynamic_cast<juce::Button*>(find(*e, "free"))->getToggleState());
         CHECK(find(*e, "sync")->getBounds() == cellArea(85, 3, 4, 2) && find(*e, "free")->getBounds() == cellArea(91, 3, 4, 2));
         CHECK(find(*e, "loop")->getBounds() == cellArea(25, 29, 6, 1) && find(*e, "loop")->getX() == find(*e, "trigger host")->getX());
+        CHECK(find(*e, "lookahead")->getBounds() == cellArea(35, 29, 11, 1) && find(*e, "lookahead")->getX() == find(*e, "trigger audio")->getX());
 
         // The held peak: click the number to zero it.
         p.feed.held = 0.6f, timer.timerCallback();
@@ -1159,7 +1263,7 @@ static void testInteraction()
             for (int k = items.size(); --k >= 0;)
                 press(juce::String(id) + " " + items[k]), CHECK(get(p, id) == (float) k);
         CHECK(find(*e, "curve double")->getBottom() == cellArea(0, 0, 1, 31).getBottom() && find(*e, "curve classic")->getY() == cellArea(0, 5, 1, 1).getY());
-        for (auto* id : { "invert", "loop" })
+        for (auto* id : { "invert", "loop", "lookahead" })
             press(id), CHECK(get(p, id) == 1), press(id), CHECK(get(p, id) == 0);
         p.setCurrentProgram(3);
         press("next"), CHECK(p.getCurrentProgram() == 4);
@@ -1310,9 +1414,9 @@ static const Golden sounds[] = {
     { 0, 7, "f3ef30e486df5dfa2c033e2e2bb9cc182a3cf82a373247bb2527928ee56863f7" },
 };
 struct Shot { int percent; const char* hash; };
-static const Shot shots[] = { { 100, "649b4ee351ee306fb65d31e251489c218cfd32347a4c9535ca98d6d1bfaa023e" },
-                              { 50, "6ed210ac0a699a5fcba3b6138c9e7cbb3103d567359d498c06d6714bc55066f8" },
-                              { 200, "9c907e3097f2813bbb25ee7c107aedf3e520c48b96f49898f51e573e16838b53" } };
+static const Shot shots[] = { { 100, "831c28b9a53187353072e91db702b814d906eafac14565e133f8286b539bf509" },
+                              { 50, "7d4c1816a369e1f7919661a31bb1cf0f235e0123e406387362ccaa7b1a30ee11" },
+                              { 200, "36b186d872ead8104eceb3d04f9aee417d273041df957a06fc8f2a81f0808e97" } };
 static void testGoldens()
 {
     CHECK(render(0, 0) == render(0, 0) && pixels(snapshot(100)) == pixels(snapshot(100)));
@@ -1378,6 +1482,7 @@ int main(int argc, char** argv)
     testTriggers();
     testIdle();
     testDelayedTriggers();
+    testLookahead();
     testClicks();
     testSoothe();
     testTransport();

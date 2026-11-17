@@ -10,10 +10,11 @@ namespace
 // Hosts store sessions and automation under these string IDs (ParameterID version hint 1). Never rename, remove,
 // reorder, change a range or a choice list so that old values move. New parameters are APPENDED only, with hint 2+.
 // band and tone are inert since 0.2.0 (stateVersion 2) but stay, unautomatable, so every index and ID keeps its place.
+// Version hints: 1 = 0.1.0, 2 = soothe (0.2.0), 3 = lookahead (0.2.1).
 const char* const ids[] = { "trigger", "tempoSync", "rate", "freeHz", "curve", "slope",  "invert", "depth", "shift",
-                            "loop",    "thresh",    "band", "split",  "output", "color", "tone",   "stereo", "soothe" };
+                            "loop",    "thresh",    "band", "split",  "output", "color", "tone",   "stereo", "soothe", "lookahead" };
 // =================================================================================================
-enum { Trigger, TempoSync, Rate, FreeHz, Curve, Slope, Invert, Depth, Shift, Loop, Thresh, Band, Split, Output, Color, Tone, Stereo, Soothe };
+enum { Trigger, TempoSync, Rate, FreeHz, Curve, Slope, Invert, Depth, Shift, Loop, Thresh, Band, Split, Output, Color, Tone, Stereo, Soothe, Lookahead };
 constexpr double pi = MathConstants<double>::pi;
 
 // One cycle in ms at the current rate: the host's last tempo (120 without one) in sync, else 1 / free Hz. The nudge
@@ -42,7 +43,7 @@ AudioProcessorValueTreeState::ParameterLayout layout(const GulpProcessor& self)
         return std::make_unique<AudioParameterFloat>(ParameterID { ids[i], i < Soothe ? 1 : 2 }, name, r, def,
                                                      AudioParameterFloatAttributes().withLabel(unit).withStringFromValueFunction([text](float v, int) { return text(v); }).withValueFromStringFunction(from ? from : decltype(from)(parse)).withAutomatable(i != Tone));
     };
-    auto onOff = [](int i, const char* name, bool def) { return std::make_unique<AudioParameterBool>(ParameterID { ids[i], 1 }, name, def); };
+    auto onOff = [](int i, const char* name, bool def) { return std::make_unique<AudioParameterBool>(ParameterID { ids[i], i < Soothe ? 1 : 3 }, name, def); };
     auto choice = [](int i, const char* name, StringArray items, int def, bool live = true) { return std::make_unique<AudioParameterChoice>(ParameterID { ids[i], 1 }, name, items, def, AudioParameterChoiceAttributes().withAutomatable(live)); };
     auto percent = [trim](float v) { return trim(v) + "%"; };
     return { choice(Trigger, "Trigger", { "host", "midi", "audio" }, 0), // index 0 was named "sync" until 0.2.0
@@ -63,7 +64,8 @@ AudioProcessorValueTreeState::ParameterLayout layout(const GulpProcessor& self)
              choice(Color, "Mode", StringArray(gulp::colorNames, gulp::numColors), 0),
              num(Tone, "Tone (unused)", 0, 100, 50, 0.1f, false, "%", percent),
              choice(Stereo, "Stereo", { "both", "mid", "side" }, 0),
-             num(Soothe, "Soothe", 0, 100, 0, 0.1f, false, "%", percent) };
+             num(Soothe, "Soothe", 0, 100, 0, 0.1f, false, "%", percent),
+             onOff(Lookahead, "Lookahead", false) };
 }
 
 double release(double p, double attack, double hold, double r, double k) // linear attack, hold, release ^ k
@@ -205,6 +207,12 @@ struct GulpProcessor::Dsp
     // every hit fires at its own due sample however close together they come. Sized in prepare, never on the audio thread.
     std::vector<bool> due;
     size_t now = 0;
+    // Lookahead: the main input, delayed by `lookahead` samples in a ring per channel (sized in prepare, always written so
+    // switching it is seamless), crossfaded in by `ahead` over 10 ms. Off (0) leaves the input untouched, bit for bit.
+    std::vector<float> late[2];
+    size_t at = 0;
+    std::atomic<int> lookahead { 0 };
+    SmoothedValue<double> ahead;
 
     void prepare(double sr)
     {
@@ -212,16 +220,21 @@ struct GulpProcessor::Dsp
         slew = 1 - std::exp(-1 / (0.00025 * fs)), envRelease = std::exp(-1 / (0.05 * fs));
         for (auto* s : { &depth, &gain, &split, &tableMix })
             s->reset(fs, 0.02);
-        for (auto* s : { &mid, &side })
+        for (auto* s : { &mid, &side, &ahead })
             s->reset(fs, 0.01);
         for (auto& s : colours)
             s.reset(fs, 0.01);
         due.assign((size_t) std::ceil(24 * fs) + 2, false);
+        lookahead = jmax(1, roundToInt(gulp::lookaheadMs / 1000 * fs));
+        for (auto& l : late)
+            l.assign((size_t) lookahead.load(), 0.0f);
     }
     void reset()
     {
         cycle = 1, aim = a = hold = env = lo = hi = outEnv = 0, armed = false, scArmed = true, holdoff = bin = 0, tick = 0;
         std::fill(due.begin(), due.end(), false), now = 0;
+        for (auto& l : late) std::fill(l.begin(), l.end(), 0.0f);
+        at = 0;
         tableKey[0] = -1;
         for (auto& c : cross) for (auto& s : c) s = {};
         for (auto& c : state) for (auto& s : c) s = {};
@@ -240,6 +253,7 @@ struct GulpProcessor::Dsp
         }
         set(depth, p(Depth) / 100), set(gain, Decibels::decibelsToGain(p(Output))), set(split, std::log2(p(Split)));
         set(mid, p(Stereo) < 1.5 ? 1 : 0), set(side, p(Stereo) < 0.5 || p(Stereo) > 1.5 ? 1 : 0);
+        set(ahead, p(Lookahead) > 0.5 && (int) p(Trigger) == 2 ? 1 : 0);
     }
     void buildTable(bool triggered)
     {
@@ -277,6 +291,7 @@ GulpProcessor::GulpProcessor(File directory)
     for (int i = 0; i < gulp::numParams; ++i)
         dsp->raw[(size_t) i] = apvts.getRawParameterValue(ids[i]);
     dsp->prepare(48000); // usable even if a host processes before prepareToPlay
+    apvts.addParameterListener(ids[Lookahead], this), apvts.addParameterListener(ids[Trigger], this);
 }
 
 GulpProcessor::~GulpProcessor() = default;
@@ -292,6 +307,21 @@ void GulpProcessor::prepareToPlay(double fs, int)
 {
     dsp->prepare(fs);
     resetPending = true; // the first block initializes the DSP from the parameters it then sees, restored or not
+    handleAsyncUpdate();
+}
+
+// JUCE's place for a latency change is prepareToPlay or the message thread: setLatencySamples notifies the host there
+// (VST3 restartComponent, AU property listeners). A change that arrives elsewhere (automation on the audio thread, a
+// state restored off the message thread) hops over with the AsyncUpdater. The audio switches at once (crossfaded).
+void GulpProcessor::parameterChanged(const String&, float)
+{
+    MessageManager::existsAndIsCurrentThread() ? handleAsyncUpdate() : triggerAsyncUpdate();
+}
+
+void GulpProcessor::handleAsyncUpdate()
+{
+    const auto on = [this](int i) { return dsp->raw[(size_t) i]->load(); };
+    setLatencySamples(on(Lookahead) > 0.5f && (int) on(Trigger) == 2 ? dsp->lookahead.load() : 0);
 }
 
 void GulpProcessor::processBlock(AudioBuffer<float>& buffer, MidiBuffer& midi)
@@ -394,10 +424,12 @@ void GulpProcessor::processBlock(AudioBuffer<float>& buffer, MidiBuffer& midi)
         // Per channel: the LR4 split (for lows and highs), the mode, then mid/side as a weighted sum of the left and
         // right changes, so both = left/right, and each is exact when nothing changes.
         double in[2] {}, change[2] {};
+        const double ahead = d.ahead.getNextValue();
         for (int c = 0; c < channels; ++c)
         {
-            const float v = buffer.getSample(c, i);
-            in[c] = std::isfinite(v) ? jlimit(-1000.0f, 1000.0f, v) : 0.0f;
+            const float v = buffer.getSample(c, i), dry = std::isfinite(v) ? jlimit(-1000.0f, 1000.0f, v) : 0.0f;
+            const float late = std::exchange(d.late[c][d.at], dry);
+            in[c] = ahead > 0 ? dry + ahead * (late - dry) : dry;
             auto& f = d.cross[c];
             const double low = f[1].run(f[0].run(in[c], d.k.cross)[0], d.k.cross)[0], high = f[3].run(f[2].run(in[c], d.k.cross)[2], d.k.cross)[2];
             double y = 0;
@@ -406,6 +438,7 @@ void GulpProcessor::processBlock(AudioBuffer<float>& buffer, MidiBuffer& midi)
                     y += wColour[m] * colour(m, d.state[c][m], in[c], low, high, d.a, d.k);
             change[c] = y - in[c];
         }
+        d.at = (d.at + 1) % d.late[0].size();
         if (channels == 1)
             change[1] = change[0];
         const double m = 0.5 * wMid * (change[0] + change[1]), sd = 0.5 * wSide * (change[0] - change[1]);
@@ -486,7 +519,8 @@ void GulpProcessor::applyParams(const XmlElement& state)
         apvts.getParameter(ids[Color])->setValueNotifyingHost(fromV1(apvts.getParameter(ids[Band])->getValue(), apvts.getParameter(ids[Color])->getValue()));
 }
 
-// stateVersion 1 is 0.1.0's format, 2 (0.2.0) appended soothe and retired band and tone: fromV1() migrates. A newer one
+// stateVersion 1 is 0.1.0's format, 2 (0.2.0) appended soothe and retired band and tone: fromV1() migrates. 0.2.1 appended
+// lookahead within version 2: a missing parameter loads at its default (off), so 0.2.0's sessions sound the same. A newer one
 // loads the parameters this version knows; each future bump gets an explicit migration and a saved blob in Tests/.
 // Malformed documents change nothing; JUCE's parser accepts a truncated one, so the text must also end with the root's
 // closing tag.
@@ -501,19 +535,18 @@ void GulpProcessor::setStateInformation(const void* data, int size)
         return;
     applyParams(*tree);
     const ScopedLock sl(lock);
-    for (int k = 0; k < 2; ++k) // a slot counts only with a preset and 18 normalised values (17 from 0.1.0, migrated)
+    for (int k = 0; k < 2; ++k) // a slot counts only with a preset and 17 (0.1.0, migrated), 18 (0.2.0) or 19 normalised values
     {
         const auto t = StringArray::fromTokens(tree->getStringAttribute(k == 0 ? "slotA" : "slotB"), ";,", "");
         slots[k].clear(), slotName[k] = tree->getStringAttribute(k == 0 ? "slotNameA" : "slotNameB");
         slotPreset[k] = (int) jlimit(-1.0, gulp::numPresets - 1.0, number(t[0]).value_or(-1));
-        const bool v1 = t.size() == Soothe + 1;
-        for (int i = 1; i < t.size() && (v1 || t.size() == gulp::numParams + 1); ++i)
+        const bool fits = t.size() > Soothe && t.size() <= gulp::numParams + 1;
+        for (int i = 1; i < t.size() && fits; ++i)
             if (const auto v = number(t[i]); v && *v >= 0 && *v <= 1)
                 slots[k].push_back((float) *v);
-        if (v1 && slots[k].size() == (size_t) Soothe)
-            slots[k][Color] = fromV1(slots[k][Band], slots[k][Color]), slots[k].push_back(0);
-        if (slots[k].size() != (size_t) gulp::numParams)
-            slots[k].clear();
+        if (t.size() == Soothe + 1 && slots[k].size() == (size_t) Soothe)
+            slots[k][Color] = fromV1(slots[k][Band], slots[k][Color]);
+        fits && slots[k].size() + 1 == (size_t) t.size() ? slots[k].resize(gulp::numParams, 0.0f) : slots[k].clear(); // soothe, lookahead off
     }
     ab = number(tree->getStringAttribute("ab")).value_or(0) > 0.5 ? 1 : 0;
     editorWidth = (int) jlimit(0.0, 4096.0, number(tree->getStringAttribute("editorWidth")).value_or(0));
@@ -521,18 +554,19 @@ void GulpProcessor::setStateInformation(const void* data, int size)
 }
 
 // Values in ID order: trigger (host midi audio), tempoSync, rate (index), freeHz, curve (index), slope %, invert, depth %,
-// nudge %, loop, thresh dB, band (unused), split Hz, output dB, mode (index), tone (unused), stereo (both mid side), soothe %.
+// nudge %, loop, thresh dB, band (unused), split Hz, output dB, mode (index), tone (unused), stereo (both mid side), soothe %,
+// lookahead.
 const gulp::Preset gulp::presets[] = {
-    { "init", { 0, 1, 8, 2, 0, 0, 0, 100, 0, 0, -24, 0, 120, 0, 0, 50, 0, 0 } },
-    { "techno \xc2\xb7 tight eighths", { 0, 1, 5, 2, 1, 0, 0, 90, 0, 0, -24, 0, 120, 0, 0, 50, 0, 0 } },
-    { "sub \xc2\xb7 long breath", { 0, 1, 11, 2, 7, 20, 0, 100, 0, 0, -24, 0, 90, 0, 1, 50, 0, 0 } },
-    { "house \xc2\xb7 classic pump", { 0, 1, 8, 2, 0, 0, 0, 100, 0, 0, -24, 0, 120, 0, 1, 50, 0, 0 } },
-    { "kick \xc2\xb7 midi punch", { 1, 1, 8, 2, 2, 0, 0, 85, 0, 0, -24, 0, 120, 0, 0, 50, 0, 0 } },
-    { "kick \xc2\xb7 audio follow", { 2, 1, 8, 2, 0, -20, 0, 80, 0, 0, -24, 0, 150, 0, 1, 50, 0, 0 } },
-    { "pad \xc2\xb7 wave swell", { 0, 1, 11, 2, 10, 0, 0, 70, 0, 1, -24, 0, 120, 0, 0, 50, 0, 0 } },
-    { "bus \xc2\xb7 dark duck", { 0, 1, 8, 2, 3, 0, 0, 100, 0, 0, -24, 0, 120, 0, 3, 50, 0, 0 } },
-    { "wide \xc2\xb7 side breathe", { 0, 1, 8, 2, 4, 0, 0, 80, 0, 0, -24, 0, 120, 0, 0, 50, 2, 0 } },
-    { "fx \xc2\xb7 grit gate", { 0, 1, 2, 2, 5, 0, 0, 100, 0, 0, -24, 0, 120, -2, 7, 50, 0, 0 } },
+    { "init", { 0, 1, 8, 2, 0, 0, 0, 100, 0, 0, -24, 0, 120, 0, 0, 50, 0, 0, 0 } },
+    { "techno \xc2\xb7 tight eighths", { 0, 1, 5, 2, 1, 0, 0, 90, 0, 0, -24, 0, 120, 0, 0, 50, 0, 0, 0 } },
+    { "sub \xc2\xb7 long breath", { 0, 1, 11, 2, 7, 20, 0, 100, 0, 0, -24, 0, 90, 0, 1, 50, 0, 0, 0 } },
+    { "house \xc2\xb7 classic pump", { 0, 1, 8, 2, 0, 0, 0, 100, 0, 0, -24, 0, 120, 0, 1, 50, 0, 0, 0 } },
+    { "kick \xc2\xb7 midi punch", { 1, 1, 8, 2, 2, 0, 0, 85, 0, 0, -24, 0, 120, 0, 0, 50, 0, 0, 0 } },
+    { "kick \xc2\xb7 audio follow", { 2, 1, 8, 2, 0, -20, 0, 80, 0, 0, -24, 0, 150, 0, 1, 50, 0, 0, 0 } },
+    { "pad \xc2\xb7 wave swell", { 0, 1, 11, 2, 10, 0, 0, 70, 0, 1, -24, 0, 120, 0, 0, 50, 0, 0, 0 } },
+    { "bus \xc2\xb7 dark duck", { 0, 1, 8, 2, 3, 0, 0, 100, 0, 0, -24, 0, 120, 0, 3, 50, 0, 0, 0 } },
+    { "wide \xc2\xb7 side breathe", { 0, 1, 8, 2, 4, 0, 0, 80, 0, 0, -24, 0, 120, 0, 0, 50, 2, 0, 0 } },
+    { "fx \xc2\xb7 grit gate", { 0, 1, 2, 2, 5, 0, 0, 100, 0, 0, -24, 0, 120, -2, 7, 50, 0, 0, 0 } },
 };
 
 void GulpProcessor::setAll(const float* normalised)

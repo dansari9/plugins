@@ -16,7 +16,7 @@ namespace
 {
 constexpr int C = 120, R = 34, W = 1024, H = 576, L = 22, AX = 25, AW = 70, AT = 5, AH = 14, RX = 98, CY = 22, B = 25;
 constexpr int TY = AT - 2, stepX = AX + AW - 13, syncX = stepX + 3, SX = 44, wordsY = B + 2, secondaryY = B + 4, readoutY = B + 5;
-constexpr int invertX = 56, midiX = AX + 5; // invert centred over the graph; the sc meter from "midi" to "audio"
+constexpr int invertX = 56, midiX = AX + 5, audioX = AX + 10; // invert centred over the graph; the sc meter from "midi" to "audio"
 constexpr int curveY[] { 5, 7, 9, 12, 14, 16, 19, 21, 23, 26, 28, 30 }; // groups of three fill the column
 constexpr float cw = (float) W / C, ch = (float) H / R;
 const Colour page { 0xff0d0d0d }, white { 0xffececec }, grey { 0xff7a7a7a }, rule { 0xff2c2c2c }, dark { 0xff454545 }, red { 0xffff3d1f }, kick { 0xff5a5a5a }, tag { 0xff1c1c1c };
@@ -177,7 +177,7 @@ struct Editor : AudioProcessorEditor, Timer
     Slider knobs[6];
     RateValue freeHz;
     Handle slope;
-    Key prev { "prev" }, next { "next" }, save { "save" }, slotA { "A" }, slotB { "B" }, invert { "invert" }, loop { "loop" }, free { "free" }, sync { "sync" }, down { "rate-" }, up { "rate+" }, peak { "peak" };
+    Key prev { "prev" }, next { "next" }, save { "save" }, slotA { "A" }, slotB { "B" }, invert { "invert" }, loop { "loop" }, ahead { "lookahead" }, free { "free" }, sync { "sync" }, down { "rate-" }, up { "rate+" }, peak { "peak" };
     OwnedArray<Key> curves, colours, stereos, triggers;
     // Attachments after the components they drive, so they are destroyed first.
     std::vector<std::unique_ptr<AudioProcessorValueTreeState::SliderAttachment>> sliderAtt;
@@ -244,14 +244,14 @@ struct Editor : AudioProcessorEditor, Timer
         row(curves, "curve", curveWords, 0, 0, 0);
         row(colours, "color", colourWords, AX, CY, modeGap), row(stereos, "stereo", stereoWords, SX, wordsY);
         row(triggers, "trigger", triggerWords, AX, wordsY);
-        bind("invert", { &invert }), bind("loop", { &loop });
+        bind("invert", { &invert }), bind("loop", { &loop }), bind("lookahead", { &ahead });
         bind("tempoSync", { &free, &sync }); // explicit choices: free = 0, sync = 1, including repeated clicks
-        // ‹ › step the rate, or in free a ladder of round frequencies.
+        // ‹ › step the rate up to 2 bars (an old 4 bars still steps down), or in free a ladder of round frequencies.
         auto* rate = bind("rate", {});
         auto* hz = bind("freeHz", {});
         const auto step = [this, rate, hz](int by) {
             if (value("tempoSync") > 0.5f)
-                return rate->setValueAsCompleteGesture((float) jlimit(0, gulp::numRates - 1, index("rate") + by));
+                return rate->setValueAsCompleteGesture((float) jlimit(0, jmax(gulp::maxRate, index("rate")), index("rate") + by));
             const float now = value("freeHz"), ladder[] { 0.1f, 0.2f, 0.25f, 0.5f, 0.75f, 1, 1.5f, 2, 3, 4, 5, 6, 8, 10, 12, 16, 20 };
             float to = now; // the nearest rung past the value
             for (size_t k = 0; k < std::size(ladder); ++k)
@@ -261,7 +261,7 @@ struct Editor : AudioProcessorEditor, Timer
         };
         down.onClick = [step] { step(-1); };
         up.onClick = [step] { step(1); };
-        for (auto [key, r] : { std::pair { &invert, cells(invertX, TY, 8, 1) }, { &loop, cells(AX, secondaryY, 6, 1) }, { &peak, cells(AX, TY, 20, 1) },
+        for (auto [key, r] : { std::pair { &invert, cells(invertX, TY, 8, 1) }, { &loop, cells(AX, secondaryY, 6, 1) }, { &ahead, cells(audioX, secondaryY, 11, 1) }, { &peak, cells(AX, TY, 20, 1) },
                                { &sync, cells(syncX, TY, 4, 2) }, { &free, cells(syncX + 6, TY, 4, 2) }, { &up, cells(stepX, TY, 1, 1) } })
             layer.addAndMakeVisible(*key), key->setBounds(r);
         layer.addAndMakeVisible(down); // placed by refresh(): it moves out for a long value
@@ -387,9 +387,10 @@ struct Editor : AudioProcessorEditor, Timer
         const float heldDb = Decibels::gainToDecibels(1.0f - held, -100.0f);
         g.put(AX + 14, TY, heldDb <= -100 ? u("−inf") : minus(String(roundToInt(heldDb))), heldDb < -0.5f ? red : grey, heldDb < -0.5f);
         g.toggle(invertX, TY, "invert", inverted);
-        const String rateText = isFree ? text("freeHz") : String(gulp::rateNames[r]);
+        const String rateText = isFree ? text("freeHz") : gulp::rateDen[r] > 1 ? String(gulp::rateNames[r]) : String(gulp::rateNum[r]) + (r > 13 ? " bars" : " bar");
         const int field = jmax(7, rateText.length() + 4), downX = stepX - field - 1;
-        g.put(downX, TY, u("‹"), grey), g.centre(downX + 1, field, TY, rateText, white, true), g.put(stepX, TY, u("›"), grey);
+        g.put(downX, TY, u("‹"), isFree || r > 0 ? grey : dark), g.centre(downX + 1, field, TY, rateText, white, true);
+        g.put(stepX, TY, u("›"), isFree || r < gulp::maxRate ? grey : dark);
         g.words(syncX, TY, { "sync", "free" }, isFree ? 1 : 0, 2);
         down.setBounds(cells(downX, TY, 1, 1));
         place(freeHz, cells(downX + 1, TY, field, 1), cells(downX + 1, TY, field, 1));
@@ -454,10 +455,11 @@ struct Editor : AudioProcessorEditor, Timer
         if (live) g.put(ph, AT + AH, u("▲"), red);
 
         // The modes across the graph's width; the bottom strip: trigger, loop (dim in host sync, which never reads it),
-        // stereo, nudge / thresh / soothe.
+        // lookahead under "audio" (dim unless the audio trigger, the only one it acts on), stereo, nudge / thresh / soothe.
         g.words(AX, CY, colourWords, colour, modeGap);
         g.put(L + 1, B - 1, String::repeatedString(u("─"), RX - L - 2), rule);
         g.put(AX, B, "trigger", grey), g.words(AX, wordsY, triggerWords, trigger), g.toggle(AX, secondaryY, "loop", value("loop") > 0.5f, trigger == 0);
+        g.toggle(audioX, secondaryY, "lookahead", value("lookahead") > 0.5f, trigger != 2);
         g.put(SX, B, "stereo", grey), g.words(SX, wordsY, stereoWords, stereo);
         for (const auto& k : knobSpecs)
             knob(g, k.x, k.y, proc.apvts.getParameter(k.id)->getValue(), k.name, text(k.id), k.centred,

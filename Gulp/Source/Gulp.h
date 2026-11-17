@@ -3,17 +3,20 @@
 #include <array>
 
 // gulp: sidechain pumping / ducking by daveydidit (clean room: original curves and UI, textbook DSP).
-// FROZEN: the 18 parameter IDs in Gulp.cpp (order, ranges, choice indices, ParameterID versions) and the state format
+// FROZEN: the parameter IDs in Gulp.cpp (order, ranges, choice indices, ParameterID versions) and the state format
 // (APVTS XML <GULP stateVersion="2"> plus additive root attributes). Never rename, remove or reorder; only append.
 namespace gulp
 {
-inline constexpr int numCurves = 12, numRates = 16, numColors = 8, numPresets = 10, numParams = 18;
+inline constexpr int numCurves = 12, numRates = 16, numColors = 8, numPresets = 10, numParams = 19;
 extern const char* const curveNames[numCurves];
 extern const char* const rateNames[numRates];
 extern const char* const colorNames[numColors];
 // One cycle of each rate in whole notes: rateNum / rateDen.
 inline constexpr int rateNum[numRates] { 1, 1, 1, 3, 1, 1, 3, 1, 1, 3, 1, 1, 3, 1, 2, 4 };
 inline constexpr int rateDen[numRates] { 32, 24, 16, 32, 12, 8, 16, 6, 4, 8, 3, 2, 4, 1, 1, 1 };
+inline constexpr int maxRate = 14; // the editor's stepper stops at 2/1; 4/1 stays a legal value (old sessions, hosts)
+// Audio-trigger lookahead: the main input is delayed this long while the sidechain is read undelayed.
+inline constexpr double lookaheadMs = 5;
 // The 12 curves: duck amount at phase 0..1 (0 = full level, 1 = silent); s scales the release (0.5 .. 2).
 double duck(int curve, double phase, double s);
 // One cycle of the duck in 1024 steps (+ the end point): the curve with its slope % and invert, rounded by soothe 0..1
@@ -45,7 +48,7 @@ struct Preset
 extern const Preset presets[numPresets];
 } // namespace gulp
 
-class GulpProcessor : public juce::AudioProcessor
+class GulpProcessor : public juce::AudioProcessor, private juce::AudioProcessorValueTreeState::Listener, private juce::AsyncUpdater
 {
 public:
     static constexpr int stateVersion = 2;
@@ -90,6 +93,9 @@ private:
     void setAll(const float* normalised); // one gesture per parameter that changes
     void applyParams(const juce::XmlElement& state); // missing or unreadable -> default; migrates older versions
     void setIdentity(int index, const juce::String& name);
+    // The reported latency: the lookahead while it is on and the trigger is audio, else 0. Set on the message thread.
+    void parameterChanged(const juce::String&, float) override;
+    void handleAsyncUpdate() override;
     mutable juce::CriticalSection lock; // identity and A/B slots; never held across a host callback
     const juce::File presetDirectory;
     std::vector<float> slots[2];
