@@ -48,7 +48,7 @@ struct Preset
 extern const Preset presets[numPresets];
 } // namespace gulp
 
-class GulpProcessor : public juce::AudioProcessor, private juce::AudioProcessorValueTreeState::Listener, private juce::AsyncUpdater
+class GulpProcessor : public juce::AudioProcessor, private juce::AudioProcessorValueTreeState::Listener, private juce::Timer
 {
 public:
     static constexpr int stateVersion = 2;
@@ -60,6 +60,8 @@ public:
     bool isBusesLayoutSupported(const BusesLayout&) const override;
     void processBlock(juce::AudioBuffer<float>&, juce::MidiBuffer&) override;
     using AudioProcessor::processBlock;
+    void processBlockBypassed(juce::AudioBuffer<float>&, juce::MidiBuffer&) override;
+    using AudioProcessor::processBlockBypassed;
 
     juce::AudioProcessorEditor* createEditor() override;
     bool hasEditor() const override { return true; }
@@ -93,9 +95,10 @@ private:
     void setAll(const float* normalised); // one gesture per parameter that changes
     void applyParams(const juce::XmlElement& state); // missing or unreadable -> default; migrates older versions
     void setIdentity(int index, const juce::String& name);
+    void process(juce::AudioBuffer<float>&, juce::MidiBuffer&, bool bypassed);
     // The reported latency: the lookahead while it is on and the trigger is audio, else 0. Set on the message thread.
     void parameterChanged(const juce::String&, float) override;
-    void handleAsyncUpdate() override;
+    void timerCallback() override;
     mutable juce::CriticalSection lock; // identity and A/B slots; never held across a host callback
     const juce::File presetDirectory;
     std::vector<float> slots[2];

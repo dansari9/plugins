@@ -450,7 +450,8 @@ struct Editor : AudioProcessorEditor, Timer
                 const int num = i * gulp::rateNum[r], den = 4 * gulp::rateDen[r], gcd = std::gcd(num, den);
                 t = String(num / gcd) + (den == gcd ? String() : "/" + String(den / gcd));
             }
-            g.centre(AX + (int) std::nearbyint(i * (AW - 1) / 4.0) - 3, 7, AT + AH + 1, t, dark);
+            if (i == 4) g.right(AX + AW, AT + AH + 1, t, dark); // long free-rate labels must clear the divider
+            else g.centre(AX + (int) std::nearbyint(i * (AW - 1) / 4.0) - 3, 7, AT + AH + 1, t, dark);
         }
         if (live) g.put(ph, AT + AH, u("▲"), red);
 

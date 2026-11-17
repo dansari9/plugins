@@ -115,6 +115,7 @@ struct Run
     std::vector<float>* right = nullptr;
     std::vector<double>* ppqs = nullptr; // the host ppq at every sample
     int offset = 0;                      // where on the timeline in, sc and the notes start
+    bool bypassed = false;
 };
 static std::vector<float> run(Proc& p, int samples, int block, const Run& r = {})
 {
@@ -139,7 +140,7 @@ static std::vector<float> run(Proc& p, int samples, int block, const Run& r = {}
             if (t >= r.offset + start && t < r.offset + start + n) midi.addEvent(juce::MidiMessage::noteOn(1 + t % 16, 36, (juce::uint8) 100), t - r.offset - start);
         if (r.ppqs) for (int i = 0; i < n; ++i) r.ppqs->push_back(r.host->ppq + i * r.host->bpm / 60 / fs);
         onAudioThread = true;
-        p.processBlock(buffer, midi);
+        if (r.bypassed) p.processBlockBypassed(buffer, midi); else p.processBlock(buffer, midi);
         onAudioThread = false;
         if (r.host) r.host->ppq += n * r.host->bpm / 60 / fs;
         for (int i = 0; i < n; ++i)
@@ -346,8 +347,41 @@ static void testLookahead()
         set(p, "trigger", 1), CHECK(p.getLatencySamples() == 0);
         set(p, "trigger", 2), set(p, "lookahead", 0), CHECK(p.getLatencySamples() == 0);
         set(p, "lookahead", 1), prepare(p, fs, 64), CHECK(p.getLatencySamples() == samples);
-        std::thread([&] { set(p, "lookahead", 0); }).join(); // as automation on the audio thread: the message thread reports it
-        pumpUntil([&] { return p.getLatencySamples() == 0; }), CHECK(p.getLatencySamples() == 0);
+        struct Listener : juce::AudioProcessorListener
+        {
+            int changes = 0;
+            void audioProcessorParameterChanged(juce::AudioProcessor*, int, float) override {}
+            void audioProcessorChanged(juce::AudioProcessor*, const ChangeDetails& d) override
+            {
+                if (d.latencyChanged) ++changes, CHECK(juce::MessageManager::existsAndIsCurrentThread());
+            }
+        } listener;
+        p.addListener(&listener);
+        std::thread([&] {
+            onAudioThread = true;
+            set(p, "lookahead", 0); // automation must not post messages or allocate
+            onAudioThread = false;
+        }).join();
+        CHECK(audioAllocations.exchange(0) == 0 && listener.changes == 0);
+        pumpUntil([&] { return p.getLatencySamples() == 0; }), CHECK(p.getLatencySamples() == 0 && listener.changes == 1);
+        p.removeListener(&listener);
+        // Full lookahead and host bypass must both preserve the exact delayed samples on both channels.
+        for (bool bypassed : { false, true })
+        {
+            set(p, { { "lookahead", 1 }, { "depth", bypassed ? 100.0f : 0.0f }, { "output", bypassed ? -6.0f : 0.0f } });
+            prepare(p, fs, 512);
+            Run r;
+            r.bypassed = bypassed;
+            r.in = [](int i, int c) { return i % 17 == 0 ? 1e-8f : noise(2 * i + c); };
+            std::vector<float> right;
+            r.right = &right;
+            const auto left = run(p, 4096, 0, r);
+            bool exact = true;
+            for (size_t i = 0; i < left.size(); ++i)
+                exact &= left[i] == (i < (size_t) samples ? 0 : r.in((int) i - samples, 0))
+                      && right[i] == (i < (size_t) samples ? 0 : r.in((int) i - samples, 1));
+            CHECK(exact);
+        }
     }
     // A step from 0.25 to 0.5 at T on the input with a kick at T on the sidechain (classic, 1/4 at 120 bpm, depth 100).
     // gain = output / the input it played. Off, the duck starts just after the step, which passes at full level. On,
@@ -1089,6 +1123,8 @@ static void testTelemetry()
     CHECK(controls() == before);
     for (const auto& c : controls())
         for (const auto& area : { scMeter, outMeter }) CHECK(!c.intersects(area));
+    set(p, { { "tempoSync", 0 }, { "freeHz", 0.1f } });
+    CHECK(look(frame(), cellArea(97, 20, 1, 1)) == look(loud, cellArea(97, 20, 1, 1))); // "10.00 s" clears the divider
 }
 
 // Every control through the component tree and JUCE's handlers (not peer hit-testing): knobs and the free rate drag

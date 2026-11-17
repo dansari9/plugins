@@ -292,9 +292,14 @@ GulpProcessor::GulpProcessor(File directory)
         dsp->raw[(size_t) i] = apvts.getRawParameterValue(ids[i]);
     dsp->prepare(48000); // usable even if a host processes before prepareToPlay
     apvts.addParameterListener(ids[Lookahead], this), apvts.addParameterListener(ids[Trigger], this);
+    startTimerHz(30); // poll automation from the message thread; never post from the audio thread
 }
 
-GulpProcessor::~GulpProcessor() = default;
+GulpProcessor::~GulpProcessor()
+{
+    stopTimer();
+    apvts.removeParameterListener(ids[Lookahead], this), apvts.removeParameterListener(ids[Trigger], this);
+}
 
 bool GulpProcessor::isBusesLayoutSupported(const BusesLayout& l) const
 {
@@ -307,24 +312,27 @@ void GulpProcessor::prepareToPlay(double fs, int)
 {
     dsp->prepare(fs);
     resetPending = true; // the first block initializes the DSP from the parameters it then sees, restored or not
-    handleAsyncUpdate();
+    timerCallback();
 }
 
-// JUCE's place for a latency change is prepareToPlay or the message thread: setLatencySamples notifies the host there
-// (VST3 restartComponent, AU property listeners). A change that arrives elsewhere (automation on the audio thread, a
-// state restored off the message thread) hops over with the AsyncUpdater. The audio switches at once (crossfaded).
+// Report latency in prepareToPlay or on the message thread (VST3 restartComponent, AU property listeners).
+// UI changes report immediately; automation is polled by the timer, since AsyncUpdater::triggerAsyncUpdate can block.
+// The audio switches at once (crossfaded); setLatencySamples only notifies the host when the value changes.
 void GulpProcessor::parameterChanged(const String&, float)
 {
-    MessageManager::existsAndIsCurrentThread() ? handleAsyncUpdate() : triggerAsyncUpdate();
+    if (MessageManager::existsAndIsCurrentThread()) timerCallback();
 }
 
-void GulpProcessor::handleAsyncUpdate()
+void GulpProcessor::timerCallback()
 {
     const auto on = [this](int i) { return dsp->raw[(size_t) i]->load(); };
     setLatencySamples(on(Lookahead) > 0.5f && (int) on(Trigger) == 2 ? dsp->lookahead.load() : 0);
 }
 
-void GulpProcessor::processBlock(AudioBuffer<float>& buffer, MidiBuffer& midi)
+void GulpProcessor::processBlock(AudioBuffer<float>& buffer, MidiBuffer& midi) { process(buffer, midi, false); }
+void GulpProcessor::processBlockBypassed(AudioBuffer<float>& buffer, MidiBuffer& midi) { process(buffer, midi, true); }
+
+void GulpProcessor::process(AudioBuffer<float>& buffer, MidiBuffer& midi, bool bypassed)
 {
     ScopedNoDenormals noDenormals;
     auto& d = *dsp;
@@ -429,7 +437,7 @@ void GulpProcessor::processBlock(AudioBuffer<float>& buffer, MidiBuffer& midi)
         {
             const float v = buffer.getSample(c, i), dry = std::isfinite(v) ? jlimit(-1000.0f, 1000.0f, v) : 0.0f;
             const float late = std::exchange(d.late[c][d.at], dry);
-            in[c] = ahead > 0 ? dry + ahead * (late - dry) : dry;
+            in[c] = ahead >= 1 ? late : ahead > 0 ? dry + ahead * ((double) late - dry) : dry;
             auto& f = d.cross[c];
             const double low = f[1].run(f[0].run(in[c], d.k.cross)[0], d.k.cross)[0], high = f[3].run(f[2].run(in[c], d.k.cross)[2], d.k.cross)[2];
             double y = 0;
@@ -445,7 +453,7 @@ void GulpProcessor::processBlock(AudioBuffer<float>& buffer, MidiBuffer& midi)
         double peak = 0;
         for (int c = 0; c < channels; ++c)
         {
-            const double y = (in[c] + m + (c == 0 ? sd : -sd)) * out;
+            const double y = bypassed ? in[c] : (in[c] + m + (c == 0 ? sd : -sd)) * out;
             buffer.setSample(c, i, (float) y);
             peak = jmax(peak, std::abs(y));
         }
