@@ -8,18 +8,20 @@ static void dense(Proc& p, bool tiny=false)
 static void bench(bool profile=false)
 {
     std::cout<<"rate | sound | audio seconds | processing seconds | realtime factor | one core % | max voices\n";
-    for(int fs:{44100,48000,96000}) for(int sound=-1;sound<16;++sound)
+    for(int fs:{44100,48000,96000}) for(int sound=-1;sound<19;++sound)
     {
         if(profile && (fs!=96000 || sound!=10))continue;
         Proc p;
         if(sound>=0 && sound<10)p.setCurrentProgram(sound);
-        if(sound==10 || sound==11)dense(p,sound==11);
+        if(sound==10 || sound==11 || sound==18)dense(p,sound==11);
         // Also preserve the exact layout-stage 128-voice workload (2x, +12 st, unmodulated).
         if(sound==12)set(p,plain),set(p,{{"size",4000},{"pitch",12},{"pitchMode",0},{"density",64},
             {"scatter",100},{"oversample",1},{"reverbOn",1},{"reverb",100},{"bloom",100}});
         if(sound==13)set(p,{{"shape",70},{"tilt",-40},{"reverse",40},{"detune",5},{"scale",2},{"repeat",30},{"scan",160}}); // 0.2 grain controls on the default sound
         if(sound==14)set(p,{{"heads",3},{"harmony",3},{"detune",3},{"shape",50},{"scan",60}}); // 4 heads, PLAN 3 budget case
         if(sound==15)set(p,{{"lock",2},{"pitch",23.2f},{"sizeSync",1},{"size",50}}); // tone lock, f0 ~1 kHz, 50 ms
+        if(sound==16 || sound==18)set(p,{{"band",60},{"centre",1500},{"spectra",50}}); // colour: every grain band-passed
+        if(sound==17)set(p,{{"space",1},{"width",150},{"filter",-30},{"feedback",30}}); // binaural, width, filter, feedback
         prepare(p,fs,512,2,0);
         juce::AudioBuffer<float> input(2,fs), block(2,512);juce::MidiBuffer midi;
         for(int i=0;i<fs;++i)for(int c=0;c<2;++c)input.setSample(c,i,pad(i+c*47,fs));
@@ -34,9 +36,9 @@ static void bench(bool profile=false)
             if(start>=warmup*fs)seconds+=(juce::Time::getHighResolutionTicks()-before)/juce::Time::getHighResolutionTicksPerSecond();
             int active=0;for(auto& e:p.feed.env)active+=e.load()>0?1:0;voices=std::max(voices,active);
         }
-        const juce::String name=sound<0?"default":sound<10?p.getProgramName(sound):sound==10?"dense":sound==11?"dense tiny":sound==12?"dense legacy 2x":sound==13?"0.2 grain":sound==14?"0.2 heads":"0.2 tone";
+        const juce::String name=sound<0?"default":sound<10?p.getProgramName(sound):sound==10?"dense":sound==11?"dense tiny":sound==12?"dense legacy 2x":sound==13?"0.2 grain":sound==14?"0.2 heads":sound==15?"0.2 tone":sound==16?"0.2 colour":sound==17?"0.2 space":"dense colour";
         std::cout<<fs<<" | "<<name<<" | "<<(duration-warmup)<<" | "<<seconds<<" | "<<(duration-warmup)/seconds<<" | "<<seconds*100/(duration-warmup)<<" | "<<voices<<"\n";
-        if(sound==10 || sound==12)CHECK(voices==128);
+        if(sound==10 || sound==12 || sound==18)CHECK(voices==128);
     }
 }
 static void writeWav(const juce::File& file,const Audio& a)

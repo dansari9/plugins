@@ -267,6 +267,14 @@ struct Grain
     int shape = 0, fade = 0;   // fade: a stolen grain's linear release length (samples), 0 = not stolen
     int level = 0;
     bool shifted = false;      // pitch mode: two crossfaded taps keep the timeline while the pitch moves
+    int bus = -1;              // binaural: the left of its two azimuth buses (gl, gr: their gains); -1 pans
+    float a1 = 0, a2 = 0, a3 = 0, k = 0, sv[4] {}; // colour: a TPT band-pass (k = 0: none), L and R states
+    float bandPass(float x, float& s0, float& s1) const // unity peak (times the band's makeup in k)
+    {
+        const float v3 = x - s1, v1 = a1 * s0 + a2 * v3, v2 = s1 + a2 * s0 + a3 * v3;
+        s0 = 2 * v1 - s0, s1 = 2 * v2 - s1;
+        return k * v1;
+    }
 };
 
 // Transients: a peak follower that jumps 6 dB over its own slow (30 ms) copy above a -50 dB gate; re-armed once the
@@ -294,6 +302,30 @@ struct OnePole // TPT one-pole: lowpass and highpass of the same state
     float low(float x, float g) { const float v = (x - s) * g, y = v + s; s = y + v; return y; }
 };
 float coefficient(double hz, double fs) { const double g = std::tan(pi * jmin(hz, 0.45 * fs) / fs); return (float) (g / (1 + g)); }
+
+// Binaural: one azimuth of seven (-90..+90 degrees). The far ear hears it quieter, up to 0.65 ms later and darker.
+struct Azimuth
+{
+    float ring[256] {}, near = 1, far = 1, delay = 0, coef = 1;
+    int at = 0;
+    bool left = false;
+    OnePole shade;
+    void prepare(int b, double fs)
+    {
+        const double a = std::abs(std::sin((b - 3) / 3.0 * pi / 2));
+        *this = {}, near = (float) std::sqrt(1 + a), far = (float) std::sqrt(1 - 0.8 * a), left = b < 3;
+        delay = (float) jmin(254.0, 0.00065 * fs * a), coef = coefficient(12000 - 9500 * a, fs);
+    }
+    void step(float x, float* y)
+    {
+        if (delay <= 0) { y[0] += x, y[1] += x; return; } // straight ahead
+        ring[at] = x;
+        const int i = (int) delay;
+        const float f = delay - (float) i, d0 = ring[(at - i) & 255], d1 = ring[(at - i - 1) & 255];
+        at = (at + 1) & 255;
+        y[left ? 0 : 1] += near * x, y[left ? 1 : 0] += far * shade.low(d0 + f * (d1 - d0), coef);
+    }
+};
 } // namespace
 
 const char* const silt::noteNames[] = { "1/64", "1/32T", "1/32", "1/16T", "1/16", "1/16D", "1/8T", "1/8", "1/8D", "1/4T", "1/4", "1/4D", "1/2T", "1/2", "1/2D", "1 bar", "2 bars" };
@@ -360,6 +392,11 @@ struct SiltProcessor::Engine
     float level = 0, inputLevel = 0, levelGlide = 0, inputAttack = 0, inputRelease = 0, meterDecay = 0;
     float lowpass = 0, highpass = 0, dcCoef = 0, outputDcCoef = 0; // the fixed feedback band and DC blockers
     SmoothedValue<float> mix, gain, verb, width, feedback, power;
+    std::array<Azimuth, 7> buses;    // binaural; they run while any grain is routed to them (`spatial` grains)
+    int spatial = 0;
+    OnePole tone[2][2];          // the one-knob filter: two one-poles per channel, low-pass (< 0) or high-pass (> 0)
+    float toneCoef = 0, toneMix = 0;
+    int toneMode = 0;
     SiltReverb reverb; // SILT_REVERB
 
     void prepare(double sr, silt::Feed& feed)
@@ -404,13 +441,15 @@ struct SiltProcessor::Engine
         for (auto& r : fbRing) std::fill(std::begin(r), std::end(r), 0.0f);
         std::fill(std::begin(diffusionAt), std::end(diffusionAt), (size_t) 0);
         lows[0] = lows[1] = highs[0] = highs[1] = dc[0] = dc[1] = outputDc[0] = outputDc[1] = {};
+        for (int b = 0; b < 7; ++b) buses[(size_t) b].prepare(b, fs);
+        spatial = 0, toneMode = 0, toneMix = 0, tone[0][0] = tone[0][1] = tone[1][0] = tone[1][1] = {};
         for (auto& w : feed.wave) w.store(0, std::memory_order_relaxed);
         feed.at.store(0, std::memory_order_relaxed);
         feed.fired.store(0, std::memory_order_relaxed);
         feed.lastFire.store(-1, std::memory_order_relaxed), feed.lastPitch.store(0, std::memory_order_relaxed), feed.lastLength.store(0, std::memory_order_relaxed);
         read();
-        width.setCurrentAndTargetValue(0.8f);
-        feedback.setCurrentAndTargetValue((0.12f + 0.48f * macro(Bloom)));
+        width.setCurrentAndTargetValue(0.8f * (v[Width] / 100));
+        feedback.setCurrentAndTargetValue(loop());
         power.setCurrentAndTargetValue((float) (1 - 0.5 * jlimit(0.0, 1.0, separation() + (pitched() ? 1 : 0))));
         mix.setCurrentAndTargetValue(v[Mix] / 100), gain.setCurrentAndTargetValue(Decibels::decibelsToGain(v[Output])), verb.setCurrentAndTargetValue(0);
     }
@@ -449,6 +488,7 @@ struct SiltProcessor::Engine
     }
 
     // Captured audio is not saved: after a reset (a reopened project, a new buffer size) freeze refills 4 s first.
+    float loop() const { return jmin(0.95f, 0.12f + 0.48f * macro(Bloom) + v[Feedback] / 100); } // the feedback amount
     bool holding() const { return v[Freeze] > 0.5f && capture.head >= (int64) (4 * fs); }
     double separation() const { return v[Scatter] / 25 + 4 * macro(Chaos) + macro(Motion); }
     bool pitched() const { return std::abs(v[Pitch]) > .005f || heldCount > 0 || v[Freeze] > .5f || (v[Heads] > .5f && v[Harmony] > .5f); }
@@ -554,6 +594,22 @@ struct SiltProcessor::Engine
         const double angle = (pan + 1) * pi / 4;
         const float amp = heldNote >= 0 ? velocities[(size_t) heldNote] : velocity;
         g->gl = (float) (amp * std::cos(angle) * std::sqrt(2.0)), g->gr = (float) (amp * std::sin(angle) * std::sqrt(2.0));
+        g->bus = -1;
+        if (v[Space] > .5f) // binaural: equal power between the two nearest of seven azimuths
+        {
+            const double azimuth = (pan + 1) * 3;
+            g->bus = jmin(5, (int) azimuth), ++spatial;
+            g->gl = (float) (amp * std::cos((azimuth - g->bus) * pi / 2)), g->gr = (float) (amp * std::sin((azimuth - g->bus) * pi / 2));
+        }
+        // Colour: a band-pass from wide to one critical band (ERB) at the centre, or spectra's random one (+-4 oct).
+        g->k = 0;
+        if (v[Band] > 0 || v[Spectra] > 0)
+        {
+            const double f = jlimit(20.0, 0.45 * fs, v[Centre] * (v[Spectra] > 0 ? std::exp2(v[Spectra] / 100 * (8 * random() - 4)) : 1.0));
+            const double q = 0.1 * std::pow(f / (24.7 + 0.108 * f) / 0.1, v[Band] / 100), w = std::tan(pi * f / fs), a1 = 1 / (1 + w * (w + 1 / q));
+            g->a1 = (float) a1, g->a2 = (float) (w * a1), g->a3 = (float) (w * w * a1), g->k = (float) ((1 + v[Band] / 100) / q);
+            std::fill_n(g->sv, 4, 0.0f);
+        }
     }
     // A note-on's grain; onset full back-dates a whole size of the head's grains, so the cloud is there at once.
     // In held mode the burst goes to the note's head (slot), whose grains arrive every `occupied` clock grains.
@@ -639,9 +695,10 @@ struct SiltProcessor::Engine
     }
     // No event or voice completion lies inside this span. Read each voice in time order, then accumulate
     // contiguous samples in the original voice order. Reads stay at least `margin` behind the write head.
-    void cloud(int length, bool frozen, silt::Feed& feed, float out[2][Capture::batch], float* weights)
+    // Rows 0-1 are the panned sum, 2-8 the binaural buses (filled while any grain is routed to them).
+    void cloud(int length, bool frozen, silt::Feed& feed, float out[9][Capture::batch], float* weights)
     {
-        for (int c = 0; c < 2; ++c) std::fill_n(out[c], length, 0.0f);
+        for (int c = 0; c < (spatial > 0 ? 9 : 2); ++c) std::fill_n(out[c], length, 0.0f);
         std::fill_n(weights, length, 0.0f);
         int frozenHeads[Capture::batch] {}, advance = 0;
         float futureGain = capture.gain;
@@ -680,11 +737,25 @@ struct SiltProcessor::Engine
                 for (int c = 0; c < 2; ++c)
                     for (int j = 0; j < length; ++j) audio[c][j] = a[j] * audio[c][j] + (1 - a[j]) * other[c][j];
             }
-            for (int j = 0; j < length; ++j)
+            if (g.k > 0) // the states stay in registers: the output arrays may alias them
             {
-                out[0][j] += w[j] * g.gl * audio[0][j], out[1][j] += w[j] * g.gr * audio[1][j];
-                weights[j] += w[j];
+                float s[4] { g.sv[0], g.sv[1], g.sv[2], g.sv[3] };
+                for (int j = 0; j < length; ++j) audio[0][j] = g.bandPass(audio[0][j], s[0], s[1]), audio[1][j] = g.bandPass(audio[1][j], s[2], s[3]);
+                std::copy_n(s, 4, g.sv);
             }
+            if (g.bus >= 0)
+                for (int j = 0; j < length; ++j)
+                {
+                    const float m = w[j] * 0.5f * (audio[0][j] + audio[1][j]);
+                    out[2 + g.bus][j] += g.gl * m, out[3 + g.bus][j] += g.gr * m;
+                    weights[j] += w[j];
+                }
+            else
+                for (int j = 0; j < length; ++j)
+                {
+                    out[0][j] += w[j] * g.gl * audio[0][j], out[1][j] += w[j] * g.gr * audio[1][j];
+                    weights[j] += w[j];
+                }
         }
     }
 
@@ -735,8 +806,11 @@ struct SiltProcessor::Engine
         verb.setTargetValue(v[ReverbOn] > .5f ? v[ReverbAmount] / 100 : 0.0f);
         const double scanRange = jmax(1.0, silt::maxBackSeconds * fs - v[Position] * fs / 1000);
         const double anchor = position(bpm), ride = 0.02 * fs, wrap = silt::maxBackSeconds * fs - 2 * ride;
+        // The one-knob filter on the cloud (and so its feedback): 0 bypasses; -100 low-passes to 80 Hz, +100 high-passes to 8 kHz.
+        const int filterMode = v[Filter] < 0 ? -1 : v[Filter] > 0 ? 1 : 0;
+        const float toneTarget = coefficient(filterMode < 0 ? 20000 * std::pow(0.004, -v[Filter] / 100.0) : 20 * std::pow(400.0, v[Filter] / 100.0), fs);
         auto event = midiBuffer.cbegin();
-        float cloudFrames[2][Capture::batch] {}, cloudWeights[Capture::batch] {};
+        float cloudFrames[9][Capture::batch] {}, cloudWeights[Capture::batch] {};
         int cloudAt = 0, cloudLength = 0;
         for (int chunk = 0; chunk < n;)
         {
@@ -796,9 +870,10 @@ struct SiltProcessor::Engine
                     if (tick) spawn((int) (random() * (0.4f * macro(Motion) + 0.5f * macro(Chaos)) * gap), bpm, frozen, lock > 0 ? phase * gap : 0.0);
                 }
                 if ((hitIn && trigger == 1) || (hitSide && trigger == 2)) spawn(0, bpm, frozen);
-                feedback.setTargetValue(0.12f + 0.48f * macro(Bloom));
-                width.setTargetValue(0.8f + 0.2f * macro(Bloom));
-                float y[2] {}, weight = 0;
+                feedback.setTargetValue(loop());
+                width.setTargetValue((0.8f + 0.2f * macro(Bloom)) * (v[Width] / 100)); // width: 100% is 0.1.0's
+                float y[2] {}, weight = 0, bus[7] {};
+                const bool binaural = spatial > 0;
                 if (cloudAt == cloudLength)
                 {
                     cloudAt = cloudLength = 0;
@@ -816,6 +891,7 @@ struct SiltProcessor::Engine
                 }
                 if (cloudAt < cloudLength)
                 {
+                    for (int b = 0; binaural && b < 7; ++b) bus[b] = cloudFrames[2 + b][cloudAt];
                     y[0] = cloudFrames[0][cloudAt], y[1] = cloudFrames[1][cloudAt], weight = cloudWeights[cloudAt++];
                 }
                 else
@@ -840,10 +916,18 @@ struct SiltProcessor::Engine
                             g.pos += g.step, g.tap += g.tapStep;
                             if (g.tap < 0 || g.tap >= g.span) g.tap -= g.span * std::floor(g.tap / g.span);
                         }
-                        y[0] += w * g.gl * l, y[1] += w * g.gr * r, weight += w;
-                        if (g.left == 0) stolen -= g.fade > 0 ? 1 : 0, g = grains[(size_t) --voiceCount], --k;
+                        if (g.k > 0) l = g.bandPass(l, g.sv[0], g.sv[1]), r = g.bandPass(r, g.sv[2], g.sv[3]);
+                        if (g.bus < 0) y[0] += w * g.gl * l, y[1] += w * g.gr * r;
+                        else
+                        {
+                            const float m = w * 0.5f * (l + r); // binaural grains are mono points
+                            bus[g.bus] += g.gl * m, bus[g.bus + 1] += g.gr * m;
+                        }
+                        weight += w;
+                        if (g.left == 0) stolen -= g.fade > 0 ? 1 : 0, spatial -= g.bus >= 0 ? 1 : 0, g = grains[(size_t) --voiceCount], --k;
                     }
                 }
+                for (int b = 0; binaural && b < 7; ++b) buses[(size_t) b].step(bus[b], y);
                 // Actual window overlap, with a slow release between clouds. No compressor or limiter.
                 overlap += (weight > overlap ? overlapAttack : overlapRelease) * (weight - overlap);
                 power.setTargetValue((float) (1 - 0.5 * jlimit(0.0, 1.0, separation() + (pitched() ? 1 : 0))));
@@ -852,6 +936,18 @@ struct SiltProcessor::Engine
                 const float norm = 0.85f / (exponent <= .500001f ? std::sqrt(base) : exponent >= .999999f ? base : std::pow(base, exponent));
                 const float mid = 0.5f * (y[0] + y[1]) * norm, sd = 0.5f * (y[0] - y[1]) * norm * width.getNextValue();
                 y[0] = mid + sd, y[1] = mid - sd;
+                if (filterMode != 0 || toneMix > 0) // it fades in and out over 20 ms; bypassed at rest
+                {
+                    if (filterMode != 0 && (toneMix <= 0 || toneMode != filterMode)) // low-pass starts settled on the signal, high-pass at rest
+                        for (int c = 0; c < 2; ++c) toneCoef = toneTarget, tone[c][0].s = tone[c][1].s = filterMode < 0 ? y[c] : 0.0f;
+                    if (filterMode != 0) toneMode = filterMode, toneCoef += ccGlide * (toneTarget - toneCoef);
+                    toneMix = jlimit(0.0f, 1.0f, toneMix + (filterMode != 0 ? freezeStep : -freezeStep));
+                    for (int c = 0; c < 2; ++c)
+                    {
+                        const float low = tone[c][0].low(y[c], toneCoef);
+                        y[c] += toneMix * ((toneMode < 0 ? tone[c][1].low(low, toneCoef) : y[c] - low - tone[c][1].low(y[c] - low, toneCoef)) - y[c]);
+                    }
+                }
                 const float fbAmount = feedback.getNextValue();
                 float f[2];
                 for (int c = 0; c < 2; ++c)

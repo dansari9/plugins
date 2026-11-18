@@ -735,6 +735,68 @@ static void testHeadsAndLock()
         set(p,"freeze",0);run(p,512,512,r);CHECK(p.feed.fired-before==(onset?12:0));
     }
 }
+// 0.2 phase 3: colour (band, centre, spectra), binaural space, width, the one-knob filter and the feedback amount.
+static void testColourAndSpace()
+{
+    const auto power=[](const std::vector<float>& x,double hz)
+    {double re=0,im=0;for(size_t i=x.size()/2;i<x.size();++i)re+=x[i]*std::cos(2*pi*hz*(double)i/48000),im+=x[i]*std::sin(2*pi*hz*(double)i/48000);return re*re+im*im;};
+    // 4 kHz against 500 Hz (dB) through the cloud: band narrows to one critical band at the centre; spectra spreads the centres.
+    const auto tilt=[&](const Settings& s)
+    {
+        Proc p;set(p,plain),set(p,{{"density",24},{"size",200}}),set(p,s),prepare(p);
+        Run r;r.input=[](int i,int){return (float)(.1*std::sin(2*pi*500*i/48000)+.1*std::sin(2*pi*4000*i/48000));};
+        const auto a=run(p,96000,512,r);return 10*std::log10(power(a.l,4000)/power(a.l,500));
+    };
+    const double flat=tilt({}),low=tilt({{"band",100},{"centre",500}}),high=tilt({{"band",100},{"centre",4000}}),wide=tilt({{"band",1},{"centre",500}}),
+        spread=tilt({{"band",100},{"centre",500},{"spectra",100}}),lp=tilt({{"filter",-100}}),hp=tilt({{"filter",100}}),half=tilt({{"filter",-50}});
+    std::cout<<"4 kHz / 500 Hz: flat "<<flat<<" band@500 "<<low<<" band@4k "<<high<<" wide "<<wide<<" spectra "<<spread<<" filter -100 "<<lp<<" -50 "<<half<<" +100 "<<hp<<" dB\n";
+    CHECK(std::abs(flat)<3 && low<flat-25 && high>flat+25 && std::abs(wide-flat)<4 && spread>low+10);
+    CHECK(lp<flat-25 && hp>flat+25 && half<flat-6 && half>lp+6);
+    // Binaural: the left lane's first grain reads one click. The right ear hears it later (up to 0.65 ms), quieter; pan has no delay.
+    for(int space:{0,1})
+    {
+        Proc p;set(p,plain),set(p,{{"trigger",2},{"pitchMode",1},{"size",200},{"position",500},{"space",(float)space}}),prepare(p);
+        Run r;r.input=[](int i,int){return i==26400?.5f:0.0f;};r.side=[](int,int){return 0.0f;};
+        r.events={{48000,juce::MidiMessage::noteOn(1,60,(juce::uint8)127)}};
+        const auto a=run(p,57600,512,r);
+        double moment[2]{},energy[2]{};
+        for(size_t i=50300;i<50500;++i)for(int c=0;c<2;++c){const double x=c?a.r[i]:a.l[i];moment[c]+=(double)i*x*x,energy[c]+=x*x;}
+        const double lag=moment[1]/energy[1]-moment[0]/energy[0];
+        std::cout<<(space?"Binaural":"Pan")<<" click: right - left "<<lag<<" samples, "<<10*std::log10(energy[1]/energy[0])<<" dB\n";
+        CHECK(energy[1]<energy[0] && (space?lag>5 && lag<32:std::abs(lag)<.01));
+    }
+    // Width: 0 is mono (identical channels); 200% at least triples the side's share of the energy.
+    const auto side=[](float width,bool& mono)
+    {
+        Proc p;set(p,plain),set(p,{{"density",24},{"size",200},{"scatter",40},{"width",width}}),prepare(p);
+        Run r;r.input=[](int i,int c){return (float)(.15*std::sin(2*pi*(c?300:700)*i/48000));};
+        const auto a=run(p,96000,512,r);mono=a.l==a.r;
+        double m=0,s=0;for(size_t i=48000;i<a.l.size();++i)m+=std::pow(a.l[i]+a.r[i],2),s+=std::pow(a.l[i]-a.r[i],2);return s/m;
+    };
+    bool mono[3]{};const double narrow=side(0,mono[0]),normal=side(100,mono[1]),wider=side(200,mono[2]);
+    std::cout<<"Side / mid energy: width 0 "<<narrow<<" 100 "<<normal<<" 200 "<<wider<<"\n";
+    CHECK(mono[0] && !mono[1] && narrow==0 && wider>3*normal);
+    // The filter engages, flips and bypasses mid-stream without a step beyond the cloud's own.
+    {
+        Proc p,q;for(auto* x:{&p,&q})set(*x,plain),set(*x,{{"density",24},{"size",200}}),prepare(*x);
+        Run r;r.input=[](int i,int){return (float)(.2*std::sin(2*pi*110*i/48000));};
+        r.perBlock=[&](int t){set(p,"filter",t<48000?0.0f:t<72000?-20.0f:t<96000?20.0f:0.0f);};
+        const auto switched=run(p,120000,512,r),steady=run(q,120000,512,r);
+        std::cout<<"Filter switching step "<<maxStep(switched,24000)<<" (steady "<<maxStep(steady,24000)<<")\n";
+        CHECK(maxStep(switched,24000)<1.5*maxStep(steady,24000));
+    }
+    // Feedback adds to bloom's loop: a longer tail after the input stops, still bounded by the level guard.
+    double tail[2]{};
+    for(int k=0;k<2;++k)
+    {
+        Proc p;set(p,plain),set(p,{{"density",24},{"size",200},{"feedback",k?95.0f:0.0f}}),prepare(p);
+        const Program pad(1);Run r;r.input=[&](int i,int){return i<96000?pad.data[(size_t)i]:0.0f;};r.side=r.input;
+        const auto a=run(p,4*48000,512,r);Level(a).check();
+        for(size_t i=120000;i<168000;++i)tail[k]+=(double)a.l[i]*a.l[i];
+    }
+    std::cout<<"Feedback tail 0.5-1.5 s after the input: "<<10*std::log10(tail[0]/48000+1e-30)<<" / "<<10*std::log10(tail[1]/48000+1e-30)<<" dBFS at 0 / 95%\n";
+    CHECK(tail[1]>4*tail[0]);
+}
 static void testSound()
 {
     const auto energy=[](const Audio& a,size_t from=24000)
@@ -916,7 +978,7 @@ static void testPerformance()
 // Dense batch reads and lookahead must agree with single-sample processing, including a held capture.
 static void testDenseBlocks()
 {
-    for (int variant : { 0, 1, 2, 3 }) for (bool frozen : { false, true })
+    for (int variant : { 0, 1, 2, 3, 4, 5 }) for (bool frozen : { false, true })
     {
         Run r;const int warm=194000; // freeze holds once 4 s are captured
         for (int note=0;note<128;++note) r.events.push_back({warm,juce::MidiMessage::noteOn(1,note,(juce::uint8)100)});
@@ -930,6 +992,8 @@ static void testDenseBlocks()
             Proc p;set(p,plain);set(p,{{"size",4000},{"pitch",12},{"pitchMode",0},{"density",64},{"bloom",100},{"oversample",3},{"position",0}});
             if(variant==2)set(p,{{"lock",2},{"heads",3},{"harmony",5},{"onset",1},{"scatter",30},{"pitch",-5}}); // tone: steals at the onsets
             if(variant==3)set(p,{{"lock",1},{"heads",2},{"harmony",1},{"onset",1},{"size",300},{"scatter",50}});
+            if(variant==4)set(p,{{"band",60},{"centre",2000},{"spectra",50},{"space",1},{"width",160},{"filter",-30},{"feedback",50},{"scatter",40}});
+            if(variant==5)set(p,{{"band",30},{"centre",800},{"width",40},{"filter",40},{"feedback",80},{"scatter",50}});
             if(variant==1)set(p,{{"shape",70},{"tilt",-40},{"reverse",40},{"detune",5},{"scale",2},{"drop",20},{"repeat",30},{"sprayDir",1},{"scan",160},{"scatter",30}});
             prepare(p);
             run(p,warm,block);
@@ -1243,7 +1307,7 @@ int main(int argc,char** argv)
     onAudioThread=true;void* probe=::operator new(64);escape(probe);::operator delete(probe);onAudioThread=false;
     CHECK(audioAllocations>0);audioAllocations=0;
     testContract();testParameterText();testState();testPresets();testDryAndLifecycle();testTimingAndMidi();testRatios();testOnsetsAndSource();testFreezeAndWindows();
-    testGrainFeatures();testHeadsAndLock();testSound();testEdges();testDenseBlocks();
+    testGrainFeatures();testHeadsAndLock();testColourAndSpace();testSound();testEdges();testDenseBlocks();
     if(argc>=2 && juce::String(argv[1])=="--core")return failures?1:0;
     testEditor();testGoldens();testPerformance();testLoudness();
     CHECK(audioAllocations==0);
