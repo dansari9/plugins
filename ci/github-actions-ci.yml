@@ -80,3 +80,113 @@ jobs:
             SpringReverb/build/SpringTank_artefacts/Release/AU/**
             SpringReverb/build/SpringTank_artefacts/Release/VST3/**
             SpringReverb/artifacts/spring_tank_impulse.wav
+
+  gulp-linux:
+    name: Gulp Linux VST3 + tests + pluginval
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake ninja-build pkg-config xvfb unzip \
+            libasound2-dev libfreetype6-dev libfontconfig1-dev \
+            libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxext-dev \
+            libgtk-3-dev
+
+      - name: Configure
+        run: cmake -S Gulp -B Gulp/build -G Ninja -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build Gulp/build --parallel --target Gulp_VST3 Gulp_Standalone GulpTests
+
+      - name: Unit tests
+        run: xvfb-run -a Gulp/build/GulpTests
+
+      - name: Unit tests under ASan + UBSan
+        run: |
+          S="-fsanitize=address,undefined,float-cast-overflow -fno-sanitize-recover=all -fno-omit-frame-pointer"
+          cmake -S Gulp -B Gulp/build-asan -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            "-DCMAKE_C_FLAGS=$S" "-DCMAKE_CXX_FLAGS=$S" "-DCMAKE_EXE_LINKER_FLAGS=-fsanitize=address,undefined"
+          cmake --build Gulp/build-asan --parallel 2 --target GulpTests
+          xvfb-run -a Gulp/build-asan/GulpTests
+
+      - name: pluginval (strictness 10)
+        run: |
+          curl -sL -o pluginval.zip https://github.com/Tracktion/pluginval/releases/latest/download/pluginval_Linux.zip
+          unzip -q pluginval.zip
+          xvfb-run -a ./pluginval --strictness-level 10 --validate-in-process \
+            --validate Gulp/build/Gulp_artefacts/Release/VST3/gulp.vst3
+
+      - name: Package (tar keeps the executable bit)
+        run: tar -C Gulp/build/Gulp_artefacts/Release -czf gulp-linux.tar.gz VST3 Standalone
+
+      - name: Upload VST3 + Standalone
+        uses: actions/upload-artifact@v4
+        with:
+          name: gulp-linux
+          if-no-files-found: error
+          path: gulp-linux.tar.gz
+
+  gulp-macos:
+    name: Gulp macOS universal AU + VST3 + auval
+    runs-on: macos-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake -S Gulp -B Gulp/build -G Xcode -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"
+
+      - name: Build AU, VST3, tests
+        run: cmake --build Gulp/build --config Release --parallel --target Gulp_AU Gulp_VST3 GulpTests
+
+      - name: Ad-hoc sign and verify AU and VST3
+        run: |
+          codesign --force --sign - --timestamp=none Gulp/build/Gulp_artefacts/Release/AU/gulp.component
+          codesign --verify --deep --strict --verbose=2 Gulp/build/Gulp_artefacts/Release/AU/gulp.component
+          codesign --force --sign - --timestamp=none Gulp/build/Gulp_artefacts/Release/VST3/gulp.vst3
+          codesign --verify --deep --strict --verbose=2 Gulp/build/Gulp_artefacts/Release/VST3/gulp.vst3
+
+      - name: Unit tests
+        run: |
+          BIN="$(find Gulp/build -type f -name GulpTests -perm +111 | head -n 1)"
+          test -n "$BIN"
+          "$BIN"
+
+      - name: Universal binary check
+        run: |
+          lipo Gulp/build/Gulp_artefacts/Release/AU/gulp.component/Contents/MacOS/gulp -verify_arch arm64 x86_64
+          lipo Gulp/build/Gulp_artefacts/Release/VST3/gulp.vst3/Contents/MacOS/gulp -verify_arch arm64 x86_64
+
+      - name: auval
+        run: |
+          mkdir -p ~/Library/Audio/Plug-Ins/Components
+          cp -R Gulp/build/Gulp_artefacts/Release/AU/gulp.component ~/Library/Audio/Plug-Ins/Components/
+          killall -9 AudioComponentRegistrar 2>/dev/null || true
+          sleep 3
+          auval -a | grep -i Dwks || true
+          auval -v aumf Gulp Dwks
+
+      - name: pluginval (strictness 10, AU + VST3)
+        run: |
+          curl -sL -o pluginval.zip https://github.com/Tracktion/pluginval/releases/latest/download/pluginval_macOS.zip
+          unzip -q pluginval.zip
+          PV=pluginval.app/Contents/MacOS/pluginval
+          $PV --strictness-level 10 --validate-in-process --validate ~/Library/Audio/Plug-Ins/Components/gulp.component
+          $PV --strictness-level 10 --validate-in-process --validate Gulp/build/Gulp_artefacts/Release/VST3/gulp.vst3
+
+      - name: Package (zip keeps bundle permissions)
+        run: cd Gulp/build/Gulp_artefacts/Release && ditto -c -k --keepParent AU/gulp.component "$GITHUB_WORKSPACE/Gulp-AU-macos.zip" && ditto -c -k --keepParent VST3/gulp.vst3 "$GITHUB_WORKSPACE/Gulp-VST3-macos.zip"
+
+      - name: Upload AU + VST3
+        uses: actions/upload-artifact@v4
+        with:
+          name: gulp-macos-universal
+          if-no-files-found: error
+          path: |
+            Gulp-AU-macos.zip
+            Gulp-VST3-macos.zip
