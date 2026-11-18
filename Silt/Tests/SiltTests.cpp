@@ -173,6 +173,11 @@ static void testContract()
         else if(dynamic_cast<juce::AudioParameterBool*>(q)) CHECK(c.choices && juce::String(c.choices).isEmpty());
         else CHECK(c.choices==nullptr);
     }
+    // Hosts bind automation by ID, not index: VST3 and AU both use the 31-bit hash of the string ID, and AU lists
+    // parameters by version hint, then ID, so appended (hint 2) parameters sort after all of these.
+    constexpr juce::uint32 hostIds[]{108124,1141971201,3530753,846956092,1552717032,747804969,1911146174,106677056,544002307,
+        1087591864,1882965841,1213131218,394773374,881080983,1079164854,729666843,93832707,94623616};
+    for(int i=0;i<(int)std::size(contract);++i)CHECK(juce::VST3ClientExtensions::convertJuceParameterId(contract[i].id,true)==hostIds[i]);
     // Mono -> stereo is intentional; stereo -> mono and surround are not supported.
     for(int in:{1,2,3}) for(int out:{1,2,3}) for(int side:{0,1,2,3})
     {
@@ -942,6 +947,35 @@ static juce::String soundHash()
     const auto a=run(p,230400,512,r);CHECK(Level(a).rms>.001);juce::MemoryOutputStream bytes;
     bytes.write(a.l.data(),a.l.size()*sizeof(float)),bytes.write(a.r.data(),a.r.size()*sizeof(float));return sha(bytes);
 }
+// Old sessions sound bit-identical: v1 documents (the fixture; each factory preset as 0.1.0 saved it; one with an
+// 18-value A/B slot, then selected) render the hashes recorded from the 0.1.0 build (ad32710).
+static std::vector<juce::String> legacyHashes()
+{
+    Proc defaults;
+    const auto doc=[&](int i,const juce::String& attributes) {
+        juce::String xml="<SILT stateVersion=\"1\" preset=\""+juce::String(i)+"\""+attributes+">";
+        for(size_t k=0;k<std::size(contract);++k)xml<<"<PARAM id=\""<<contract[k].id<<"\" value=\""<<juce::String((double)silt::presets[i].v[k],9)<<"\"/>";
+        return blob(xml+"</SILT>");
+    };
+    juce::StringArray slot;
+    for(size_t k=0;k<std::size(contract);++k)slot.add(juce::String((double)defaults.apvts.getParameter(contract[k].id)->convertTo0to1(silt::presets[7].v[k]),9));
+    std::vector<juce::MemoryBlock> states{{},doc(3," ab=\"1\" slotA=\"7;"+slot.joinIntoString(",")+"\"")};
+    CHECK(juce::File(SILT_TEST_SOURCE_DIR "/state-v1.bin").loadFileAsData(states[0]));
+    for(int i=0;i<10;++i)states.push_back(doc(i,{}));
+    std::vector<juce::String> hashes;
+    for(size_t k=0;k<states.size();++k)
+    {
+        Proc p;load(p,states[k]);
+        if(k==1)p.selectAb(0);
+        prepare(p);Host h;Run r;r.host=&h;
+        r.events={{1701,juce::MidiMessage::noteOn(1,64,(juce::uint8)100)},{12001,juce::MidiMessage::controllerEvent(1,1,64)},
+            {30000,juce::MidiMessage::noteOff(1,64)}};
+        const auto a=run(p,144000,512,r);juce::MemoryOutputStream bytes;
+        bytes.write(a.l.data(),a.l.size()*sizeof(float)),bytes.write(a.r.data(),a.r.size()*sizeof(float));
+        hashes.push_back(sha(bytes).substring(0,16));
+    }
+    return hashes;
+}
 static void testGoldens(bool record=false)
 {
     juce::MemoryOutputStream math;
@@ -966,6 +1000,14 @@ static void testGoldens(bool record=false)
     {
         const auto audio=soundHash();std::cout<<"Golden sound: "<<audio<<"\n";
         if(!record)CHECK(audio==expectedSound);
+        const char* expectedLegacy[]{"49a665f135552f91","4f990f341d3ef688","ad373836121b1f3c","ff7b604aba9a3ab8","41e0d592e0b2ab2a","63f176c6e5a5e2d5",
+            "3a8e7ffa6fbe0cd3","88107176265b1e65","42faedd107cb9113","4f990f341d3ef688","99bfadade61751c0","cc09de93224ecb2d"}; // 0.1.0, ad32710
+        const auto legacy=legacyHashes();CHECK(legacy.size()==std::size(expectedLegacy));
+        for(size_t k=0;k<legacy.size();++k)
+        {
+            std::cout<<"Golden v1 "<<k<<": "<<legacy[k]<<"\n";
+            if(!record)CHECK(legacy[k]==expectedLegacy[k]);
+        }
         if(record || renderer==expectedRenderer)
         {
             int k=0;for(int percent:{50,100,200})
