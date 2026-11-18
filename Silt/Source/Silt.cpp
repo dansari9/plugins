@@ -35,16 +35,15 @@ String msText(double ms) { return ms >= 1000 ? String(ms / 1000, 1) + " s" : Str
 AudioProcessorValueTreeState::ParameterLayout layout(const SiltProcessor& self)
 {
     using Text = std::function<String(float)>;
-    using Parse = std::function<float(const String&)>;
-    const auto parse = [](const String& t) { return t.replace(String::fromUTF8("−"), "-").retainCharacters("+-.0123456789").getFloatValue(); };
     // Every text carries its own unit, so no host label: VST3 hosts append it ("1/16 ms", "12/beat /s").
-    auto num = [&](int i, const char* name, float lo, float hi, float def, float step, std::optional<Travel> travel, Text text, Parse from = {}) {
+    // Typed text goes through parse(); text it can't read keeps the current value.
+    auto num = [&](int i, const char* name, float lo, float hi, float def, float step, std::optional<Travel> travel, Text text) {
         const auto snap = [per = std::round(1 / step)](float l, float h, float v) { return jlimit(l, h, std::round(v * per) / per + 0.0f); };
         NormalisableRange<float> r(lo, hi, [=](float l, float h, float v) { return snap(l, h, i == Pitch ? 48 * std::copysign(std::pow(std::abs(2*v-1),1.56f),2*v-1) : travel ? (float) travel->from(v) : l + (h - l) * v); },
             [=](float l, float h, float v) { return i == Pitch ? .5f + .5f * std::copysign(std::pow(std::abs(v/48),1/1.56f),v) : travel ? (float) travel->to(v) : (v - l) / (h - l); }, snap);
         r.interval = travel ? 0.0f : step;
         return std::make_unique<AudioParameterFloat>(ParameterID { ids[i], hint(i) }, name, r, def,
-            AudioParameterFloatAttributes().withStringFromValueFunction([text](float v, int) { return text(v); }).withValueFromStringFunction(from ? from : Parse(parse)));
+            AudioParameterFloatAttributes().withStringFromValueFunction([text](float v, int) { return text(v); }).withValueFromStringFunction([&self, i](const String& t) { return self.parse(ids[i], t).value_or(self.apvts.getRawParameterValue(ids[i])->load()); }));
     };
     auto choice = [](int i, const char* name, StringArray items, int def) { return std::make_unique<AudioParameterChoice>(ParameterID { ids[i], hint(i) }, name, items, def); };
     auto toggle = [](int i, const char* name, bool def) { return std::make_unique<AudioParameterBool>(ParameterID { ids[i], 1 }, name, def); };
@@ -53,21 +52,13 @@ AudioProcessorValueTreeState::ParameterLayout layout(const SiltProcessor& self)
     const auto sizeText = [&self](float v) { return self.apvts.getRawParameterValue("sizeSync")->load() < .5f ? String(silt::noteNames[syncIndex(sizeTravel.to(v))]) : msText(v); };
     const auto sync = [&self] { return self.apvts.getRawParameterValue("sizeSync")->load() < .5f; };
     const auto perQuarter = [&self] { return jmax(1, roundToInt(self.apvts.getRawParameterValue("density")->load() / 2)); };
-    const auto sizeFrom = [&self, parse](const String& text) {
-        if (self.apvts.getRawParameterValue("sizeSync")->load() < .5f)
-            for (int k = 0; k < silt::numNotes; ++k)
-                if (text.trim() == silt::noteNames[k]) return (float) sizeTravel.from(std::pow((double) k / (silt::numNotes - 1), 1 / 1.6));
-        return parse(text) * (text.endsWithIgnoreCase(" s") ? 1000 : 1);
-    };
     return { num(Mix,"Mix",0,100,100,.1f,{},percent),
         num(Output,"Output",-24,12,0,.1f,{},[](float v) { return String(v,1) + " dB"; }),
-        num(Size,"Size",.5f,4000,51.78f,.01f,sizeTravel,sizeText,sizeFrom),
+        num(Size,"Size",.5f,4000,51.78f,.01f,sizeTravel,sizeText),
         choice(SizeSync,"Size Mode",{"sync","free"},0),
         // In sync the engine plays whole grains per quarter and a position quantised to them: say so.
-        num(Density,"Density",1,64,24,.1f,Travel {1,64,1.26,false},[sync](float v) { return sync() ? String(jmax(1,roundToInt(v/2)))+"/beat" : String(v,std::abs(v-std::round(v))<.05f?0:1)+"/s"; },
-            [sync,parse](const String& t) { return parse(t)*(sync() && !t.endsWithIgnoreCase("/s")?2:1); }),
-        num(Position,"Position",0,4000,1200,.1f,{},[sync,perQuarter](float v) { const int q=perQuarter(); return sync() ? String(std::round(v*q/125)*.25/q,2)+" beats" : msText(v); },
-            [sync,parse](const String& t) { return parse(t)*(t.endsWithIgnoreCase("ms")?1:t.endsWithIgnoreCase("s") && !t.containsIgnoreCase("beat")?1000:sync()?500:1); }),
+        num(Density,"Density",1,64,24,.1f,Travel {1,64,1.26,false},[sync](float v) { return sync() ? String(jmax(1,roundToInt(v/2)))+"/beat" : String(v,std::abs(v-std::round(v))<.05f?0:1)+"/s"; }),
+        num(Position,"Position",0,4000,1200,.1f,{},[sync,perQuarter](float v) { const int q=perQuarter(); return sync() ? String(std::round(v*q/125)*.25/q,2)+" beats" : msText(v); }),
         num(Scatter,"Scatter",0,100,45,.1f,{},percent),
         num(Pitch,"Pitch",-48,48,12,.01f,{},[](float v) { return (v>0?"+":"")+String(v,std::abs(v-std::round(v))<.005f?0:2)+" st"; }),
         choice(PitchMode,"Pitch Mode",{"shift","tape"},0),
@@ -90,8 +81,7 @@ AudioProcessorValueTreeState::ParameterLayout layout(const SiltProcessor& self)
         choice(Scale,"Scale",{"free","chromatic","major","minor","pentatonic"},0),
         num(Drop,"Drop",0,100,0,.1f,{},percent),num(Repeat,"Repeat",0,100,0,.1f,{},percent),
         num(Band,"Band",0,100,0,.1f,{},percent),
-        num(Centre,"Centre",100,12000,1200,.1f,Travel {100,12000,1,true},[](float v) { return v>=1000 ? String(v/1000,2)+" kHz" : String(v,0)+" Hz"; },
-            [parse](const String& t) { return parse(t)*(t.containsIgnoreCase("k")?1000:1); }),
+        num(Centre,"Centre",100,12000,1200,.1f,Travel {100,12000,1,true},[](float v) { return v>=1000 ? String(v/1000,2)+" kHz" : String(v,0)+" Hz"; }),
         num(Spectra,"Spectra",0,100,0,.1f,{},percent),
         choice(Space,"Space",{"pan","binaural"},0),
         num(Width,"Width",0,200,100,.1f,{},percent),num(Feedback,"Feedback",0,95,0,.1f,{},percent),
@@ -108,6 +98,69 @@ std::optional<double> number(const String& t) // the whole text is one finite nu
     return in >> v && std::isfinite(v) && (in >> std::ws).eof() ? std::optional(jlimit(-1.0e6, 1.0e6, v)) : std::nullopt;
 }
 
+// Typed values (PLAN 4.1): a number with an optional unit, a note value, a note name or a word; anything else is
+// nothing, so it never sets a value. Case and spaces are free, "−" and a decimal comma (with no point) are read, and a
+// bare number is the shown unit. Results clamp to the range.
+} // namespace
+std::optional<float> SiltProcessor::parse(const String& id, const String& typed) const
+{
+    const int i = (int) (std::find_if(std::begin(ids), std::end(ids), [&](const char* s) { return id == s; }) - std::begin(ids));
+    auto t = typed.toLowerCase().replace(String::fromUTF8("−"), "-").removeCharacters(" \t");
+    if (!t.containsChar('.')) t = t.replaceCharacter(',', '.');
+    const auto word = t.initialSectionContainingOnly("abcdefghijklmnopqrstuvwxyz#"), rest = t.substring(word.length());
+    const auto digits = rest.initialSectionContainingOnly("+-.0123456789"), unit = rest.substring(digits.length());
+    const auto v = number(digits);
+    const bool sync = apvts.getRawParameterValue("sizeSync")->load() < .5f;
+    const double beat = 60000.0 / feed.tempo.load(), beats = sync ? 500 : beat; // ms; sync shows 500 ms beats
+    const auto in = [&](std::initializer_list<std::pair<const char*, double>> units) -> std::optional<double> {
+        if (v && word.isEmpty()) for (auto [u, k] : units) if (unit == u) return *v * k;
+        return std::nullopt;
+    };
+    // A note name (c3, f#2, bb4) as semitones above c0. An empty word is not a name: indexOf("") is 0.
+    const int letter = word.isNotEmpty() && word.length() <= 2 ? String("c d ef g a b").indexOf(word.substring(0, 1)) : -1;
+    const int accidental = word.length() < 2 ? 0 : word[1] == '#' ? 1 : word[1] == 'b' ? -1 : 9;
+    const auto name = letter >= 0 && accidental != 9 && v && unit.isEmpty() && !digits.containsChar('.') ? std::optional(12 * *v + letter + accidental) : std::nullopt;
+    const auto prefixed = [&](const char* minus, const char* plus) -> std::optional<double> {
+        return (word == minus || word == plus) && v && unit.isEmpty() ? std::optional((word == minus ? -1 : 1) * std::abs(*v)) : in({ { "", 1 } });
+    };
+    std::optional<double> out;
+    switch (i)
+    {
+        case Output: out = t == "-inf" || t == "-infdb" || t == "min" ? -24.0 : in({ { "", 1 }, { "db", 1 } }); break;
+        case Pitch: case Detune:
+            out = i == Pitch && name ? *name - 36 : in({ { "", 1 }, { "st", 1 }, { "semi", 1 }, { "semis", 1 }, { "c", .01 }, { "cent", .01 }, { "cents", .01 }, { "oct", 12 } }); break; // c3 = 0
+        case Centre: out = name ? 440 * std::pow(2.0, (*name - 57) / 12) : in({ { "", 1 }, { "hz", 1 }, { "k", 1000 }, { "khz", 1000 } }); break; // a4 = 440 Hz
+        case Scan: out = t == "stop" ? 0.0 : t == "normal" ? 100.0 : t == "rev" ? -100.0 : in({ { "", 1 }, { "%", 1 }, { "x", 100 } }); break;
+        case Filter: out = t == "off" ? 0.0 : prefixed("lp", "hp"); break;
+        case Tilt: out = prefixed("pluck", "swell"); break;
+        case Density: out = in({ { "", sync ? 2 : 1 }, { "/s", 1 }, { "hz", 1 }, { "/beat", 2 }, { "/b", 2 } }); break; // grains/s; a beat holds two
+        case Position: out = in({ { "", sync ? 500 : 1 }, { "ms", 1 }, { "s", 1000 }, { "b", beats }, { "beat", beats }, { "beats", beats }, { "bar", 4 * beats }, { "bars", 4 * beats } }); break;
+        case Size:
+        {
+            // A note value in whole notes (1/8, 1/8t, 1/4d, 1/4., 1 bar, 2 bars); sync takes the nearest one, also to a time.
+            const auto den = unit.substring(1).initialSectionContainingOnly("0123456789"), dot = unit.substring(1 + den.length());
+            const auto bars = in({ { "bar", 1 }, { "bars", 1 } });
+            const auto whole = bars ? bars
+                : v && word.isEmpty() && unit.startsWithChar('/') && den.getIntValue() > 0 && (dot.isEmpty() || dot == "t" || dot == "d" || dot == ".")
+                    ? std::optional(*v / den.getIntValue() * (dot == "t" ? 2 / 3.0 : dot.isEmpty() ? 1 : 1.5)) : std::nullopt;
+            const auto ms = in({ { "", 1 }, { "ms", 1 }, { "s", 1000 } });
+            if (!sync) out = whole ? std::optional(*whole * 4 * beat) : ms;
+            else if (const double w = whole ? *whole : ms ? *ms / 4 / beat : 0; w > 0)
+            {
+                int k = 0;
+                for (int j = 1; j < silt::numNotes; ++j)
+                    if (std::abs(std::log(w * silt::noteDen[j] / silt::noteNum[j])) < std::abs(std::log(w * silt::noteDen[k] / silt::noteNum[k]))) k = j;
+                out = sizeTravel.from(std::pow((double) k / (silt::numNotes - 1), 1 / 1.6));
+            }
+            break;
+        }
+        default: out = in({ { "", 1 }, { "%", 1 } }); // percentages: 0.45 is 0.45%
+    }
+    const auto range = apvts.getParameter(id)->getNormalisableRange();
+    return out && std::isfinite(*out) ? std::optional((float) jlimit((double) range.start, (double) range.end, *out)) : std::nullopt;
+}
+namespace
+{
 double release(double p, double hold, double k) { return p < hold ? 1 : std::pow(std::max(0.0, 1 - (p - hold) / (1 - hold)), k); } // gulp's, normalised
 
 // ================================ The capture buffer ================================
@@ -775,7 +828,7 @@ struct SiltProcessor::Engine
                 if (const auto b = pos->getBpm(); b && std::isfinite(*b) && *b > 0) bpm = jlimit(20.0, 999.0, *b);
                 if (const auto q = pos->getPpqPosition(); q && std::isfinite(*q) && pos->getIsPlaying()) playing = true, ppq = *q;
             }
-        tempo = bpm;
+        tempo = bpm, feed.tempo = (float) bpm;
         const bool synced = v[SizeSync] < 0.5f && playing && v[Lock] < .5f; // locked clocks run free
         if (synced)
         {

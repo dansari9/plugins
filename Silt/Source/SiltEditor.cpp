@@ -72,26 +72,10 @@ struct Grid
     }
 };
 
-// Controls draw nothing: the grid shows them. The value box only appears while a value is typed.
-struct Look : LookAndFeel_V4
-{
-    Font getLabelFont(Label&) override { return mono(cw / 0.6f, false); }
-    void drawLabel(Graphics&, Label&) override {}
-    void drawLinearSlider(Graphics&, int, int, int, int, float, float, float, Slider::SliderStyle, Slider&) override {}
-    void drawRotarySlider(Graphics&, int, int, int, int, float, float, float, Slider&) override {}
-    Label* createSliderTextBox(Slider& s) override
-    {
-        auto* l = LookAndFeel_V4::createSliderTextBox(s);
-        l->setColour(Label::backgroundWhenEditingColourId, page), l->setColour(Label::textWhenEditingColourId, white);
-        l->setColour(Label::outlineWhenEditingColourId, {}), l->setColour(TextEditor::highlightColourId, red.withAlpha(0.4f));
-        l->setColour(TextEditor::highlightedTextColourId, white), l->setColour(CaretComponent::caretColourId, red);
-        return l;
-    }
-};
-
 struct Key : Button
 {
-    explicit Key(const String& id) : Button(id) { setComponentID(id), setRepaintsOnMouseActivity(false); }
+    // No keyboard focus: Return and Space stay with the host (a focused Button would take Return and re-click).
+    explicit Key(const String& id) : Button(id) { setComponentID(id), setRepaintsOnMouseActivity(false), setWantsKeyboardFocus(false); }
     void paintButton(Graphics&, bool, bool) override {}
 };
 // A round braille dial, 8 x 4 cells = 16 x 16 dots: a dotted 270 degree track, the value arc (centred: from the top)
@@ -302,31 +286,158 @@ struct Cloud : Group
         g.put(cell(pos),ry,u("▲"),red);
     }
 };
-struct Dial { const char *id,*name; int cx; bool centred=false; std::function<bool()> dim={}; }; // dim: the control does nothing now
+// The inline value field: Return commits, Esc cancels, Tab / ⇧Tab commit and open the next / previous dial's field.
+struct Field : TextEditor
+{
+    std::function<void(int)> tab;
+    // Return, Esc and Tab run now. TextEditor posts them as command messages, which is too late for a cancel.
+    bool keyPressed(const KeyPress& k) override
+    {
+        if (k.getKeyCode() == KeyPress::tabKey) { tab(k.getModifiers().isShiftDown() ? -1 : 1); return true; }
+        if (k.getKeyCode() == KeyPress::returnKey) { if (onReturnKey) onReturnKey(); return true; }
+        if (k.getKeyCode() == KeyPress::escapeKey) { if (onEscapeKey) onEscapeKey(); return true; }
+        return TextEditor::keyPressed(k);
+    }
+};
+// A dial or fader (PLAN 4.1). It draws nothing: the grid shows it. Drag on the larger axis (faders: horizontal) over
+// 250 screen px at any zoom, ⇧ 2,500 px; 3 px or less is a click and moves nothing. ⌥/⌘-click resets, double-click
+// types. The wheel moves 1% a notch (⇧ 0.1%, stepped dials one step), a trackpad 250 px for the travel. Each drag,
+// reset, typed value and wheel burst (ending 300 ms after its last event) is one host gesture.
+struct Dial : Component, Timer
+{
+    SiltProcessor& p;
+    RangedAudioParameter& q;
+    ParameterAttachment attachment;
+    const bool fader;
+    std::function<double(double, int)> step; // a stepped dial's value one notch away
+    Field field;
+    double value = 0; // unsnapped through a drag or wheel burst
+    bool dragging = false, reset = false;
+    Point<float> last;
+    Dial(SiltProcessor& proc, const char* id, bool horizontal)
+        : p(proc), q(*proc.apvts.getParameter(id)), attachment(q, [](float) {}), fader(horizontal)
+    {
+        setComponentID(id), setTitle(q.name), setRepaintsOnMouseActivity(false);
+        field.setColour(TextEditor::backgroundColourId, rule), field.setColour(TextEditor::textColourId, white);
+        field.setColour(TextEditor::outlineColourId, {}), field.setColour(TextEditor::focusedOutlineColourId, {});
+        field.setColour(TextEditor::highlightColourId, red.withAlpha(.4f)), field.setColour(TextEditor::highlightedTextColourId, white);
+        field.setColour(CaretComponent::caretColourId, red), field.setJustification(fader ? Justification::centredRight : Justification::centred);
+        field.setPopupMenuEnabled(false); // a modal edit menu would trap a host's GUI test
+        field.onReturnKey = [this] { commit(); };
+        field.onEscapeKey = [this] { field.setVisible(false); };
+        field.onFocusLost = [this] { commit(true); };
+        field.tab = [this](int direction) { if (commit()) next(direction).edit(); };
+        addChildComponent(field);
+    }
+    ~Dial() override
+    {
+        if (isTimerRunning()) timerCallback(); // a wheel burst still ends if the editor closes mid-scroll
+        else if (dragging) attachment.endGesture();
+    }
+    void resized() override { field.setBounds(getLocalBounds().removeFromBottom(roundToInt(ch)).removeFromRight(roundToInt(cw * 10))); }
+    float scale() const { return jmax(.01f, getApproximateScaleFactorForComponent(this)); } // screen px per layer px
+    void edit()
+    {
+        field.setColour(TextEditor::backgroundColourId, rule);
+        field.setFont(mono(jmax(cw / 0.6f, 11 / scale()), false)), field.setText(q.getCurrentValueAsText(), false);
+        field.setVisible(true), field.grabKeyboardFocus(), field.selectAll();
+    }
+    // Invalid text sets nothing: the field flashes red and stays open, unless it is closing anyway.
+    bool commit(bool closing = false)
+    {
+        if (!field.isVisible()) return true;
+        const auto typed = p.parse(q.paramID, field.getText());
+        if (!typed && !closing)
+        {
+            field.setColour(TextEditor::backgroundColourId, red);
+            Timer::callAfterDelay(300, [f = SafePointer<Field>(&field)] { if (f) f->setColour(TextEditor::backgroundColourId, rule); });
+            return false;
+        }
+        field.setVisible(false);
+        if (typed) attachment.setValueAsCompleteGesture(*typed); // nothing when unchanged
+        return true;
+    }
+    Dial& next(int direction) // reading order over the visible dials, wrapping
+    {
+        auto* top = getTopLevelComponent();
+        std::vector<Dial*> dials;
+        std::function<void(Component&)> collect = [&](Component& c) {
+            for (auto* child : c.getChildren())
+                if (child->isVisible()) { if (auto* d = dynamic_cast<Dial*>(child)) dials.push_back(d); else collect(*child); }
+        };
+        collect(*top);
+        const auto at = [top](Dial* d) { const auto o = top->getLocalPoint(d, Point<int>()); return std::pair(o.y, o.x); };
+        std::sort(dials.begin(), dials.end(), [&](Dial* a, Dial* b) { return at(a) < at(b); });
+        const int k = (int) (std::find(dials.begin(), dials.end(), this) - dials.begin()), n = (int) dials.size();
+        return *dials[(size_t) ((k + direction + n) % n)];
+    }
+    void move(double delta) { value = jlimit(0.0, 1.0, value + delta), attachment.setValueAsPartOfGesture(q.convertFrom0to1((float) value)); }
+    void mouseDown(const MouseEvent& e) override
+    {
+        if (isTimerRunning()) timerCallback();
+        dragging = false;
+        if ((reset = e.mods.isAltDown() || e.mods.isCommandDown()))
+            field.setVisible(false), attachment.setValueAsCompleteGesture(q.convertFrom0to1(q.getDefaultValue())); // ⌥/⌘, and ctrl where it is the command key
+    }
+    void mouseDrag(const MouseEvent& e) override
+    {
+        if (reset) return;
+        const auto d = e.position - (dragging ? last : e.mouseDownPosition);
+        const float along = (fader || std::abs(d.x) > std::abs(d.y) ? d.x : -d.y) * scale(); // screen px; faders ignore vertical
+        if (!dragging)
+        {
+            if (std::abs(along) <= 3) return; // 3 screen px or less is a click
+            dragging = true, value = q.getValue();
+            attachment.beginGesture(), e.source.enableUnboundedMouseMovement(true); // the cursor hides; the drag never stops at the screen edge
+        }
+        last = e.position; // ⇧ applies from here on, so pressing it never jumps the value
+        move(along / (e.mods.isShiftDown() ? 2500 : 250));
+    }
+    void mouseUp(const MouseEvent& e) override
+    {
+        if (dragging)
+        {
+            if (e.source.isUnboundedMouseMovementEnabled())
+            {
+                e.source.enableUnboundedMouseMovement(false); // show the cursor again; JUCE's setter is non-const
+                const_cast<MouseInputSource&>(e.source).setScreenPosition(e.getMouseDownScreenPosition().toFloat());
+            }
+            attachment.endGesture();
+        }
+        dragging = false;
+    }
+    void mouseDoubleClick(const MouseEvent& e) override { if (!e.mods.isAltDown() && !e.mods.isCommandDown()) edit(); }
+    void mouseWheelMove(const MouseEvent& e, const MouseWheelDetails& w) override
+    {
+        const float delta = (std::abs(w.deltaY) > 0 ? w.deltaY : -w.deltaX) * (w.isReversed ? -1.0f : 1.0f); // up / right increases
+        if (std::abs(delta) <= 0) return;
+        if (!isTimerRunning()) value = q.getValue(), attachment.beginGesture();
+        const bool fine = e.mods.isShiftDown();
+        if (w.isSmooth) move(delta * 512 / (fine ? 2500 : 250)); // JUCE's precise deltas are px / 512
+        else if (step && !fine) value = step(value, delta > 0 ? 1 : -1), move(0);
+        else move((delta > 0 ? 1 : -1) * (fine ? .001 : .01));
+        startTimer(300);
+    }
+    void timerCallback() override { stopTimer(), attachment.endGesture(); }
+};
+struct DialSpec { const char *id,*name; int cx; bool centred=false; std::function<bool()> dim={}; }; // dim: the control does nothing now
 struct Controls : Group
 {
-    std::vector<Dial> dials;
+    std::vector<DialSpec> specs;
     bool fader;
     std::function<void(Grid&)> extra;
-    OwnedArray<Slider> sliders;
-    std::vector<std::unique_ptr<AudioProcessorValueTreeState::SliderAttachment>> sliderAttachments;
-    Controls(SiltProcessor& proc,Panel panel,std::initializer_list<Dial> ds,bool horizontal=false) : Group(proc,panel),dials(ds),fader(horizontal)
+    OwnedArray<Dial> dials;
+    Controls(SiltProcessor& proc,Panel panel,std::initializer_list<DialSpec> ds,bool horizontal=false) : Group(proc,panel),specs(ds),fader(horizontal)
     {
-        for(const auto& d:dials)
+        for(const auto& d:specs)
         {
-            auto& k=*sliders.add(new Slider());
-            k.setSliderStyle(fader?Slider::LinearHorizontal:Slider::RotaryVerticalDrag);
-            if(fader)k.setSliderSnapsToMousePosition(false);
-            k.setTextBoxStyle(fader?Slider::TextBoxRight:Slider::TextBoxBelow,false,roundToInt(cw*(fader?5:10)),roundToInt(ch));
-            k.setMouseDragSensitivity(250),k.setComponentID(d.id),k.setRepaintsOnMouseActivity(false);
-            sliderAttachments.push_back(std::make_unique<AudioProcessorValueTreeState::SliderAttachment>(p.apvts,d.id,k));
-            auto* q=p.apvts.getParameter(d.id);k.setDoubleClickReturnValue(true,q->convertFrom0to1(q->getDefaultValue()));
-            addAndMakeVisible(k),k.setBounds(fader?cells(d.cx+8,0,16,1):cells(d.cx-5,1,10,5));k.updateText();
+            auto& k=*dials.add(new Dial(p,d.id,fader));
+            addAndMakeVisible(k),k.setBounds(fader?cells(d.cx+8,0,16,1):cells(d.cx-5,1,10,5));
         }
     }
     void draw(Grid& g) override
     {
-        for(const auto& d:dials)
+        for(const auto& d:specs)
         {
             auto* q=p.apvts.getParameter(d.id);
             const int cx=d.cx;
@@ -344,7 +455,6 @@ struct Controls : Group
             }
         }
         if(extra)extra(g);
-        for(auto* k:sliders)for(auto* child:k->getChildren())if(auto* label=dynamic_cast<Label*>(child);label && !label->isBeingEdited())k->updateText();
     }
 };
 struct TriggerGroup : Group
@@ -366,7 +476,6 @@ struct TriggerGroup : Group
 struct Editor : AudioProcessorEditor, Timer
 {
     SiltProcessor& proc;
-    Look look;
     Component layer;
     Header header;
     Cloud cloud;
@@ -389,8 +498,8 @@ struct Editor : AudioProcessorEditor, Timer
         grain.word("sizeSync",0,4,6,"sync"),grain.word("sizeSync",1,9,6,"free");
         pitch.word("pitchMode",0,1,6,"shift"),pitch.word("pitchMode",1,7,6,"tape");
         space.toggle("reverbOn","reverb",1,0);
-        grain.dials[1].dim=[this] {return grain.value("trigger")>.5f;}; // transient/sidechain: one grain per onset
-        space.dials[0].dim=[this] {return space.value("reverbOn")<.5f;};
+        grain.specs[1].dim=[this] {return grain.value("trigger")>.5f;}; // transient/sidechain: one grain per onset
+        space.specs[0].dim=[this] {return space.value("reverbOn")<.5f;};
         grain.extra=[this](Grid& g) {g.put(4,6,"sync",grain.value("sizeSync")<.5f?red:grey),g.put(9,6,"free",grain.value("sizeSync")>.5f?red:grey);};
         pitch.extra=[this](Grid& g) {g.put(1,6,"shift",pitch.value("pitchMode")<.5f?red:grey),g.put(7,6,"tape",pitch.value("pitchMode")>.5f?red:grey);};
         space.extra=[this](Grid& g) {
@@ -402,8 +511,14 @@ struct Editor : AudioProcessorEditor, Timer
             for(int t=0;t<4;++t)tick.push_back({peak,t});
             g.braille(26,6,8,1,off,rule),g.braille(26,6,8,1,on,Colour(0xffbcbcbc),over),g.braille(26,6,8,1,tick,white,over);
         };
-        setOpaque(true),setLookAndFeel(&look),addAndMakeVisible(layer);layer.setBounds(0,0,W,H);
+        setOpaque(true),addAndMakeVisible(layer),addMouseListener(this,true);layer.setBounds(0,0,W,H);
         for(auto* group:groups())layer.addAndMakeVisible(group);
+        // Stepped wheels: pitch by a semitone, size in sync by a note value.
+        pitch.dials[0]->step=[q=pitch.dials[0]->q.getNormalisableRange()](double n,int d){return (double)q.convertTo0to1(jlimit(q.start,q.end,std::round(q.convertFrom0to1((float)n))+(float)d));};
+        grain.dials[0]->step=[this](double n,int d){
+            if(grain.value("sizeSync")>.5f)return n+d*.01;
+            const int k=jlimit(0,silt::numNotes-1,roundToInt(std::pow(n,1.6)*(silt::numNotes-1))+d); // Silt.cpp's syncIndex
+            return std::pow((double)k/(silt::numNotes-1),1/1.6);};
         header.changed=[this] {macros.setVisible(proc.showMacros),presets.setVisible(!proc.showMacros);refresh();};
         macros.setVisible(proc.showMacros),presets.setVisible(!proc.showMacros);
         const int stored=proc.editorWidth;
@@ -411,10 +526,14 @@ struct Editor : AudioProcessorEditor, Timer
         const int width=stored>0?jlimit(W/2,W*2,stored):W;
         setSize(width,roundToInt((double)width*H/W)),timerCallback(),startTimerHz(30);
     }
-    ~Editor() override {setLookAndFeel(nullptr);}
+    std::array<Controls*,4> controls() {return {&grain,&pitch,&space,&macros};}
+    // A click anywhere but in the open field, or a resize, commits it.
+    void commitFields(const Component* except=nullptr) {for(auto* c:controls())for(auto* d:c->dials)if(except!=&d->field && !d->field.isParentOf(except))d->commit(true);}
+    void mouseDown(const MouseEvent& e) override {commitFields(e.eventComponent);}
     std::array<Group*,9> groups() {return {&header,&cloud,&grain,&pitch,&trigger,&space,&presets,&macros,&freeze};}
     void resized() override
     {
+        commitFields();
         layer.setTransform(AffineTransform::scale((float) getWidth() / W, (float) getHeight() / H));
         proc.editorWidth = getWidth();
     }

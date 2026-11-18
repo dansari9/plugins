@@ -241,6 +241,48 @@ static void testParameterText()
         const auto text=juce::String(silt::noteNames[k]);parse("size",text);CHECK(size->getCurrentValueAsText()==text);
     }
     parse("size","1/16");CHECK(size->getCurrentValueAsText()=="1/16");
+    // The typed-value grammar (PLAN 4.1). Invalid text is nothing, and the host's text path keeps the value.
+    set(p,"mix",40),parse("mix","x"),parse("output","loud");CHECK(get(p,"mix")==40 && get(p,"output")==-3.5f);
+    parse("output","-inf dB");CHECK(get(p,"output")==-24);
+    const auto is=[&](const char* id,const char* text,float want){const auto v=p.parse(id,juce::String::fromUTF8(text));
+        CHECK(v && std::abs(*v-want)<.01f);if(!v || std::abs(*v-want)>=.01f)std::cout<<"  parse "<<id<<" '"<<text<<"' -> "<<(v?*v:-999)<<"\n";};
+    const auto bad=[&](const char* id,const char* text){CHECK(!p.parse(id,text));};
+    for(const auto* t:{"x","","1e3","12 apples","--3","1.2.3","c3","%","inf","nan","1/0"})bad("mix",t);
+    bad("pitch","h3"),bad("pitch","c3st"),bad("detune","g3"),bad("output","-6 st"),bad("size","1/8x"),bad("density","3/bar");
+    bad("filter","lp"),bad("tilt","hp 30"),bad("scan","50 st"),bad("centre","1.2 s");
+    is("mix","45",45),is("mix","45%",45),is("mix","0.45",.45f),is("mix","1,5",1.5f),is("mix","150",100),is("mix"," 45 % ",45);
+    is("output","-6",-6),is("output","-6 dB",-6),is("output","-6DB",-6),is("output","-inf",-24),is("output","-INF dB",-24),is("output","MIN",-24),is("output",juce::String::fromUTF8("−6").toRawUTF8(),-6);
+    is("pitch","+7",7),is("pitch","7st",7),is("pitch","7 semi",7),is("pitch","-12",-12),is("pitch","+50c",.5f),is("pitch","50 cents",.5f);
+    is("pitch","+1 oct",12),is("pitch","-2oct",-24),is("pitch","7.5",7.5f),is("pitch","g3",7),is("pitch","c2",-12),is("pitch","C3",0),is("pitch","f#3",6),is("pitch","bb2",-2);
+    is("detune","7",7),is("detune","50c",.5f),is("detune","1 oct",12);
+    is("centre","1200",1200),is("centre","1.2k",1200),is("centre","1.2 kHz",1200),is("centre","800 hz",800),is("centre","a4",440),is("centre","a5",880);
+    is("scan","50",50),is("scan","50%",50),is("scan","0.5x",50),is("scan","-1x",-100),is("scan","stop",0),is("scan","normal",100),is("scan","rev",-100);
+    is("filter","-40",-40),is("filter","+40",40),is("filter","lp 40",-40),is("filter","hp40",40),is("filter","off",0);
+    is("tilt","-30",-30),is("tilt","+30",30),is("tilt","swell 30",30),is("tilt","pluck 30",-30);
+    for(const auto* id:{"scatter","reverb","shape","reverse","drop","repeat","band","spectra","width","feedback","motion","chaos"})is(id,"45%",45);
+    set(p,"sizeSync",1); // free: ms, s, and note values at the host tempo (120 without one)
+    is("size","250",250),is("size","250ms",250),is("size",".25s",250),is("size","1.2 s",1200),is("size","9000 ms",4000),is("size","0.1",.5f);
+    is("size","1/8",250),is("size","1/8t",166.67f),is("size","1/4d",750),is("size","1/4.",750),is("size","1 bar",2000),is("size","2bars",4000),is("size","1/16T",83.33f);
+    is("density","12",12),is("density","12/s",12),is("density","12 hz",12),is("density","3/beat",6),is("density","3/b",6);
+    is("position","1200",1200),is("position","1.2s",1200),is("position","1200ms",1200),is("position","2 beats",1000),is("position","2b",1000),is("position","1 bar",2000);
+    set(p,"sizeSync",0); // sync: note values (also from a time), grains per beat, beats
+    const auto note=[&](const char* text,const char* want){parse("size",text);CHECK(size->getCurrentValueAsText()==want);};
+    note("1/32t","1/32T"),note("1/16T","1/16T"),note("1/4.","1/4D"),note("2 BARS","2 bars"),note("120 ms","1/16"),note("1/5","1/8D"),note("0.5s","1/4");
+    is("density","3",6),is("density","3/beat",6),is("density","12 hz",12),is("density","12/s",12);
+    is("position","3",1500),is("position","2b",1000),is("position","1 bar",2000),is("position","1.2s",1200);
+    // Every shown text reads back as its own value.
+    for(int sync=0;sync<2;++sync)
+        for(int k=0;k<silt::numParams;++k)
+            if(auto* q=dynamic_cast<juce::RangedAudioParameter*>(p.getParameters()[k]);q && dynamic_cast<juce::AudioParameterFloat*>(q))
+            {
+                set(p,"sizeSync",(float)sync);
+                for(float n:{0.0f,.13f,.5f,.77f,1.0f})
+                {
+                    const auto text=q->getText(n,0);const auto v=p.parse(q->paramID,text);CHECK(v);
+                    if(v)CHECK(q->getText(q->convertTo0to1(*v),0)==text);
+                }
+            }
+    set(p,"sizeSync",1);
 }
 
 static void testState()
@@ -296,6 +338,14 @@ static void testState()
     for(int k=silt::numParamsV1;k<silt::numParams;++k)CHECK(get(ab,contract[k].id)==contract[k].def);
     ab.selectAb(0);CHECK(get(ab,"scan")==-50 && get(ab,"centre")==300);
 }
+struct Gestures : juce::AudioProcessorListener
+{
+    int begun=0,ended=0;
+    void audioProcessorParameterChanged(juce::AudioProcessor*,int,float) override {}
+    void audioProcessorChanged(juce::AudioProcessor*,const ChangeDetails&) override {}
+    void audioProcessorParameterChangeGestureBegin(juce::AudioProcessor*,int) override {++begun;}
+    void audioProcessorParameterChangeGestureEnd(juce::AudioProcessor*,int) override {++ended;}
+};
 static void testPresets()
 {
     const auto folder=juce::File::getSpecialLocation(juce::File::tempDirectory).getNonexistentChildFile("silt-tests","",false);
@@ -313,13 +363,7 @@ static void testPresets()
     const auto before=params(p);
     const auto file=p.saveUserPreset();CHECK(file.existsAsFile() && p.presetName()=="user 01");
     // A chosen user preset records like a factory one (gestures); a host restoring state sends none.
-    struct Gestures : juce::AudioProcessorListener
-    {
-        int begun=0;
-        void audioProcessorParameterChanged(juce::AudioProcessor*,int,float) override {}
-        void audioProcessorChanged(juce::AudioProcessor*,const ChangeDetails&) override {}
-        void audioProcessorParameterChangeGestureBegin(juce::AudioProcessor*,int) override {++begun;}
-    } gestures;
+    Gestures gestures;
     p.setCurrentProgram(silt::numPresets-1);p.addListener(&gestures);p.stepPreset(1);CHECK(params(p)==before && p.presetName()=="user 01" && gestures.begun>0);
     gestures.begun=0;{Proc r;r.addListener(&gestures);load(r,save(p));r.removeListener(&gestures);}CHECK(gestures.begun==0);
     p.removeListener(&gestures);
@@ -1103,45 +1147,92 @@ static void testEditor()
         };
         CHECK(!find(e,"group:macros")->isVisible());press("macro");CHECK(find(e,"group:macros")->isVisible() && !find(e,"group:presets")->isVisible());
         const auto time=juce::Time::getCurrentTime();
-        const auto mouse=[&](juce::Component* c,juce::Point<float> pos,juce::Point<float> down,int clicks=1)
+        const auto mouse=[&](juce::Component* c,juce::Point<float> pos,juce::Point<float> down,int clicks=1,int flags=0)
         {
-            return juce::MouseEvent(juce::Desktop::getInstance().getMainMouseSource(),pos,juce::ModifierKeys::leftButtonModifier,
+            return juce::MouseEvent(juce::Desktop::getInstance().getMainMouseSource(),pos,juce::ModifierKeys(juce::ModifierKeys::leftButtonModifier|flags),
                 1,0,0,0,0,c,c,time,down,time,clicks,pos!=down);
         };
+        const auto fieldOf=[](juce::Component* dial){juce::TextEditor* f=nullptr;for(auto* c:dial->getChildren())if(auto* t=dynamic_cast<juce::TextEditor*>(c))f=t;return f;};
+        const auto key=[](juce::TextEditor* f,int code,int flags=0){f->keyPressed(juce::KeyPress(code,juce::ModifierKeys(flags),0));};
+        const float px=100.0f/(float)percent; // layer px per screen px: gestures feel the same at every zoom
+        Gestures gestures;p.addListener(&gestures);
+        // Gesture counts since the last check: exactly n begin/end pairs.
+        const auto pairs=[&](int n){const bool ok=gestures.begun==n && gestures.ended==n;CHECK(ok);if(!ok)std::cout<<"  gestures "<<gestures.begun<<"/"<<gestures.ended<<" want "<<n<<"\n";gestures={};};
         for(const auto& spec:contract)
         {
             if(&spec-contract>=silt::numParamsV1)break; // 0.2's parameters get controls with the new layout
             auto* param=p.apvts.getParameter(spec.id);
             if(dynamic_cast<juce::AudioParameterFloat*>(param))
             {
-                auto* slider=dynamic_cast<juce::Slider*>(find(e,spec.id));CHECK(slider && slider->isVisible());
-                if(!slider)continue;
-                juce::Label* label=nullptr;for(auto* child:slider->getChildren())if(auto* l=dynamic_cast<juce::Label*>(child))label=l;
-                CHECK(label && label->isEditableOnSingleClick());
+                auto* dial=find(e,spec.id);CHECK(dial && dial->isVisible() && !dial->getWantsKeyboardFocus());
+                if(!dial)continue;
+                auto* field=fieldOf(dial);CHECK(field && !field->isVisible());
                 const bool fader=juce::String(spec.id)=="motion" || juce::String(spec.id)=="texture" || juce::String(spec.id)=="bloom" || juce::String(spec.id)=="chaos";
-                const auto grab=fader?juce::Point<float>(20,8):slider->getLocalBounds().toFloat().getCentre();
-                CHECK(e.getComponentAt(e.getLocalPoint(slider,grab).roundToInt())==slider);
-                param->setValueNotifyingHost(.3f);
-                if(fader)
+                const auto grab=fader?juce::Point<float>(20,8):dial->getLocalBounds().toFloat().getCentre();
+                CHECK(e.getComponentAt(e.getLocalPoint(dial,grab).roundToInt())==dial);
+                const auto drag=[&](std::initializer_list<std::pair<juce::Point<float>,int>> moves,int flags=0)
                 {
-                    const float before=param->getValue();
-                    const auto click=juce::Point<float>(100,8);
-                    slider->mouseDown(mouse(slider,click,click));CHECK(param->getValue()==before);
-                    slider->mouseUp(mouse(slider,click,click));CHECK(param->getValue()==before);
-                }
-                const auto to=fader?grab+juce::Point<float>(30,0):grab-juce::Point<float>(0,50);
-                slider->mouseDown(mouse(slider,grab,grab)),slider->mouseDrag(mouse(slider,to,grab)),slider->mouseUp(mouse(slider,to,grab));
-                CHECK(fader?param->getValue()>.3f:std::abs(param->getValue()-.5f)<.01f); // gulp's exact 250 design-pixel vertical sensitivity
-                slider->mouseDoubleClick(mouse(slider,grab,grab,2));
-                CHECK(std::abs(get(p,spec.id)-param->convertFrom0to1(param->getDefaultValue()))<.001f);
-                if(label)
+                    dial->mouseDown(mouse(dial,grab,grab,1,flags));auto at=grab;
+                    for(auto [by,f]:moves)at+=by*px,dial->mouseDrag(mouse(dial,at,grab,1,f));
+                    dial->mouseUp(mouse(dial,at,grab,1,flags));
+                };
+                const auto near=[&](float want){const bool ok=std::abs(param->getValue()-want)<.006f;CHECK(ok);if(!ok)std::cout<<"  "<<spec.id<<" at "<<percent<<"%: "<<param->getValue()<<" want "<<want<<"\n";};
+                const juce::Point<float> up=fader?juce::Point<float>(50,0):juce::Point<float>(0,-50),right(50,0);
+                param->setValueNotifyingHost(.3f);gestures={};
+                // A click, even one moving 3 px, changes nothing and sends nothing.
+                drag({});drag({{up*.06f,0}});near(.3f);pairs(0);
+                // 250 screen px of travel at every zoom, on the larger axis; one gesture per drag.
+                drag({{up,0}});near(.5f);pairs(1);
+                if(!fader){drag({{right,0},{juce::Point<float>(0,10),0}});near(.66f);pairs(1);param->setValueNotifyingHost(.3f);gestures={};}
+                else{drag({{juce::Point<float>(0,-50),0}});near(.5f);pairs(0);param->setValueNotifyingHost(.3f);gestures={};} // faders are horizontal: a vertical drag sends nothing
+                // ⇧ is ten times finer, and pressing it mid-drag carries on from the current value.
+                drag({{up,juce::ModifierKeys::shiftModifier}});near(.32f);
+                drag({{up*.5f,0},{up*.5f,juce::ModifierKeys::shiftModifier}});near(.43f);pairs(2);
+                // ⌥- and ⌘-click reset in one gesture (nothing when already there); a modified drag is no velocity mode.
+                const float def=param->getDefaultValue();
+                drag({{up,juce::ModifierKeys::altModifier}},juce::ModifierKeys::altModifier);near(def);pairs(1);
+                param->setValueNotifyingHost(std::abs(def-.3f)<.02f?.8f:.3f);gestures={}; // .3 is position's and reverb's default
+                drag({},juce::ModifierKeys::commandModifier);near(def);drag({},juce::ModifierKeys::commandModifier);pairs(1);
+                // Double-click the knob or its number types. A single click on the number does not. Invalid text sets nothing.
+                param->setValueNotifyingHost(.3f);gestures={};
+                dial->mouseDoubleClick(mouse(dial,grab,grab,2));CHECK(field->isVisible());
+                key(field,juce::KeyPress::escapeKey);CHECK(!field->isVisible());pairs(0);
+                const auto number=juce::Point<float>(grab.x,(float)dial->getHeight()-1);
+                dial->mouseDown(mouse(dial,number,number));CHECK(!field->isVisible());
+                dial->mouseDoubleClick(mouse(dial,number,number,2));CHECK(field->isVisible() && field->getText()==param->getCurrentValueAsText());
+                CHECK(field->getHighlightedText()==field->getText()); // all selected: typing replaces it
+                field->setText("nonsense");key(field,juce::KeyPress::returnKey);CHECK(field->isVisible());near(.3f);pairs(0);
+                const auto typed=param->getText(.7f,0);
+                field->setText(typed);key(field,juce::KeyPress::returnKey);CHECK(!field->isVisible() && param->getCurrentValueAsText()==typed);pairs(1);
+                dial->mouseDoubleClick(mouse(dial,number,number,2));field->setText(param->getText(.1f,0));key(field,juce::KeyPress::escapeKey);
+                CHECK(!field->isVisible() && param->getCurrentValueAsText()==typed);pairs(0);
+                // The wheel: 1% a notch (⇧ 0.1%), a trackpad 250 px for the travel; each burst is one gesture, ended 300 ms after it.
+                juce::MouseWheelDetails notch{0,50.0f/256,false,false,false},smooth{0,50.0f/512,false,true,false},sideways{-50.0f/256,0,false,false,false};
+                const auto wheel=[&](const juce::MouseWheelDetails& w,int n,int flags=0){for(int i=0;i<n;++i)dial->mouseWheelMove(mouse(dial,grab,grab,1,flags),w);};
+                const auto settle=[&]{pumpUntil([&]{return gestures.ended>0;});};
+                param->setValueNotifyingHost(.3f);gestures={};
+                if(juce::String(spec.id)=="pitch")
                 {
-                    CHECK(e.getComponentAt(point(*label))==label);
-                    label->showEditor();CHECK(label->isBeingEdited());
-                    const auto typed=param->getText(.7f,0);
-                    if(auto* text=label->getCurrentTextEditor())text->setText(typed);
-                    label->hideEditor(false);CHECK(param->getCurrentValueAsText()==typed);
+                    const float st=std::round(get(p,"pitch"));wheel(notch,3);CHECK(get(p,"pitch")==st+3);
+                    CHECK(gestures.begun==1 && gestures.ended==0);settle();pairs(1);
                 }
+                else if(juce::String(spec.id)=="size")
+                {
+                    wheel(notch,1);const auto from=param->getCurrentValueAsText();wheel(notch,2);settle();pairs(1);
+                    int k=0;while(k<silt::numNotes && from!=silt::noteNames[k])++k;
+                    CHECK(k+2<silt::numNotes && param->getCurrentValueAsText()==silt::noteNames[k+2]); // sync: a note value a notch
+                }
+                else
+                {
+                    wheel(notch,3);near(.33f);CHECK(gestures.begun==1 && gestures.ended==0);settle();pairs(1);
+                    wheel(notch,5,juce::ModifierKeys::shiftModifier);near(.335f);settle();pairs(1);
+                    wheel(sideways,2);near(.355f);settle();pairs(1);
+                    juce::MouseWheelDetails rev{0,50.0f/256,true,false,false}; // natural scrolling: a physical downward roll decreases
+                    wheel(rev,1);near(.345f);settle();pairs(1);
+                    juce::MouseWheelDetails both{50.0f/256,50.0f/256,false,false,false}; // vertical wins when both axes move
+                    wheel(both,1);near(.355f);settle();pairs(1);
+                }
+                param->setValueNotifyingHost(.3f);wheel(smooth,1);near(.5f);settle();pairs(1);
             }
             else if(dynamic_cast<juce::AudioParameterChoice*>(param))
             {
@@ -1153,6 +1244,39 @@ static void testEditor()
                 set(p,spec.id,0);press(spec.id);CHECK(get(p,spec.id)==1);press(spec.id);CHECK(get(p,spec.id)==0);
             }
         }
+        // Tab / ⇧Tab commit and open the next / previous dial's field in reading order (macros first), wrapping.
+        const auto field=[&](const char* id){auto* d=find(e,id);juce::TextEditor* f=nullptr;for(auto* c:d->getChildren())if(auto* t=dynamic_cast<juce::TextEditor*>(c))f=t;return f;};
+        const auto open=[&](const char* id){auto* d=find(e,id);d->mouseDoubleClick(mouse(d,{5,5},{5,5},2));return field(id);};
+        set(p,"size",100);set(p,"sizeSync",1);
+        open("size")->setText("250 ms");key(field("size"),juce::KeyPress::tabKey);
+        CHECK(get(p,"size")==250 && !field("size")->isVisible() && field("density")->isVisible());
+        key(field("density"),juce::KeyPress::tabKey,juce::ModifierKeys::shiftModifier);CHECK(!field("density")->isVisible() && field("size")->isVisible());
+        field("size")->setText("x");key(field("size"),juce::KeyPress::tabKey);CHECK(field("size")->isVisible() && !field("density")->isVisible()); // invalid: stays
+        key(field("size"),juce::KeyPress::escapeKey);
+        key(open("output"),juce::KeyPress::tabKey);CHECK(field("motion")->isVisible()); // wraps to the top row
+        key(field("motion"),juce::KeyPress::tabKey,juce::ModifierKeys::shiftModifier);CHECK(field("output")->isVisible());
+        key(field("output"),juce::KeyPress::escapeKey);
+        // A click elsewhere commits (one inside the field doesn't; invalid text is dropped); so does a resize. Each commit is one gesture.
+        gestures={};
+        open("mix")->setText("12");e.mouseDown(mouse(field("mix"),{1,1},{1,1}));CHECK(field("mix")->isVisible());pairs(0);
+        e.mouseDown(mouse(find(e,"group:cloud"),{1,1},{1,1}));CHECK(!field("mix")->isVisible() && get(p,"mix")==12);pairs(1);
+        open("mix")->setText("oops");e.mouseDown(mouse(find(e,"pitch"),{1,1},{1,1}));CHECK(!field("mix")->isVisible() && get(p,"mix")==12);pairs(0);
+        open("mix")->setText("34");e.setSize(e.getWidth()+2,e.getHeight());CHECK(!field("mix")->isVisible() && get(p,"mix")==34);pairs(1);
+        e.setSize(1024*percent/100,410*percent/100);
+        // A wheel over another control does not close an open field, and is its own gesture.
+        set(p,"scatter",45);gestures={};open("scatter")->setText("12");
+        auto* density=find(e,"density");
+        density->mouseWheelMove(mouse(density,{5,5},{5,5}),juce::MouseWheelDetails{0,50.0f/256,false,false,false});
+        CHECK(field("scatter")->isVisible() && field("scatter")->getText()=="12" && get(p,"scatter")==45);
+        density->mouseDown(mouse(density,{5,5},{5,5}));density->mouseUp(mouse(density,{5,5},{5,5})); // close the wheel burst
+        key(field("scatter"),juce::KeyPress::escapeKey);CHECK(!field("scatter")->isVisible() && get(p,"scatter")==45);pairs(1);
+        // Nothing takes keyboard focus but an open field: Return and Space stay with the host (PLAN 4.2 item 24).
+        std::function<void(juce::Component&)> noFocus=[&](juce::Component& c){
+            if(!dynamic_cast<juce::TextEditor*>(&c)){CHECK(!c.getWantsKeyboardFocus());for(auto* child:c.getChildren())noFocus(*child);}};
+        noFocus(e);
+        // A choice click already selected sends nothing.
+        set(p,"trigger",1);gestures={};press("trigger:1");press("trigger:2");pairs(1);
+        p.removeListener(&gestures);
         // All hit cells stay inside their group and never cover another control in that group.
         for(const auto* id:{"grain","pitch","trigger","space / output","macros","header","presets","freeze"})
         {

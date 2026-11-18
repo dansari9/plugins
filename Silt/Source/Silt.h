@@ -1,6 +1,7 @@
 #pragma once
 #include <juce_audio_utils/juce_audio_utils.h>
 #include <array>
+#include <optional>
 
 // silt: a granular effect by daveydidit (clean room: original engine, curves and UI, textbook DSP).
 // FROZEN: the parameter IDs in Silt.cpp (order, ranges, choice indices, ParameterID versions) and the state format
@@ -49,6 +50,7 @@ struct Feed
     std::atomic<bool> held { false }; // a MIDI note is transposing the grains
     std::array<std::atomic<float>, 3> meter {};
     std::atomic<int> fired { 0 }; // grains started since prepare (wraps)
+    std::atomic<float> tempo { 120 }; // the host's, for typed note values
 };
 
 struct Preset
@@ -103,6 +105,8 @@ public:
     void selectAb(int slot);
     // A musical, loudness-safe random sound from `seed`; mix, output, trigger, quality, onset and the macros stay. Undo with A/B.
     void randomise(juce::int64 seed);
+    // A typed value for a float parameter (PLAN 4.1 grammar), as a clamped plain value; nothing if the text is invalid.
+    std::optional<float> parse(const juce::String& id, const juce::String& text) const;
 
 private:
     void setAll(const float* normalised); // one gesture per parameter that changes
