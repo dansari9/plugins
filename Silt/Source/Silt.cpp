@@ -264,7 +264,7 @@ struct Grain
     float peak = 0.5f, attack = 1, decay = 1;
     float morph = 0, edge = 2; // shape: 0 the texture's table, 1 the flat-top table, 2 a rectangle with 1 ms edges
     unsigned tag = 0;
-    int shape = 0;
+    int shape = 0, fade = 0;   // fade: a stolen grain's linear release length (samples), 0 = not stolen
     int level = 0;
     bool shifted = false;      // pitch mode: two crossfaded taps keep the timeline while the pitch moves
 };
@@ -319,8 +319,10 @@ struct SiltProcessor::Engine
     float v[silt::numParams] {}; // this block's parameters
     double fs = 48000, tempo = 120;
     Capture capture;            // main input history; sidechain only triggers
-    std::array<Grain, silt::maxGrains> grains {};
-    int voiceCount = 0;
+    // Locked clocks steal: the oldest grain moves to one of 16 tail voices and releases over 2 ms, so the new one is on time.
+    static constexpr int tail = 16;
+    std::array<Grain, silt::maxGrains + tail> grains {};
+    int voiceCount = 0, stolen = 0;
     std::array<float, 1025> env[silt::numWindows] {}, taps {}; // immutable windows; sin^2 pitch taps
     Onset onsets[2];
     float fastRelease = 0, slowAttack = 0, slowRelease = 0, freezeStep = 0, ccGlide = 0;
@@ -328,7 +330,9 @@ struct SiltProcessor::Engine
     // The clock: grains (stream phase) since the last tick; sync while playing: the last whole grain on the host's grid.
     double phase = 0, lastTick = -1;
     bool wasPlaying = false;
-    int stream = 0;
+    int stream = 0;              // the lane (head) of the last grain; one head alternates two lanes, 0.1.0's L/R streams
+    double gap = 1;              // samples between clock grains
+    bool wasFrozen = false;
     double scanned = 0;          // the scan's extra distance back (samples)
     double lastStart = 0;        // the previous grain's capture position, for repeat
     uint32 seed = 1, nextGrain = 0;
@@ -339,6 +343,9 @@ struct SiltProcessor::Engine
     float velocity = 1;
     float cc[4] {}, ccTarget[4] {};
     int lastNote = 60;
+    // Held-chord heads: each held note keeps its head until released, so a middle note-off renumbers nothing.
+    std::array<int, 4> slotNote {}, slotOrder {};
+    int noteOrder = 0;
     // All quality paths are prepared once; changing quality never allocates on the audio thread.
     std::array<std::unique_ptr<dsp::Oversampling<float>>, 4> oversamplers;
     int quality = -1, previousQuality = 0, qualityFade = 0;
@@ -387,7 +394,8 @@ struct SiltProcessor::Engine
     {
         capture.reset();
         voiceCount = 0, grains = {}, onsets[0] = onsets[1] = {}, phase = 0, lastTick = -1, wasPlaying = false, stream = 1, scanned = 0, lastStart = 0, seed = 0x5117u;
-        nextGrain = 0;
+        nextGrain = 0, stolen = 0, wasFrozen = false, gap = 1;
+        slotNote.fill(-1);
         heldCount = 0, velocity = 1, now = 0, overlap = 0, level = inputLevel = 0, lastNote = 60;
         quality = -1, qualityFade = 0;
         std::fill(std::begin(meters), std::end(meters), 0.0f);
@@ -403,8 +411,7 @@ struct SiltProcessor::Engine
         read();
         width.setCurrentAndTargetValue(0.8f);
         feedback.setCurrentAndTargetValue((0.12f + 0.48f * macro(Bloom)));
-        power.setCurrentAndTargetValue((float) (1 - 0.5 * jlimit(0.0, 1.0, separation()
-                    + (std::abs(v[Pitch]) > .005f || heldCount > 0 || v[Freeze] > .5f ? 1 : 0))));
+        power.setCurrentAndTargetValue((float) (1 - 0.5 * jlimit(0.0, 1.0, separation() + (pitched() ? 1 : 0))));
         mix.setCurrentAndTargetValue(v[Mix] / 100), gain.setCurrentAndTargetValue(Decibels::decibelsToGain(v[Output])), verb.setCurrentAndTargetValue(0);
     }
     void read()
@@ -444,6 +451,11 @@ struct SiltProcessor::Engine
     // Captured audio is not saved: after a reset (a reopened project, a new buffer size) freeze refills 4 s first.
     bool holding() const { return v[Freeze] > 0.5f && capture.head >= (int64) (4 * fs); }
     double separation() const { return v[Scatter] / 25 + 4 * macro(Chaos) + macro(Motion); }
+    bool pitched() const { return std::abs(v[Pitch]) > .005f || heldCount > 0 || v[Freeze] > .5f || (v[Heads] > .5f && v[Harmony] > .5f); }
+    double note(int k, double bpm) const { return 240.0 * silt::noteNum[k] / silt::noteDen[k] / bpm * fs; }
+    double grainSize(double bpm) const { return v[SizeSync] < .5f ? note(syncIndex(sizeTravel.to(v[Size])), bpm) : v[Size] * fs / 1000; }
+    // Tone lock: one grain per period of the last held note, else of c3 transposed by pitch; 20 Hz - 2 kHz.
+    double toneGap() const { return fs / jlimit(20.0, 2000.0, 261.6255653 * std::exp2((heldCount > 0 ? held[(size_t) heldCount - 1] - 60 : v[Pitch]) / 12.0)); }
     double period(double bpm) const
     {
         return v[SizeSync] < .5f ? fs * 60 / bpm / jmax(1, roundToInt(v[Density] / 2)) : fs / v[Density];
@@ -456,25 +468,37 @@ struct SiltProcessor::Engine
         return v[SizeSync] < .5f ? std::round(back / reference) * (period(bpm) * .25) : back;
     }
 
-    // Starts one grain after `wait` samples; alternating streams have independent pan and a small size difference.
-    void spawn(int wait, double bpm, bool frozen, int side)
+    // Starts one grain after `wait` samples, `early` samples into its life (back-dated). Grains are dealt round-robin to
+    // the heads' lanes: each lane has its own pan, a small size difference, a harmony interval and a position stagger.
+    void spawn(int wait, double bpm, bool frozen, double early = 0)
     {
-        if (voiceCount == silt::maxGrains) return; // all voices busy: skip this one, never steal (no clicks)
+        const int heads = roundToInt(v[Heads]) + 1, lanes = jmax(2, heads), harmony = roundToInt(v[Harmony]);
+        int side = stream = (stream + 1) % lanes;
+        for (int k = 0; harmony == 5 && k < lanes && slotNote[(size_t) (side % heads)] < 0; ++k) side = stream = (stream + 1) % lanes;
+        const int head = side % heads, heldNote = harmony == 5 ? slotNote[(size_t) head] : -1;
         if (v[Drop] > 0 && random() < v[Drop] / 100) return; // a silent beat: the clock keeps its time
+        if (voiceCount - stolen == silt::maxGrains) // all voices busy: free lock skips (0.1.0); locked clocks steal the oldest
+        {
+            if (v[Lock] < .5f || voiceCount == silt::maxGrains + tail) return;
+            Grain* oldest = nullptr;
+            for (int k = 0; k < voiceCount; ++k)
+                if (auto& o = grains[(size_t) k]; o.fade == 0 && (oldest == nullptr || nextGrain - o.tag > nextGrain - oldest->tag)) oldest = &o;
+            oldest->fade = oldest->left = jmin(oldest->left, jmax(1, roundToInt(0.002 * fs))), ++stolen;
+        }
         auto* g = &grains[(size_t) voiceCount++];
-        g->tag = ++nextGrain;
+        g->tag = ++nextGrain, g->fade = 0;
         const double stereo = 0.8 + 0.2 * macro(Bloom);
-        const int noteIndex = syncIndex(sizeTravel.to(v[Size]));
-        const auto note = [&](int k) { return 240.0 * silt::noteNum[k] / silt::noteDen[k] / bpm * fs; };
-        double size = v[SizeSync] < .5f ? note(noteIndex) : v[Size] * fs / 1000;
+        double size = grainSize(bpm);
         size *= (1 + (2 * random() - 1) * 0.65 * macro(Texture)) * (side == 1 ? 1 + 0.04 * stereo : 1.0);
-        size = jlimit(0.0005 * fs, v[SizeSync] > .5f ? 4 * fs : jmax(4 * fs, note(silt::numNotes - 1)), size);
+        if (v[Lock] > 1.5f) size = jmin(size, 120 * gap); // tone: the window shrinks to fit the voices
+        size = jlimit(0.0005 * fs, v[SizeSync] > .5f ? 4 * fs : jmax(4 * fs, note(silt::numNotes - 1, bpm)), size);
         // Randomisation precedes chromatic snapping, then detune spreads and scale snaps. Zero spread preserves fractional pitch.
         double st = v[Pitch] + (2 * random() - 1) * 24 * macro(Chaos);
         if (macro(Chaos) > 0) st = std::round(st);
         if (v[Detune] > 0) st += (2 * random() - 1) * v[Detune];
         if (v[Scale] > .5f && (v[Detune] > 0 || macro(Chaos) > 0)) st = snap(st, roundToInt(v[Scale]));
-        st += heldCount > 0 ? held[(size_t) heldCount - 1] - 60 : 0;
+        constexpr int intervals[5][4] { { 0, 0, 0, 0 }, { 0, 7, 12, 19 }, { 0, 12, -12, 24 }, { 0, 4, 7, 12 }, { 0, 3, 7, 12 } };
+        st += harmony == 5 ? (heldNote >= 0 ? heldNote - 60 : 0) : (heldCount > 0 ? held[(size_t) heldCount - 1] - 60 : 0) + intervals[harmony][head];
         st = jlimit(-48.0, 48.0, st);
         const double r = std::exp2(st / 12);
         const int mip = r <= 1.19 ? 0 : jmin(levels - 1, (int) std::ceil(std::log2(r / 1.19)));
@@ -494,6 +518,7 @@ struct SiltProcessor::Engine
         u = std::pow(u, 1 + 3 * (1 - macro(Texture))); // slope: small distances more likely
         const int sprayDir = roundToInt(v[SprayDir]); // both, back (older only), ahead (newer only)
         back += spray * (sprayDir == 1 || (sprayDir == 0 && (macro(Motion) > .5f || random() < .5f)) ? u : -u) + scanned;
+        back += head * 0.25 * spray; // heads stagger behind the shared anchor
         // Repeat re-reads the previous grain's audio; the clamps below still keep it inside the buffer.
         if (v[Repeat] > 0 && g->tag > 1 && random() < v[Repeat] / 100) back = (double) capture.head + (frozen ? 0 : wait) - lastStart;
         const double extent = shifted ? size : dur * r;
@@ -504,7 +529,7 @@ struct SiltProcessor::Engine
         else a = jmax(0.0, dur * (r - 1)), b = jmax(0.0, dur * (1 - r));
         // Fit the whole segment when possible; longer notes retain their duration and use the capture's splice.
         back = a + b < maxBack - 2 * readMargin ? jlimit(readMargin + a, maxBack - readMargin - b, back) : jlimit((double) readMargin, maxBack - readMargin, back);
-        const double start = (double) capture.head + (frozen ? 0 : wait) - back;
+        const double start = (double) capture.head + (frozen ? 0 : wait) - back - early;
         lastStart = start;
         g->wait = wait, g->length = jmax(2, (int) dur), g->left = g->length, g->phase = 0, g->inc = 1.0 / g->left;
         g->shape = macro(Texture) < .33f ? 0 : macro(Texture) < .66f ? 1 : 2;
@@ -518,15 +543,36 @@ struct SiltProcessor::Engine
         // The lower mip of a crossfade still aliases for fractional pitch ratios. A single band-limited
         // level rejects that fold and halves the read work; Hermite preserves smooth sub-sample motion.
         g->level = mip;
+        if (early > 0) // back-dated: it began `early` samples ago at the same distance behind the input
+        {
+            g->phase = early * g->inc, g->pos += early * g->step, g->tap = (float) (early * g->tapStep);
+            g->tap -= g->span * std::floor(g->tap / g->span);
+            g->left = g->length = jmax(1, g->left - (int) early);
+        }
         // Pan: the stream's side of the width plus a random spread; equal power, unity in the middle.
-        const double pan = jlimit(-1.0, 1.0, (side == 0 ? -0.6 : 0.6) * stereo + (2 * random() - 1) * jmin(1.0, 0.25 + 0.7 * macro(Motion)));
+        const double pan = jlimit(-1.0, 1.0, (side == 0 ? -0.6 : lanes == 2 ? 0.6 : 1.2 * side / (lanes - 1) - 0.6) * stereo + (2 * random() - 1) * jmin(1.0, 0.25 + 0.7 * macro(Motion)));
         const double angle = (pan + 1) * pi / 4;
-        g->gl = (float) (velocity * std::cos(angle) * std::sqrt(2.0)), g->gr = (float) (velocity * std::sin(angle) * std::sqrt(2.0));
+        const float amp = heldNote >= 0 ? velocities[(size_t) heldNote] : velocity;
+        g->gl = (float) (amp * std::cos(angle) * std::sqrt(2.0)), g->gr = (float) (amp * std::sin(angle) * std::sqrt(2.0));
+    }
+    // A note-on's grain; onset full back-dates a whole size of the head's grains, so the cloud is there at once.
+    // In held mode the burst goes to the note's head (slot), whose grains arrive every `occupied` clock grains.
+    void fill(int wait, double bpm, bool frozen, int slot)
+    {
+        const int heads = roundToInt(v[Heads]) + 1, lanes = jmax(2, heads);
+        const int occupied = slot < 0 ? 1 : (int) std::count_if(slotNote.begin(), slotNote.begin() + heads, [](int n) { return n >= 0; });
+        const double size = v[Lock] > 1.5f ? jmin(grainSize(bpm), 120 * gap) : grainSize(bpm); // as spawn() fits tone
+        const int count = v[OnsetMode] > .5f ? jlimit(1, 64, (int) std::ceil(size / (gap * occupied) - 1e-9)) : 1;
+        for (int k = 0; k < count; ++k)
+        {
+            if (slot >= 0) stream = (slot + lanes - 1) % lanes;
+            spawn(wait, bpm, frozen, k * size / count);
+        }
     }
     void midi(const MidiMessage& m, int at, double bpm, bool frozen)
     {
         if (m.isAllNotesOff() || m.isAllSoundOff())
-            heldCount = 0, velocity = 1;
+            heldCount = 0, velocity = 1, slotNote.fill(-1);
         else if (m.isNoteOn())
         {
             const auto end = std::remove(held.begin(), held.begin() + heldCount, m.getNoteNumber());
@@ -534,13 +580,24 @@ struct SiltProcessor::Engine
             held[(size_t) heldCount++] = m.getNoteNumber();
             lastNote = m.getNoteNumber();
             velocities[(size_t) m.getNoteNumber()] = velocity = m.getFloatVelocity();
-            spawn(at, bpm, frozen, stream ^= 1);
+            const int heads = roundToInt(v[Heads]) + 1;
+            int slot = -1;
+            for (int k = 0; k < heads; ++k) slot = slotNote[(size_t) k] == lastNote ? k : slot; // its own head,
+            for (int k = 0; k < heads; ++k) slot = slot < 0 && slotNote[(size_t) k] < 0 ? k : slot; // else a free one,
+            if (slot < 0) // else the oldest note's
+            {
+                slot = 0;
+                for (int k = 1; k < heads; ++k) slot = slotOrder[(size_t) k] < slotOrder[(size_t) slot] ? k : slot;
+            }
+            slotNote[(size_t) slot] = lastNote, slotOrder[(size_t) slot] = ++noteOrder;
+            fill(at, bpm, frozen, v[Harmony] > 4.5f ? slot : -1);
         }
         else if (m.isNoteOff())
         {
             const auto end = std::remove(held.begin(), held.begin() + heldCount, m.getNoteNumber());
             heldCount = (int) (end - held.begin());
             velocity = heldCount > 0 ? velocities[(size_t) held[(size_t) heldCount - 1]] : 1;
+            std::replace(slotNote.begin(), slotNote.end(), m.getNoteNumber(), -1);
         }
         else if (m.isController())
         {
@@ -559,7 +616,7 @@ struct SiltProcessor::Engine
 
     void trace(Grain& g, silt::Feed& feed, int64 frame, int64 head)
     {
-        if (exactlyEqual(g.phase, 0.0))
+        if (g.left == g.length) // its first sample
         {
             feed.fired.fetch_add(1, std::memory_order_relaxed);
             feed.lastFire.store(frame, std::memory_order_relaxed);
@@ -648,7 +705,7 @@ struct SiltProcessor::Engine
                 if (const auto q = pos->getPpqPosition(); q && std::isfinite(*q) && pos->getIsPlaying()) playing = true, ppq = *q;
             }
         tempo = bpm;
-        const bool synced = v[SizeSync] < 0.5f && playing;
+        const bool synced = v[SizeSync] < 0.5f && playing && v[Lock] < .5f; // locked clocks run free
         if (synced)
         {
             const double quarters = 1.0 / jmax(1, roundToInt(v[Density] / 2));
@@ -671,7 +728,9 @@ struct SiltProcessor::Engine
             quality = selectedQuality;
             oversamplers[(size_t) quality]->reset();
         }
-        const double spacing = period(bpm);
+        // The clock: free reads density; overlap reads it as x1-x16 grains per size; tone, one grain per period.
+        const int lock = roundToInt(v[Lock]);
+        gap = lock == 0 ? period(bpm) : lock == 1 ? grainSize(bpm) / (1 + 15 * (v[Density] - 1) / 63) : toneGap();
         const double quartersPerGrain = 1.0 / jmax(1, roundToInt(v[Density] / 2));
         verb.setTargetValue(v[ReverbOn] > .5f ? v[ReverbAmount] / 100 : 0.0f);
         const double scanRange = jmax(1.0, silt::maxBackSeconds * fs - v[Position] * fs / 1000);
@@ -693,6 +752,9 @@ struct SiltProcessor::Engine
                 for (int k = 0; k < 4; ++k)
                     if (ccTarget[k] >= 0) cc[k] += ccGlide * (ccTarget[k] - cc[k]);
                 frozen = holding();
+                if (wasFrozen && !frozen && v[OnsetMode] > .5f) fill(0, bpm, frozen, -1); // onset full: fresh audio at once
+                wasFrozen = frozen;
+                if (lock == 2) gap = toneGap(); // follows the held note sample by sample
                 float x[2], side[2] {}, dry[2];
                 for (int c = 0; c < 2; ++c)
                 {
@@ -726,22 +788,23 @@ struct SiltProcessor::Engine
                         phase = (ppq + t * bpm / 60 / fs) / quartersPerGrain;
                         const double whole = std::floor(phase + 1e-9);
                         tick = !exactlyEqual(whole, lastTick), lastTick = whole;
-                        phase += 1 / spacing;
+                        phase += 1 / gap;
                     }
-                    else if ((phase += 1 / spacing) >= 1 - 1e-10)
+                    else if ((phase += 1 / gap) >= 1 - 1e-10)
                         tick = true, phase -= std::floor(phase + 1e-10);
-                    if (tick) spawn((int) (random() * (0.4f * macro(Motion) + 0.5f * macro(Chaos)) * spacing), bpm, frozen, stream ^= 1);
+                    // Locked clocks start each grain at its exact fractional time (tone stays in tune).
+                    if (tick) spawn((int) (random() * (0.4f * macro(Motion) + 0.5f * macro(Chaos)) * gap), bpm, frozen, lock > 0 ? phase * gap : 0.0);
                 }
-                if ((hitIn && trigger == 1) || (hitSide && trigger == 2)) spawn(0, bpm, frozen, stream ^= 1);
+                if ((hitIn && trigger == 1) || (hitSide && trigger == 2)) spawn(0, bpm, frozen);
                 feedback.setTargetValue(0.12f + 0.48f * macro(Bloom));
                 width.setTargetValue(0.8f + 0.2f * macro(Bloom));
                 float y[2] {}, weight = 0;
                 if (cloudAt == cloudLength)
                 {
                     cloudAt = cloudLength = 0;
-                    if (trigger == 0 && voiceCount >= 16)
+                    if (trigger == 0 && voiceCount >= 16 && stolen == 0) // stolen grains release on this scalar path
                     {
-                        int span = jmin(n - t, (int) jlimit(1.0, (double) Capture::batch, std::floor((1 - (phase - std::floor(phase))) * spacing - 1e-6)));
+                        int span = jmin(n - t, (int) jlimit(1.0, (double) Capture::batch, std::floor((1 - (phase - std::floor(phase))) * gap - 1e-6)));
                         if (event != midiBuffer.cend()) span = jmin(span, jmax(1, (*event).samplePosition - t));
                         for (int k = 0; k < voiceCount; ++k)
                         {
@@ -763,7 +826,7 @@ struct SiltProcessor::Engine
                         if (g.wait > 0) { --g.wait; continue; }
                         trace(g, feed, now, capture.head);
                         const auto& cap = capture;
-                        const float w = envelope(g);
+                        const float w = envelope(g) * (g.fade > 0 ? (float) g.left / (float) g.fade : 1.0f);
                         g.phase += g.inc, --g.left;
                         float l, r;
                         if (!g.shifted) cap.read(g.pos, g.level, l, r, cap.head), g.pos += g.step;
@@ -778,13 +841,12 @@ struct SiltProcessor::Engine
                             if (g.tap < 0 || g.tap >= g.span) g.tap -= g.span * std::floor(g.tap / g.span);
                         }
                         y[0] += w * g.gl * l, y[1] += w * g.gr * r, weight += w;
-                        if (g.left == 0) g = grains[(size_t) --voiceCount], --k;
+                        if (g.left == 0) stolen -= g.fade > 0 ? 1 : 0, g = grains[(size_t) --voiceCount], --k;
                     }
                 }
                 // Actual window overlap, with a slow release between clouds. No compressor or limiter.
                 overlap += (weight > overlap ? overlapAttack : overlapRelease) * (weight - overlap);
-                power.setTargetValue((float) (1 - 0.5 * jlimit(0.0, 1.0, separation()
-                    + (std::abs(v[Pitch]) > .005f || heldCount > 0 || v[Freeze] > .5f ? 1 : 0))));
+                power.setTargetValue((float) (1 - 0.5 * jlimit(0.0, 1.0, separation() + (pitched() ? 1 : 0))));
                 const float exponent = power.getNextValue();
                 const float base = jmax(1.0f, weight, (float) overlap);
                 const float norm = 0.85f / (exponent <= .500001f ? std::sqrt(base) : exponent >= .999999f ? base : std::pow(base, exponent));

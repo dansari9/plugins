@@ -667,6 +667,74 @@ struct Level
     }
 };
 // Audible controls and capture behaviour, rather than tests of the implementation's arithmetic.
+// 0.2 phase 2: heads and harmony, held-chord heads, the locked clocks, stealing and the full onset.
+static void testHeadsAndLock()
+{
+    struct Fired{float pitch;juce::int64 frame;};
+    const auto fired=[](Proc& p){std::vector<Fired> out;for(juce::int64 i=0;i<p.feed.events;++i){auto& e=p.feed.history[(size_t)i%silt::Feed::historySize];out.push_back({e.pitch,e.frame});}return out;};
+    const auto voices=[](Proc& p){int n=0;for(auto& e:p.feed.env)n+=e.load()>0;return n;};
+    // Heads deal the shared clock round-robin; each head adds its harmony interval (major: 0 4 7 12).
+    {
+        Proc p;set(p,plain),set(p,{{"density",64},{"size",20},{"heads",3},{"harmony",3}}),prepare(p);run(p,24000); // 4 heads
+        const auto f=fired(p);CHECK(f.size()>20);
+        const float major[]{0,4,7,12};int first=0;while(f[0].pitch!=major[first])++first;
+        for(size_t k=0;k<f.size();++k)CHECK(f[k].pitch==major[((size_t)first+k)%4]);
+    }
+    // Held: each held note keeps its head; a middle note-off renumbers nothing; a new note takes the free head,
+    // and with every head busy, the oldest note's.
+    {
+        Proc p;set(p,plain),set(p,{{"density",64},{"size",20},{"heads",2},{"harmony",5},{"trigger",2}}),prepare(p); // heads is a choice: index 2 = 3 heads
+        Run r;r.side=[](int,int){return 0.0f;};
+        r.events={{100,juce::MidiMessage::noteOn(1,60,(juce::uint8)100)},{200,juce::MidiMessage::noteOn(1,64,(juce::uint8)100)},
+            {300,juce::MidiMessage::noteOn(1,67,(juce::uint8)100)},{400,juce::MidiMessage::noteOff(1,64)},{500,juce::MidiMessage::noteOn(1,72,(juce::uint8)100)},
+            {600,juce::MidiMessage::noteOn(1,74,(juce::uint8)100)}};
+        run(p,1000,64,r);
+        std::vector<float> pitches;for(const auto& f:fired(p))pitches.push_back(f.pitch);
+        CHECK((pitches==std::vector<float>{0,4,7,12,14})); // each note-on's grain lands on its own head
+        set(p,"trigger",0);run(p,48000,64,{}); // the clock then cycles the heads in head order: 74 (was 60's), 72 (64's), 67
+        const auto f=fired(p);CHECK(f.size()>30);
+        int at=(int)f.size()-3;while(f[(size_t)at].pitch!=14)--at;
+        const float order[]{14,12,7};
+        for(int k=at;k<(int)f.size();++k)CHECK(f[(size_t)k].pitch==order[(k-at)%3]);
+    }
+    // Overlap reads density as x1-x16 grains per size: 64 -> 16 per 100 ms. Tone: one grain per period of the note.
+    {
+        Proc p;set(p,plain),set(p,{{"lock",1},{"density",64},{"size",100}}),prepare(p);run(p,48000);
+        std::cout<<"Overlap x16 / 100 ms: "<<p.feed.fired.load()<<" grains/s\n";CHECK(std::abs(p.feed.fired-160)<=2);
+    }
+    for(int note:{-1,69})
+    {
+        Proc p;set(p,plain),set(p,{{"lock",2},{"size",4000},{"pitch",note<0?0.0f:-12.0f}}),prepare(p);
+        Run r;if(note>0)r.events={{0,juce::MidiMessage::noteOn(1,note,(juce::uint8)100)}};
+        run(p,48000,512,r);const double f0=note<0?261.6255653:440;
+        std::cout<<"Tone lock "<<f0<<" Hz: "<<p.feed.fired.load()<<" grains/s, "<<voices(p)<<" voices\n";
+        CHECK(std::abs(p.feed.fired-f0)<=2+(note>0) && voices(p)<=silt::maxGrains); // a 4 s size shrinks to 120 periods
+    }
+    // Stealing (locked clocks): a full onset over a busy tone cloud (120 voices) takes the 8 free voices, then steals the
+    // 16 oldest into the tail voices; with those all releasing, the rest of the burst is skipped (never a click).
+    {
+        Proc p;set(p,plain),set(p,{{"lock",2},{"size",4000},{"pitch",12},{"onset",1}}),prepare(p);
+        Run r;r.events={{24000,juce::MidiMessage::noteOn(1,72,(juce::uint8)100)}};
+        const auto a=run(p,30000,512,r);
+        const int ticks=(int)(30000*523.2511306/48000);
+        std::cout<<"Stealing: "<<p.feed.fired.load()<<" grains for "<<ticks<<" ticks + a 64-grain onset\n";
+        CHECK(std::abs(p.feed.fired-(ticks+8+16))<=1);
+        float jump=0;for(size_t i=24001;i<a.l.size();++i)jump=std::max(jump,std::abs(a.l[i]-a.l[i-1]));CHECK(jump<.1f);
+        Proc free;set(free,plain),set(free,{{"size",4000},{"density",64},{"onset",1},{"trigger",2}}),prepare(free);
+        Run burst;burst.side=[](int,int){return 0.0f;};for(int k=0;k<3;++k)burst.events.push_back({100+k*100,juce::MidiMessage::noteOn(1,60+k,(juce::uint8)100)});
+        run(free,1000,512,burst);CHECK(free.feed.fired==silt::maxGrains); // free lock keeps 0.1.0's skip when full
+    }
+    // Onset: ramp starts one grain per trigger; full back-dates a whole size of them (500 ms / 41.7 ms -> 12),
+    // on a note-on and when freeze releases.
+    for(int onset:{0,1})
+    {
+        Proc p;set(p,plain),set(p,{{"size",500},{"density",24},{"trigger",2},{"onset",(float)onset}}),prepare(p);
+        Run r;r.side=[](int,int){return 0.0f;};r.events={{1000,juce::MidiMessage::noteOn(1,60,(juce::uint8)100)}};
+        run(p,1512,512,r);CHECK(voices(p)==(onset?12:1));
+        r.events.clear();run(p,48000*5,512,r);set(p,"freeze",1);run(p,48000,512,r);const int before=p.feed.fired;
+        set(p,"freeze",0);run(p,512,512,r);CHECK(p.feed.fired-before==(onset?12:0));
+    }
+}
 static void testSound()
 {
     const auto energy=[](const Audio& a,size_t from=24000)
@@ -848,16 +916,20 @@ static void testPerformance()
 // Dense batch reads and lookahead must agree with single-sample processing, including a held capture.
 static void testDenseBlocks()
 {
-    for (int variant : { 0, 1 }) for (bool frozen : { false, true })
+    for (int variant : { 0, 1, 2, 3 }) for (bool frozen : { false, true })
     {
         Run r;const int warm=194000; // freeze holds once 4 s are captured
         for (int note=0;note<128;++note) r.events.push_back({warm,juce::MidiMessage::noteOn(1,note,(juce::uint8)100)});
         r.events.push_back({warm,juce::MidiMessage::allNotesOff(1)});
         r.events.push_back({warm+17001,juce::MidiMessage::controllerEvent(1,1,100)});
+        if(variant>=2)for(auto [at,on,note]:{std::tuple{warm+3001,true,60},{warm+5000,true,64},{warm+9000,true,67},{warm+20000,false,64},{warm+26003,true,71}})
+            r.events.push_back({at,on?juce::MidiMessage::noteOn(1,note,(juce::uint8)90):juce::MidiMessage::noteOff(1,note)});
         Audio reference;
         for(int block : {512,1,17,0})
         {
             Proc p;set(p,plain);set(p,{{"size",4000},{"pitch",12},{"pitchMode",0},{"density",64},{"bloom",100},{"oversample",3},{"position",0}});
+            if(variant==2)set(p,{{"lock",2},{"heads",3},{"harmony",5},{"onset",1},{"scatter",30},{"pitch",-5}}); // tone: steals at the onsets
+            if(variant==3)set(p,{{"lock",1},{"heads",2},{"harmony",1},{"onset",1},{"size",300},{"scatter",50}});
             if(variant==1)set(p,{{"shape",70},{"tilt",-40},{"reverse",40},{"detune",5},{"scale",2},{"drop",20},{"repeat",30},{"sprayDir",1},{"scan",160},{"scatter",30}});
             prepare(p);
             run(p,warm,block);
@@ -1171,7 +1243,7 @@ int main(int argc,char** argv)
     onAudioThread=true;void* probe=::operator new(64);escape(probe);::operator delete(probe);onAudioThread=false;
     CHECK(audioAllocations>0);audioAllocations=0;
     testContract();testParameterText();testState();testPresets();testDryAndLifecycle();testTimingAndMidi();testRatios();testOnsetsAndSource();testFreezeAndWindows();
-    testGrainFeatures();testSound();testEdges();testDenseBlocks();
+    testGrainFeatures();testHeadsAndLock();testSound();testEdges();testDenseBlocks();
     if(argc>=2 && juce::String(argv[1])=="--core")return failures?1:0;
     testEditor();testGoldens();testPerformance();testLoudness();
     CHECK(audioAllocations==0);

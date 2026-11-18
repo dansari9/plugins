@@ -8,7 +8,7 @@ static void dense(Proc& p, bool tiny=false)
 static void bench(bool profile=false)
 {
     std::cout<<"rate | sound | audio seconds | processing seconds | realtime factor | one core % | max voices\n";
-    for(int fs:{44100,48000,96000}) for(int sound=-1;sound<14;++sound)
+    for(int fs:{44100,48000,96000}) for(int sound=-1;sound<16;++sound)
     {
         if(profile && (fs!=96000 || sound!=10))continue;
         Proc p;
@@ -18,6 +18,8 @@ static void bench(bool profile=false)
         if(sound==12)set(p,plain),set(p,{{"size",4000},{"pitch",12},{"pitchMode",0},{"density",64},
             {"scatter",100},{"oversample",1},{"reverbOn",1},{"reverb",100},{"bloom",100}});
         if(sound==13)set(p,{{"shape",70},{"tilt",-40},{"reverse",40},{"detune",5},{"scale",2},{"repeat",30},{"scan",160}}); // 0.2 grain controls on the default sound
+        if(sound==14)set(p,{{"heads",3},{"harmony",3},{"detune",3},{"shape",50},{"scan",60}}); // 4 heads, PLAN 3 budget case
+        if(sound==15)set(p,{{"lock",2},{"pitch",23.2f},{"sizeSync",1},{"size",50}}); // tone lock, f0 ~1 kHz, 50 ms
         prepare(p,fs,512,2,0);
         juce::AudioBuffer<float> input(2,fs), block(2,512);juce::MidiBuffer midi;
         for(int i=0;i<fs;++i)for(int c=0;c<2;++c)input.setSample(c,i,pad(i+c*47,fs));
@@ -32,7 +34,7 @@ static void bench(bool profile=false)
             if(start>=warmup*fs)seconds+=(juce::Time::getHighResolutionTicks()-before)/juce::Time::getHighResolutionTicksPerSecond();
             int active=0;for(auto& e:p.feed.env)active+=e.load()>0?1:0;voices=std::max(voices,active);
         }
-        const juce::String name=sound<0?"default":sound<10?p.getProgramName(sound):sound==10?"dense":sound==11?"dense tiny":sound==12?"dense legacy 2x":"0.2 grain";
+        const juce::String name=sound<0?"default":sound<10?p.getProgramName(sound):sound==10?"dense":sound==11?"dense tiny":sound==12?"dense legacy 2x":sound==13?"0.2 grain":sound==14?"0.2 heads":"0.2 tone";
         std::cout<<fs<<" | "<<name<<" | "<<(duration-warmup)<<" | "<<seconds<<" | "<<(duration-warmup)/seconds<<" | "<<seconds*100/(duration-warmup)<<" | "<<voices<<"\n";
         if(sound==10 || sound==12)CHECK(voices==128);
     }
