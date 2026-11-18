@@ -78,7 +78,7 @@ AudioProcessorValueTreeState::ParameterLayout layout(const SiltProcessor& self)
         toggle(Freeze,"Freeze",false),
         num(Motion,"Motion",0,100,0,.1f,{},percent),num(Texture,"Texture",0,100,0,.1f,{},percent),
         num(Bloom,"Bloom",0,100,0,.1f,{},percent),num(Chaos,"Chaos",0,100,0,.1f,{},percent),
-        // 0.2: every default is 0.1.0's sound. Lock, heads, harmony, band to filter, and onset are inert until their phases.
+        // 0.2: every default is 0.1.0's sound.
         num(Scan,"Scan",-200,200,100,.1f,{},percent),
         choice(Lock,"Lock",{"free","overlap","tone"},0),
         choice(Heads,"Heads",{"1","2","3","4"},0),
@@ -1155,7 +1155,20 @@ const silt::Preset silt::presets[] {
     {"tines",    {100,6,35,1,14,450,18,7,1,0,1,22,1,0,5,75,10,0, 100,0,0,0,0,0,0,0,0,0,0,0,1200,0,0,100,0,0,0,0}},
     {"chime",    {100,0,160,1,12,900,25,12,0,0,1,42,1,0,10,45,45,0, 100,0,0,0,0,0,0,0,0,0,0,0,1200,0,0,100,0,0,0,0}},
     {"rain",     {100,0,55,1,48,1800,78,0,1,0,1,32,1,0,35,55,25,35, 100,0,0,0,0,0,0,0,0,0,0,0,1200,0,0,100,0,0,0,0}},
-    {"drift",    {100,0,1200,1,15,2200,62,-7,0,0,1,45,1,0,65,20,55,15, 100,0,0,0,0,0,0,0,0,0,0,0,1200,0,0,100,0,0,0,0}}
+    {"drift",    {100,0,1200,1,15,2200,62,-7,0,0,1,45,1,0,65,20,55,15, 100,0,0,0,0,0,0,0,0,0,0,0,1200,0,0,100,0,0,0,0}},
+    // 0.2's ten: one idea each from the new controls. Output trims level-match them to the ten above (loudness suite).
+    // organ: tone lock over a slowly walking anchor; short grains, because overlapped wavetable reads of
+    // inharmonic input partly cancel (scan 100% would read time-aligned copies: a plain delay).
+    {"swarm",    {100,0,180,1,30,900,50,0,0,0,1,35,1,0,0,0,0,0, 100,0,3,0,0,0,0,3,1,0,0,0,1200,0,1,150,0,0,0,0}},
+    {"organ",    {100,2,6,1,24,300,0,0,0,0,1,30,1,0,0,0,0,0, 10,2,0,0,30,0,0,0,0,0,0,0,1200,0,0,100,0,0,0,0}},
+    {"cathedral",{100,0,600,1,16,1500,40,12,0,0,1,60,1,0,0,0,0,0, 100,0,2,1,0,0,0,0,0,0,0,20,1200,0,0,100,55,0,0,0}},
+    {"stutter",  {100,0,14.05f,0,16,250,10,0,0,0,1,15,1,0,0,0,0,0, 100,0,0,0,90,0,0,0,0,30,70,0,1200,0,0,100,0,0,0,0}},
+    {"undertow", {100,0,700,1,12,1500,40,0,0,0,1,40,1,0,0,0,0,0, 50,0,0,0,0,80,100,0,0,0,0,0,1200,0,0,100,0,0,0,0}},
+    {"stretch",  {100,0,60,1,13.6f,100,5,0,0,0,1,15,1,0,0,0,0,0, 50,1,0,0,40,0,0,0,0,0,0,0,1200,0,0,100,0,0,0,0}},
+    {"prism",    {100,6,120,1,40,1200,60,0,0,0,1,35,1,0,0,0,0,0, 100,0,0,0,0,0,0,0,0,0,0,85,1200,70,1,100,0,0,0,0}},
+    {"orbit",    {100,-1.5f,400,1,20,1400,45,0,0,0,1,35,1,0,40,0,0,0, 100,0,1,2,0,0,0,0,0,0,0,0,1200,0,1,180,0,0,0,0}},
+    {"snapshot", {100,0,250,1,24,200,15,0,0,0,1,25,1,0,0,0,0,0, 0,0,0,0,0,0,0,0,0,0,0,0,1200,0,0,100,0,0,1,1}},
+    {"chorale",  {100,0,300,1,24,600,35,0,0,0,1,45,1,0,0,0,0,0, 100,0,3,5,0,0,0,0.3f,0,0,0,0,1200,0,0,100,0,0,0,0}}
 };
 
 void SiltProcessor::setAll(const float* normalised)
@@ -1271,5 +1284,15 @@ void SiltProcessor::randomise(int64 seed)
     const float intervals[] { -12, -7, 0, 0, 0, 7, 12 };
     put(Pitch, intervals[r.nextInt(7)]), put(PitchMode, r.nextInt(2)), put(Freeze, 0);
     put(ReverbOn, 1), put(ReverbAmount, between(10, 45));
+    // 0.2: the free clock keeps the overlap above; each colour is applied at a moderate depth, often not at all.
+    // Scan never falls below 100% (the anchor would leave a fresh capture). No narrow band: one far from the input's
+    // partials is near silence, one on them rings; spectra alone only tilts (a wide band).
+    const auto maybe = [&](float lo, float hi) { return r.nextBool() ? between(lo, hi) : 0.0f; };
+    put(Lock, 0), put(Heads, r.nextInt(4)), put(Harmony, r.nextInt(5)), put(Scan, 100 + maybe(0, 50));
+    put(Shape, between(0, 70)), put(Tilt, between(-60, 60)), put(Reverse, maybe(10, 60));
+    put(Detune, maybe(.1f, 5)), put(Scale, r.nextInt(5)), put(Drop, maybe(5, 30)), put(Repeat, maybe(10, 50));
+    put(Band, 0), put(Centre, std::exp(between(std::log(400.0f), std::log(2500.0f)))), put(Spectra, maybe(10, 40));
+    put(Space, r.nextInt(2)), put(Width, between(60, 140)), put(Feedback, maybe(5, 20)), put(Filter, maybe(-30, 20));
+    put(SprayDir, r.nextInt(3));
     setIdentity(-1, "random");
 }

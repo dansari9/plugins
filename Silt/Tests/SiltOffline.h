@@ -8,11 +8,12 @@ static void dense(Proc& p, bool tiny=false)
 static void bench(bool profile=false)
 {
     std::cout<<"rate | sound | audio seconds | processing seconds | realtime factor | one core % | max voices\n";
-    for(int fs:{44100,48000,96000}) for(int sound=-1;sound<19;++sound)
+    for(int fs:{44100,48000,96000}) for(int sound=-1;sound<29;++sound)
     {
         if(profile && (fs!=96000 || sound!=10))continue;
         Proc p;
         if(sound>=0 && sound<10)p.setCurrentProgram(sound);
+        if(sound>=19)p.setCurrentProgram(sound-9); // 0.2's presets
         if(sound==10 || sound==11 || sound==18)dense(p,sound==11);
         // Also preserve the exact layout-stage 128-voice workload (2x, +12 st, unmodulated).
         if(sound==12)set(p,plain),set(p,{{"size",4000},{"pitch",12},{"pitchMode",0},{"density",64},
@@ -36,7 +37,7 @@ static void bench(bool profile=false)
             if(start>=warmup*fs)seconds+=(juce::Time::getHighResolutionTicks()-before)/juce::Time::getHighResolutionTicksPerSecond();
             int active=0;for(auto& e:p.feed.env)active+=e.load()>0?1:0;voices=std::max(voices,active);
         }
-        const juce::String name=sound<0?"default":sound<10?p.getProgramName(sound):sound==10?"dense":sound==11?"dense tiny":sound==12?"dense legacy 2x":sound==13?"0.2 grain":sound==14?"0.2 heads":sound==15?"0.2 tone":sound==16?"0.2 colour":sound==17?"0.2 space":"dense colour";
+        const juce::String name=sound<0?"default":sound<10?p.getProgramName(sound):sound>=19?p.getProgramName(sound-9):sound==10?"dense":sound==11?"dense tiny":sound==12?"dense legacy 2x":sound==13?"0.2 grain":sound==14?"0.2 heads":sound==15?"0.2 tone":sound==16?"0.2 colour":sound==17?"0.2 space":"dense colour";
         std::cout<<fs<<" | "<<name<<" | "<<(duration-warmup)<<" | "<<seconds<<" | "<<(duration-warmup)/seconds<<" | "<<seconds*100/(duration-warmup)<<" | "<<voices<<"\n";
         if(sound==10 || sound==12 || sound==18)CHECK(voices==128);
     }
@@ -74,11 +75,11 @@ static void renderFiles(const juce::File& folder)
         }
         const auto material=program.input();
         Audio source{program.data,program.data};writeWav(folder.getChildFile(juce::String("input-")+names[kind]+".wav"),source);
-        for(int sound=-1;sound<30;++sound)
+        for(int sound=-1;sound<silt::numPresets+20;++sound)
         {
             Proc p;juce::String name="default";
-            if(sound>=0 && sound<10)p.setCurrentProgram(sound),name=p.getProgramName(sound).replaceCharacter(' ','-');
-            if(sound>=10)p.randomise(sound-10),name="seed-"+juce::String(sound-10).paddedLeft('0',2);
+            if(sound>=0 && sound<silt::numPresets)p.setCurrentProgram(sound),name=p.getProgramName(sound).replaceCharacter(' ','-');
+            if(sound>=silt::numPresets)p.randomise(sound-silt::numPresets),name="seed-"+juce::String(sound-silt::numPresets).paddedLeft('0',2);
             prepare(p);writeWav(folder.getChildFile(name+"-"+names[kind]+".wav"),run(p,12*48000,512,material));
         }
     }

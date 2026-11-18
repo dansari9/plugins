@@ -194,10 +194,18 @@ struct Header : Group
 };
 struct Presets : Group
 {
+    // The row shows the bank of ten holding the current preset; the rest are a ‹ › step away.
     explicit Presets(SiltProcessor& proc) : Group(proc,panels[6])
-    { for(int i=0;i<silt::numPresets;++i) key("preset:"+String(i),11*i,0,String(silt::presets[i].name).length(),[this,i] { p.setCurrentProgram(i); }); }
+    { for(int i=0;i<10;++i) key("preset:"+String(i),11*i,0,1,[this,i] { p.setCurrentProgram(bank()+i); }); }
+    int bank() const { return p.preset >= 10 ? 10 : 0; }
     void draw(Grid& g) override
-    { for(int i=0;i<silt::numPresets;++i) g.put(11*i,0,silt::presets[i].name,p.preset==i?red:grey); }
+    {
+        for(int i=0;i<10;++i)
+        {
+            const char* name=silt::presets[bank()+i].name;
+            g.put(11*i,0,name,p.preset==bank()+i?red:grey),keys[i]->setBounds(cells(11*i,0,String(name).length(),1));
+        }
+    }
 };
 struct Freeze : Group
 {

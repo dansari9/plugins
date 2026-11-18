@@ -169,7 +169,7 @@ static void testContract()
     CHECK(juce::String(JucePlugin_VersionString)=="0.2.0" && juce::String(JucePlugin_Vst3Category)=="Fx");
     CHECK(!JucePlugin_IsSynth && JucePlugin_WantsMidiInput && !JucePlugin_ProducesMidiOutput);
     Proc p;
-    CHECK(p.getParameters().size()==(int)std::size(contract) && p.stateVersion==2 && p.getNumPrograms()==10);
+    CHECK(p.getParameters().size()==(int)std::size(contract) && p.stateVersion==2 && p.getNumPrograms()==20);
     for(int i=0;i<p.getParameters().size();++i)
     {
         const auto& c=contract[i];
@@ -301,11 +301,13 @@ static void testPresets()
     const auto folder=juce::File::getSpecialLocation(juce::File::tempDirectory).getNonexistentChildFile("silt-tests","",false);
     Proc p(folder),defaults;
     p.setCurrentProgram(4);CHECK(params(p)==params(defaults));
-    const char* names[]{"sub dust","grit","glass","halo","tide","choir","tines","chime","rain","drift"};
-    for(int i=0;i<10;++i)
+    const char* names[]{"sub dust","grit","glass","halo","tide","choir","tines","chime","rain","drift",
+        "swarm","organ","cathedral","stutter","undertow","stretch","prism","orbit","snapshot","chorale"};
+    static_assert(std::size(names)==silt::numPresets);
+    for(int i=0;i<silt::numPresets;++i)
     {
         p.setCurrentProgram(i);CHECK(p.getProgramName(i)==names[i] && p.getCurrentProgram()==i);
-        CHECK(get(p,"mix")==100 && get(p,"output")==(i==1?3:i==6?6:0) && get(p,"freeze")==0);
+        CHECK(get(p,"mix")==100 && get(p,"output")==(i==1?3:i==6 || i==16?6:i==11?2:i==17?-1.5f:0) && get(p,"freeze")==0);
     }
     p.setCurrentProgram(0),set(p,"pitch",7);
     const auto before=params(p);
@@ -318,7 +320,7 @@ static void testPresets()
         void audioProcessorChanged(juce::AudioProcessor*,const ChangeDetails&) override {}
         void audioProcessorParameterChangeGestureBegin(juce::AudioProcessor*,int) override {++begun;}
     } gestures;
-    p.setCurrentProgram(9);p.addListener(&gestures);p.stepPreset(1);CHECK(params(p)==before && p.presetName()=="user 01" && gestures.begun>0);
+    p.setCurrentProgram(silt::numPresets-1);p.addListener(&gestures);p.stepPreset(1);CHECK(params(p)==before && p.presetName()=="user 01" && gestures.begun>0);
     gestures.begun=0;{Proc r;r.addListener(&gestures);load(r,save(p));r.removeListener(&gestures);}CHECK(gestures.begun==0);
     p.removeListener(&gestures);
     p.stepPreset(1);CHECK(p.preset==0);p.stepPreset(-1);CHECK(params(p)==before);
@@ -870,17 +872,22 @@ static void testLoudness(bool tableOnly=false)
     Program programs[]{Program(0),Program(1),Program(2)};
     std::cout<<"preset | program | peak dBFS | RMS dBFS | DC dBFS\n"<<std::fixed<<std::setprecision(3);
     Proc p;
-    for(int preset=0;preset<11;++preset) for(int program=0;program<3;++program)
+    // 0.2's presets are level-matched: every program within 1 dB of the range 0.1.0's ten span here.
+    double factoryLo=0,factoryHi=-300;
+    for(int preset=0;preset<=silt::numPresets;++preset) for(int program=0;program<3;++program)
     {
-        if(preset<10)p.setCurrentProgram(preset);else load(p,blob("<SILT/>"));
+        if(preset<silt::numPresets)p.setCurrentProgram(preset);else load(p,blob("<SILT/>"));
         prepare(p);
         Run material=programs[program].input();
         run(p,8*48000,512,material);material.offset=8*48000;
         const Level level(run(p,192000,512,material));level.check();
-        std::cout<<(preset<10?p.getProgramName(preset):juce::String("default"))<<" | "<<names[program]<<" | "<<level.peakDb()<<" | "<<level.rmsDb()<<" | "<<20*std::log10(level.dc+1e-30)<<"\n";
+        std::cout<<(preset<silt::numPresets?p.getProgramName(preset):juce::String("default"))<<" | "<<names[program]<<" | "<<level.peakDb()<<" | "<<level.rmsDb()<<" | "<<20*std::log10(level.dc+1e-30)<<"\n";
+        if(preset<10)factoryLo=std::min(factoryLo,level.rmsDb()),factoryHi=std::max(factoryHi,level.rmsDb());
+        else if(preset<silt::numPresets && (level.rmsDb()<factoryLo-1 || level.rmsDb()>factoryHi+1))
+            std::cerr<<"preset "<<preset<<" program "<<program<<" outside "<<factoryLo<<".."<<factoryHi<<" dB\n",CHECK(false);
     }
     if(tableOnly)return;
-    double maxRms=-300,maxPeak=-300,maxDc=0;
+    double maxRms=-300,maxPeak=-300,maxDc=0,minRms=0;
     // Warm the selected history and grain overlaps before measuring each random sound.
     for(int seed=0;seed<500;++seed) for(int program=0;program<3;++program)
     {
@@ -889,9 +896,10 @@ static void testLoudness(bool tableOnly=false)
         Run material=programs[program].input();
         run(p,96000,512,material);material.offset=96000;
         const Level level(run(p,96000,512,material));level.check();
-        maxRms=std::max(maxRms,level.rmsDb()),maxPeak=std::max(maxPeak,level.peakDb()),maxDc=std::max(maxDc,level.dc);
+        maxRms=std::max(maxRms,level.rmsDb()),minRms=std::min(minRms,level.rmsDb()),maxPeak=std::max(maxPeak,level.peakDb()),maxDc=std::max(maxDc,level.dc);
     }
-    std::cout<<"500 randomise seeds x 3 programs: max RMS "<<maxRms<<" dBFS, peak "<<maxPeak<<" dBFS, DC "<<20*std::log10(maxDc+1e-30)<<" dBFS\n";
+    std::cout<<"500 randomise seeds x 3 programs: RMS "<<minRms<<" .. "<<maxRms<<" dBFS, peak "<<maxPeak<<" dBFS, DC "<<20*std::log10(maxDc+1e-30)<<" dBFS\n";
+    CHECK(minRms>-40); // never a silent sound
     double cornerRms=-300,cornerPeak=-300,cornerDc=0;
     for(float pitch:{-48.0f,48.0f}) for(float size:{.5f,4000.0f}) for(int freeze:{0,1}) for(int mode:{0,1})
         for(int program=0;program<3;++program)
@@ -917,12 +925,15 @@ static void testLoudness(bool tableOnly=false)
 static void testEdges()
 {
     {
-        Proc p;set(p,"trigger",2);float lo=1e9f,hi=0;
+        Proc p;set(p,{{"trigger",2},{"lock",2},{"onset",1}});float lo=1e9f,hi=0;int coloured=0,binaural=0,heads=0;
         for(int seed=0;seed<50;++seed)
         {
             p.randomise(seed);lo=std::min(lo,get(p,"size")),hi=std::max(hi,get(p,"size"));
-            CHECK(get(p,"trigger")==2 && get(p,"size")*get(p,"density")>1490);
+            CHECK(get(p,"trigger")==2 && get(p,"onset")==1 && get(p,"size")*get(p,"density")>1490);
+            CHECK(get(p,"lock")==0 && get(p,"harmony")<5 && get(p,"scan")>=100 && get(p,"band")==0); // see randomise()
+            coloured+=get(p,"spectra")>0,binaural+=get(p,"space")==1,heads+=get(p,"heads")>0;
         }
+        CHECK(coloured>5 && coloured<45 && binaural>5 && binaural<45 && heads>20);
         std::cout<<"Randomize sizes over 50 seeds: "<<lo<<" .. "<<hi<<" ms\n";CHECK(hi-lo>300);
     }
     {
@@ -1158,6 +1169,8 @@ static void testEditor()
         const auto before=params(p);press("rnd");CHECK(params(p)!=before && p.presetName()=="random");
         press("macro");CHECK(!find(e,"group:macros")->isVisible() && find(e,"group:presets")->isVisible());
         for(int i=0;i<10;++i){press("preset:"+juce::String(i));CHECK(p.preset==i);}
+        press("next");CHECK(p.preset==10); // the row now shows presets 11-20
+        for(int i=0;i<10;++i){press("preset:"+juce::String(i));CHECK(p.preset==10+i);}
         p.setCurrentProgram(4);
         // Dirty-cell redraw gives the same pixels as a full render; no repaint when audio and controls are idle.
         auto* capture=new RepaintCapture(e);e.setCachedComponentImage(capture);
