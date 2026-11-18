@@ -4,10 +4,11 @@
 
 // silt: a granular effect by daveydidit (clean room: original engine, curves and UI, textbook DSP).
 // FROZEN: the parameter IDs in Silt.cpp (order, ranges, choice indices, ParameterID versions) and the state format
-// (APVTS XML <SILT stateVersion="1"> plus additive root attributes). Never rename, remove or reorder; only append.
+// (APVTS XML <SILT stateVersion="2"> plus additive root attributes). Never rename, remove or reorder; only append.
+// The first numParamsV1 are 0.1.0's (version hint 1); 0.2 appended the rest (hint 2), each defaulting to 0.1.0's sound.
 namespace silt
 {
-inline constexpr int numParams = 18, numPresets = 10, numWindows = 3, numNotes = 17, maxGrains = 128;
+inline constexpr int numParamsV1 = 18, numParams = 38, numPresets = 10, numWindows = 3, numNotes = 17, maxGrains = 128;
 extern const char* const noteNames[numNotes]; // 1/64 .. 2 bars, incl. triplets (T) and dotted (D)
 // Note values in whole notes: noteNum / noteDen.
 inline constexpr int noteNum[numNotes] { 1, 1, 1, 1, 1, 3, 1, 1, 3, 1, 1, 3, 1, 1, 3, 1, 2 };
@@ -61,7 +62,7 @@ extern const Preset presets[numPresets];
 class SiltProcessor : public juce::AudioProcessor
 {
 public:
-    static constexpr int stateVersion = 1;
+    static constexpr int stateVersion = 2;
 
     explicit SiltProcessor(juce::File presetDirectory = {});
     ~SiltProcessor() override;

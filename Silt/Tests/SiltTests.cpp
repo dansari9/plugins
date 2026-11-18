@@ -59,8 +59,15 @@ static const Contract contract[] {
     {"density",1,64,24},{"position",0,4000,1200},{"scatter",0,100,45},{"pitch",-48,48,12},
     {"pitchMode",0,1,0,"shift,tape"},{"trigger",0,2,0,"clock,transient,sidechain"},{"reverbOn",0,1,1,""},
     {"reverb",0,100,30},{"oversample",0,3,1,"off,2x,4x,8x"},{"freeze",0,1,0,""},
-    {"motion",0,100,0},{"texture",0,100,0},{"bloom",0,100,0},{"chaos",0,100,0}
+    {"motion",0,100,0},{"texture",0,100,0},{"bloom",0,100,0},{"chaos",0,100,0},
+    // 0.2, appended (version hint 2); every default is 0.1.0's sound.
+    {"scan",-200,200,100},{"lock",0,2,0,"free,overlap,tone"},{"heads",0,3,0,"1,2,3,4"},
+    {"harmony",0,5,0,"unison,fifth,octave,major,minor,held"},{"shape",0,100,0},{"tilt",-100,100,0},{"reverse",0,100,0},
+    {"detune",0,24,0},{"scale",0,4,0,"free,chromatic,major,minor,pentatonic"},{"drop",0,100,0},{"repeat",0,100,0},
+    {"band",0,100,0},{"centre",100,12000,1200},{"spectra",0,100,0},{"space",0,1,0,"pan,binaural"},{"width",0,200,100},
+    {"feedback",0,95,0},{"filter",-100,100,0},{"sprayDir",0,2,0,"both,back,ahead"},{"onset",0,1,0,"ramp,full"}
 };
+static_assert(std::size(contract)==silt::numParams);
 static void set(Proc& p, const char* id, float v) { auto* q = p.apvts.getParameter(id); q->setValueNotifyingHost(q->convertTo0to1(v)); }
 static void set(Proc& p, const Settings& s) { for (auto& [id,v] : s) set(p,id,v); }
 static float get(Proc& p, const char* id) { return p.apvts.getRawParameterValue(id)->load(); }
@@ -159,15 +166,15 @@ static void testContract()
     CHECK(juce::String(JUCE_STRINGIFY(JucePlugin_AUMainType))=="'aumf'");
     CHECK(juce::String(JUCE_STRINGIFY(JucePlugin_CFBundleIdentifier))=="com.dripworks.silt");
     CHECK(juce::String(JucePlugin_Name)=="silt" && juce::String(JucePlugin_Manufacturer)=="daveydidit");
-    CHECK(juce::String(JucePlugin_VersionString)=="0.1.0" && juce::String(JucePlugin_Vst3Category)=="Fx");
+    CHECK(juce::String(JucePlugin_VersionString)=="0.2.0" && juce::String(JucePlugin_Vst3Category)=="Fx");
     CHECK(!JucePlugin_IsSynth && JucePlugin_WantsMidiInput && !JucePlugin_ProducesMidiOutput);
     Proc p;
-    CHECK(p.getParameters().size()==(int)std::size(contract) && p.stateVersion==1 && p.getNumPrograms()==10);
+    CHECK(p.getParameters().size()==(int)std::size(contract) && p.stateVersion==2 && p.getNumPrograms()==10);
     for(int i=0;i<p.getParameters().size();++i)
     {
         const auto& c=contract[i];
         auto* q=dynamic_cast<juce::RangedAudioParameter*>(p.getParameters()[i]);
-        CHECK(q && q->paramID==c.id && q->getVersionHint()==1 && q->isAutomatable());
+        CHECK(q && q->paramID==c.id && q->getVersionHint()==(i<silt::numParamsV1?1:2) && q->isAutomatable());
         CHECK(q->getNormalisableRange().start==c.lo && q->getNormalisableRange().end==c.hi && get(p,c.id)==c.def);
         if(auto* choice=dynamic_cast<juce::AudioParameterChoice*>(q)) CHECK(c.choices && choice->choices.joinIntoString(",")==c.choices);
         else if(dynamic_cast<juce::AudioParameterBool*>(q)) CHECK(c.choices && juce::String(c.choices).isEmpty());
@@ -177,7 +184,8 @@ static void testContract()
     // parameters by version hint, then ID, so appended (hint 2) parameters sort after all of these.
     constexpr juce::uint32 hostIds[]{108124,1141971201,3530753,846956092,1552717032,747804969,1911146174,106677056,544002307,
         1087591864,1882965841,1213131218,394773374,881080983,1079164854,729666843,93832707,94623616};
-    for(int i=0;i<(int)std::size(contract);++i)CHECK(juce::VST3ClientExtensions::convertJuceParameterId(contract[i].id,true)==hostIds[i]);
+    static_assert(std::size(hostIds)==silt::numParamsV1);
+    for(int i=0;i<(int)std::size(hostIds);++i)CHECK(juce::VST3ClientExtensions::convertJuceParameterId(contract[i].id,true)==hostIds[i]);
     // Mono -> stereo is intentional; stereo -> mono and surround are not supported.
     for(int in:{1,2,3}) for(int out:{1,2,3}) for(int side:{0,1,2,3})
     {
@@ -278,6 +286,15 @@ static void testState()
     CHECK(get(p,"size")==350 && get(p,"pitch")==-7 && p.presetName()=="v1 fixture" && p.abSlot()==1);
     const auto v1=params(p);
     Proc q;load(q,save(p));CHECK(params(q)==v1 && q.presetName()==p.presetName());
+    CHECK(juce::String(static_cast<const char*>(save(p).getData())+8).contains("stateVersion=\"2\""));
+    prepare(p),prepare(q);CHECK(run(p,48000)==run(q,48000)); // a v1 session saved as v2 sounds the same
+    // A v1 A/B slot holds 18 values: the 0.2 parameters are padded with their defaults, never dropped.
+    juce::StringArray slot;for(int k=0;k<silt::numParamsV1;++k)slot.add("0.25");
+    Proc ab;load(ab,blob("<SILT stateVersion=\"1\" slotB=\"2;"+slot.joinIntoString(",")+"\"/>"));
+    set(ab,{{"scan",-50},{"shape",80},{"centre",300}});ab.selectAb(1);
+    CHECK(ab.apvts.getParameter("mix")->getValue()==.25f && ab.apvts.getParameter("chaos")->getValue()==.25f);
+    for(int k=silt::numParamsV1;k<silt::numParams;++k)CHECK(get(ab,contract[k].id)==contract[k].def);
+    ab.selectAb(0);CHECK(get(ab,"scan")==-50 && get(ab,"centre")==300);
 }
 static void testPresets()
 {
@@ -503,6 +520,100 @@ static void testFreezeAndWindows()
     run(p,16*96000,4096,longGrain);CHECK(std::abs(p.feed.env[0]-.5f)<2e-6f);
     longGrain.offset=16*96000;run(p,32*96000,4096,longGrain);CHECK(std::abs(p.feed.env[0]-.5f)<2e-6f);
     longGrain.offset=48*96000;run(p,16*96000,4096,longGrain);CHECK(p.feed.env[0]==0);
+}
+
+// 0.2 grain controls, each heard or seen in the grain events as designed. Their defaults are 0.1.0's (testGoldens).
+static void testGrainFeatures()
+{
+    // One grain over a click a quarter into its 9600-sample read: forward it sounds a quarter in, reversed three quarters.
+    for(float reverse:{0.0f,100.0f})
+    {
+        Proc p;set(p,plain),set(p,{{"trigger",2},{"pitchMode",1},{"size",200},{"position",500},{"reverse",reverse}}),prepare(p);
+        Run r;r.input=[](int i,int){return i==26400?.5f:0.0f;};r.side=[](int,int){return 0.0f;};
+        r.events={{48000,juce::MidiMessage::noteOn(1,60,(juce::uint8)127)}};
+        const auto a=run(p,57600,512,r);
+        size_t at=48000;for(size_t i=at;i<a.l.size();++i)if(std::abs(a.l[i])>std::abs(a.l[at]))at=i;
+        CHECK(std::abs((int)at-48000-(reverse>0?7200:2400))<=2);
+    }
+    // The window of one 4800-sample grain: tilt moves its peak; shape goes bell -> flat top -> rectangle (1 ms edges).
+    const auto window=[](const Settings& s)
+    {
+        Proc p;set(p,plain),set(p,{{"trigger",2},{"size",100}}),set(p,s),prepare(p);
+        Run r;r.side=[](int,int){return 0.0f;};r.events={{0,juce::MidiMessage::noteOn(1,60,(juce::uint8)127)}};
+        std::vector<float> w;r.perBlock=[&](int t){if(t>0)w.push_back(p.feed.env[0]);};
+        run(p,4800,1,r);
+        for(float x:w)CHECK(x>0 && x<=1);
+        return w;
+    };
+    const auto peak=[](const std::vector<float>& w){return (int)std::distance(w.begin(),std::max_element(w.begin(),w.end()));};
+    const auto flat=[](const std::vector<float>& w){return std::count_if(w.begin(),w.end(),[](float x){return x>.999f;});};
+    const auto bell=window({}),pluck=window({{"tilt",-100}}),swell=window({{"tilt",100}}),top=window({{"shape",50}}),rect=window({{"shape",100}});
+    std::cout<<"Window peaks: bell "<<peak(bell)<<" pluck "<<peak(pluck)<<" swell "<<peak(swell)<<"; flat samples "<<flat(bell)<<" / "<<flat(top)<<" / "<<flat(rect)<<"\n";
+    CHECK(std::abs(peak(bell)-2399)<=2 && std::abs(peak(pluck)-95)<=2 && std::abs(peak(swell)-4703)<=2);
+    CHECK(flat(bell)<200 && flat(top)>600 && flat(top)<1000 && flat(rect)>=4799-2*48-2 && rect.front()<.05f);
+    // Grain events: pitch, fire time and where each grain starts reading (capture frames).
+    struct Grain{float pitch;juce::int64 frame;double start,back;};
+    const auto grains=[](const Settings& s,int samples=48000)
+    {
+        Proc p;set(p,plain),set(p,{{"density",64},{"size",20}}),set(p,s),prepare(p);run(p,samples);
+        std::vector<Grain> out;
+        for(juce::int64 i=0;i<p.feed.events;++i)
+        {
+            auto& e=p.feed.history[(size_t)i%silt::Feed::historySize];
+            out.push_back({e.pitch,e.frame,(double)e.captureHead-(double)e.back*48000,(double)e.back});
+        }
+        return out;
+    };
+    const auto inScale=[](float st,int mask){const int n=(int)std::lround(st);return std::abs(st-(float)n)<1e-4f && ((mask>>((n%12+12)%12))&1);};
+    for(auto [scale,mask]:{std::pair{0,0},{1,0xfff},{2,0xab5},{3,0x5ad},{4,0x295}})
+    {
+        float lo=0,hi=0;bool fractional=false;
+        for(const auto& g:grains({{"detune",12},{"scale",(float)scale}}))
+        {
+            lo=std::min(lo,g.pitch),hi=std::max(hi,g.pitch),fractional|=std::abs(g.pitch-std::round(g.pitch))>.01f;
+            CHECK(std::abs(g.pitch)<=12.0f+(scale?2:0));
+            if(scale)CHECK(inScale(g.pitch,mask));
+        }
+        CHECK(hi-lo>12 && fractional==(scale==0));
+        // Chaos alone keeps 0.1.0's semitone rounding in free, and snaps to the chosen scale otherwise.
+        for(const auto& g:grains({{"chaos",40},{"scale",(float)scale}}))CHECK(inScale(g.pitch,scale?mask:0xfff));
+    }
+    for(const auto& g:grains({{"pitch",3.5f},{"scale",2}}))CHECK(g.pitch==3.5f); // no spread: no snap
+    // Drop silences a share of the clock's grains; the rest keep their ticks.
+    const auto all=grains({}),half=grains({{"drop",50}});
+    CHECK(grains({{"drop",100}}).empty() && half.size()>all.size()/4 && half.size()<all.size()*3/4);
+    for(const auto& g:half)CHECK(std::any_of(all.begin(),all.end(),[&](const Grain& a){return a.frame==g.frame;}));
+    // Repeat re-reads the previous grain's audio: at 100% every grain starts where the first one did.
+    const auto starts=[&](float repeat){std::vector<double> x;for(const auto& g:grains({{"scatter",45},{"position",1200},{"density",24},{"repeat",repeat}},72000))x.push_back(g.start);return x;};
+    const auto fresh=starts(0),repeated=starts(100);
+    CHECK(fresh.size()>30 && std::abs(*std::max_element(fresh.begin(),fresh.end())-*std::min_element(fresh.begin(),fresh.end())-72000)<48000);
+    for(double x:repeated)CHECK(std::abs(x-repeated.front())<.5);
+    // Spray direction: back only reaches into older audio, ahead only newer; both does each.
+    for(int dir:{0,1,2})
+    {
+        int older=0,newer=0;
+        for(const auto& g:grains({{"scatter",60},{"position",1000},{"sprayDir",(float)dir}}))older+=g.back>1.0001,newer+=g.back<.9999;
+        CHECK(older+newer>50 && (dir==1?newer==0:dir==2?older==0:older>10 && newer>10));
+    }
+    // Scan moves the read anchor (the cloud's centre) through history; 100% holds 0.1.0's fixed lag.
+    const auto centres=[](float scan,bool freeze)
+    {
+        Proc p;set(p,plain),set(p,{{"position",1000},{"scan",scan},{"freeze",freeze?1.0f:0.0f}}),prepare(p);
+        std::vector<double> c;Run r;r.perBlock=[&](int t){if(t>0)c.push_back(p.feed.centre);};
+        run(p,10*48000,4800,r);return c; // c[k]: after (k + 1) / 10 s
+    };
+    for(float scan:{100.0f,0.0f,-100.0f,200.0f})
+    {
+        const auto c=centres(scan,false);
+        for(size_t k=0;k<c.size();++k)
+        {
+            const double t=(double)(k+1)/10,lag=1+(1-scan/100)*t,cycle=std::fmod(lag-1,7); // past 8 s: back to 1 s
+            CHECK(std::abs(c[k]-(scan>100?std::max(.02,lag):1+cycle))<1e-3 || cycle<.01 || cycle>6.99);
+        }
+    }
+    const auto held=centres(200,true); // live it rides 20 ms behind; frozen (after 4 s) it moves on, wrapping in the held 8 s
+    CHECK(std::abs(held[30]-.02)<1e-3 && *std::max_element(held.begin()+41,held.end())>7.5);
+    for(size_t k=41;k<held.size();++k)CHECK(held[k]>=.02-1e-6 && held[k]<=7.98+1e-6 && (held[k]<held[k-1] || held[k]>7.5));
 }
 
 // Three stationary, zero-mean musical programs, each measured and normalised to -18 dBFS RMS before use.
@@ -737,7 +848,7 @@ static void testPerformance()
 // Dense batch reads and lookahead must agree with single-sample processing, including a held capture.
 static void testDenseBlocks()
 {
-    for (bool frozen : { false, true })
+    for (int variant : { 0, 1 }) for (bool frozen : { false, true })
     {
         Run r;const int warm=194000; // freeze holds once 4 s are captured
         for (int note=0;note<128;++note) r.events.push_back({warm,juce::MidiMessage::noteOn(1,note,(juce::uint8)100)});
@@ -746,7 +857,9 @@ static void testDenseBlocks()
         Audio reference;
         for(int block : {512,1,17,0})
         {
-            Proc p;set(p,plain);set(p,{{"size",4000},{"pitch",12},{"pitchMode",0},{"density",64},{"bloom",100},{"oversample",3},{"position",0}});prepare(p);
+            Proc p;set(p,plain);set(p,{{"size",4000},{"pitch",12},{"pitchMode",0},{"density",64},{"bloom",100},{"oversample",3},{"position",0}});
+            if(variant==1)set(p,{{"shape",70},{"tilt",-40},{"reverse",40},{"detune",5},{"scale",2},{"drop",20},{"repeat",30},{"sprayDir",1},{"scan",160},{"scatter",30}});
+            prepare(p);
             run(p,warm,block);
             if(frozen)set(p,"freeze",1);
             r.offset=warm;
@@ -759,7 +872,7 @@ static void testDenseBlocks()
                     double difference=0;size_t first=output.l.size();
                     for(size_t j=0;j<output.l.size();++j) if(output.l[j]!=reference.l[j] || output.r[j]!=reference.r[j])
                     { first=std::min(first,j);difference=std::max({difference,std::abs((double)output.l[j]-reference.l[j]),std::abs((double)output.r[j]-reference.r[j])}); }
-                    std::cerr<<"Dense block mismatch: freeze "<<frozen<<" block "<<block<<" first "<<first<<" max "<<difference<<"\n";
+                    std::cerr<<"Dense block mismatch: variant "<<variant<<" freeze "<<frozen<<" block "<<block<<" first "<<first<<" max "<<difference<<"\n";
                 }
                 CHECK(output==reference);
             }
@@ -850,6 +963,7 @@ static void testEditor()
         };
         for(const auto& spec:contract)
         {
+            if(&spec-contract>=silt::numParamsV1)break; // 0.2's parameters get controls with the new layout
             auto* param=p.apvts.getParameter(spec.id);
             if(dynamic_cast<juce::AudioParameterFloat*>(param))
             {
@@ -965,12 +1079,14 @@ static std::vector<juce::String> legacyHashes()
     std::vector<juce::String> hashes;
     for(size_t k=0;k<states.size();++k)
     {
-        Proc p;load(p,states[k]);
+        Proc p,v2;load(p,states[k]);
         if(k==1)p.selectAb(0);
-        prepare(p);Host h;Run r;r.host=&h;
-        r.events={{1701,juce::MidiMessage::noteOn(1,64,(juce::uint8)100)},{12001,juce::MidiMessage::controllerEvent(1,1,64)},
-            {30000,juce::MidiMessage::noteOff(1,64)}};
-        const auto a=run(p,144000,512,r);juce::MemoryOutputStream bytes;
+        load(v2,save(p)); // the same session saved by 0.2 (stateVersion 2) and reopened
+        const auto render=[](Proc& q){prepare(q);Host h;Run r;r.host=&h;
+            r.events={{1701,juce::MidiMessage::noteOn(1,64,(juce::uint8)100)},{12001,juce::MidiMessage::controllerEvent(1,1,64)},
+                {30000,juce::MidiMessage::noteOff(1,64)}};
+            return run(q,144000,512,r);};
+        const auto a=render(p);CHECK(render(v2)==a);juce::MemoryOutputStream bytes;
         bytes.write(a.l.data(),a.l.size()*sizeof(float)),bytes.write(a.r.data(),a.r.size()*sizeof(float));
         hashes.push_back(sha(bytes).substring(0,16));
     }
@@ -1055,7 +1171,7 @@ int main(int argc,char** argv)
     onAudioThread=true;void* probe=::operator new(64);escape(probe);::operator delete(probe);onAudioThread=false;
     CHECK(audioAllocations>0);audioAllocations=0;
     testContract();testParameterText();testState();testPresets();testDryAndLifecycle();testTimingAndMidi();testRatios();testOnsetsAndSource();testFreezeAndWindows();
-    testSound();testEdges();testDenseBlocks();
+    testGrainFeatures();testSound();testEdges();testDenseBlocks();
     if(argc>=2 && juce::String(argv[1])=="--core")return failures?1:0;
     testEditor();testGoldens();testPerformance();testLoudness();
     CHECK(audioAllocations==0);
