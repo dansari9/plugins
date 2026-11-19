@@ -1094,8 +1094,9 @@ static void testDenseBlocks()
 static void pump() { juce::MessageManager::getInstance()->runDispatchLoopUntil(5); }
 template <typename Done> static void pumpUntil(Done done)
 {
-    for (auto end = juce::Time::getMillisecondCounter() + 10000; !done() && juce::Time::getMillisecondCounter() < end;)
-        pump(), juce::Timer::callPendingTimersSynchronously();
+    const auto start = juce::Time::getMillisecondCounter();
+    while (!done() && juce::Time::getMillisecondCounter() - start < 10000)
+        pump();
 }
 static juce::Component* find(juce::Component& c, const juce::String& id)
 {
@@ -1153,7 +1154,14 @@ static void testEditor()
             if(!c)return;
             auto* target=e.getComponentAt(point(*c));CHECK(target==c);
             auto* button=dynamic_cast<juce::Button*>(target);CHECK(button);
-            if(button){bool done=false;button->triggerClick();juce::MessageManager::callAsync([&]{done=true;});pumpUntil([&]{return done;});}
+            if(button)
+            {
+                button->triggerClick();
+                const auto done=std::make_shared<bool>(false);
+                juce::MessageManager::callAsync([done]{*done=true;});
+                pumpUntil([&]{return *done;});
+                CHECK(*done);
+            }
             timer.timerCallback();
         };
         CHECK(find(e,"group:macros")->isVisible() && find(e,"macro")==nullptr);
@@ -1219,7 +1227,15 @@ static void testEditor()
                 // The wheel: 1% a notch (⇧ 0.1%), a trackpad 250 px for the travel; each burst is one gesture, ended 300 ms after it.
                 juce::MouseWheelDetails notch{0,50.0f/256,false,false,false},smooth{0,50.0f/512,false,true,false},sideways{-50.0f/256,0,false,false,false};
                 const auto wheel=[&](const juce::MouseWheelDetails& event,int n,int flags=0){for(int i=0;i<n;++i)dial->mouseWheelMove(mouse(dial,grab,grab,1,flags),event);};
-                const auto settle=[&]{pumpUntil([&]{return gestures.ended>0;});};
+                auto& wheelTimer=dynamic_cast<juce::Timer&>(*dial);
+                // Check actual message-loop delivery once per zoom and drive the other expiries directly.
+                const auto settle=[&](bool dispatch=false)
+                {
+                    CHECK(wheelTimer.getTimerInterval()==300);
+                    if(dispatch) pumpUntil([&]{return gestures.ended>0;});
+                    else if(wheelTimer.isTimerRunning()) wheelTimer.timerCallback();
+                    CHECK(!wheelTimer.isTimerRunning());
+                };
                 param->setValueNotifyingHost(.3f);gestures={};
                 if(juce::String(spec.id)=="pitch")
                 {
@@ -1234,7 +1250,8 @@ static void testEditor()
                 }
                 else
                 {
-                    wheel(notch,3);near(.33f);CHECK(gestures.begun==1 && gestures.ended==0);settle();pairs(1);
+                    wheel(notch,3);near(.33f);CHECK(gestures.begun==1 && gestures.ended==0);
+                    settle(juce::String(spec.id)=="mix");pairs(1);
                     wheel(notch,5,juce::ModifierKeys::shiftModifier);near(.335f);settle();pairs(1);
                     wheel(sideways,2);near(.355f);settle();pairs(1);
                     juce::MouseWheelDetails rev{0,50.0f/256,true,false,false}; // natural scrolling: a physical downward roll decreases
