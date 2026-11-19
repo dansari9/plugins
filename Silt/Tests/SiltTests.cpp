@@ -2,20 +2,16 @@
 #include "BinaryData.h"
 #include <juce_cryptography/juce_cryptography.h>
 #include <cstdlib>
-#include <cstring>
 #include <functional>
 #include <iomanip>
-#include <limits>
 #include <iostream>
 #include <new>
-#include <thread>
 
 // Real-time check: count heap allocations made on a thread flagged as "audio" (as gulp).
 static thread_local bool onAudioThread = false;
 static std::atomic<int> audioAllocations { 0 };
 static void countAllocation() { audioAllocations += onAudioThread ? 1 : 0; }
 #if defined(__GLIBC__) && !defined(__SANITIZE_ADDRESS__)
-#define SILT_COUNTS_MALLOC 1
 extern "C" void* __libc_malloc(size_t);
 extern "C" void* __libc_calloc(size_t, size_t);
 extern "C" void* __libc_realloc(void*, size_t);
@@ -71,6 +67,7 @@ static_assert(std::size(contract)==silt::numParams);
 static void set(Proc& p, const char* id, float v) { auto* q = p.apvts.getParameter(id); q->setValueNotifyingHost(q->convertTo0to1(v)); }
 static void set(Proc& p, const Settings& s) { for (auto& [id,v] : s) set(p,id,v); }
 static float get(Proc& p, const char* id) { return p.apvts.getRawParameterValue(id)->load(); }
+static int voices(Proc& p) { int n = 0; for (auto& e : p.feed.env) n += e.load() > 0; return n; }
 static std::vector<float> params(Proc& p)
 {
     std::vector<float> out;
@@ -736,7 +733,6 @@ static void testHeadsAndLock()
 {
     struct Fired{float pitch;juce::int64 frame;};
     const auto fired=[](Proc& p){std::vector<Fired> out;for(juce::int64 i=0;i<p.feed.events;++i){auto& e=p.feed.history[(size_t)i%silt::Feed::historySize];out.push_back({e.pitch,e.frame});}return out;};
-    const auto voices=[](Proc& p){int n=0;for(auto& e:p.feed.env)n+=e.load()>0;return n;};
     // Heads deal the shared clock round-robin; each head adds its harmony interval (major: 0 4 7 12).
     {
         Proc p;set(p,plain),set(p,{{"density",64},{"size",20},{"heads",3},{"harmony",3}}),prepare(p);run(p,24000); // 4 heads
@@ -797,7 +793,8 @@ static void testHeadsAndLock()
         run(p,1512,512,r);CHECK(voices(p)==(onset?12:1));
         r.events.clear();run(p,48000*5,512,r);set(p,"freeze",1);run(p,48000,512,r);const int before=p.feed.fired;
         set(p,"freeze",0);run(p,512,512,r);CHECK(p.feed.fired-before==(onset?12:0));
-    }    // A full onset never back-dates past the end of a grain that tape +12 (half length) or texture shortened: no spike.
+    }
+    // A full onset never back-dates past the end of a grain that tape +12 (half length) or texture shortened: no spike.
     {
         Proc p;set(p,plain),set(p,{{"size",500},{"density",24},{"trigger",2},{"onset",1},{"pitchMode",1},{"pitch",12},{"shape",100},{"texture",60},{"position",2000}}),prepare(p);
         Run r;r.input=[](int i,int){return (float)(.5*std::sin(2*pi*220*i/48000));};r.side=[](int,int){return 0.0f;};
@@ -806,17 +803,18 @@ static void testHeadsAndLock()
         std::cout<<"Full onset, tape +12, shape 100: peak "<<peak<<"\n";CHECK(peak<1);
     }
 }
+// Power of one DFT bin at hz over x[from..].
+static double power(const std::vector<float>& x,double hz,size_t from)
+{double re=0,im=0;for(size_t i=from;i<x.size();++i)re+=x[i]*std::cos(2*pi*hz*(double)i/48000),im+=x[i]*std::sin(2*pi*hz*(double)i/48000);return re*re+im*im;}
 // 0.2 phase 3: colour (band, centre, spectra), binaural space, width, the one-knob filter and the feedback amount.
 static void testColourAndSpace()
 {
-    const auto power=[](const std::vector<float>& x,double hz)
-    {double re=0,im=0;for(size_t i=x.size()/2;i<x.size();++i)re+=x[i]*std::cos(2*pi*hz*(double)i/48000),im+=x[i]*std::sin(2*pi*hz*(double)i/48000);return re*re+im*im;};
     // 4 kHz against 500 Hz (dB) through the cloud: band narrows to one critical band at the centre; spectra spreads the centres.
     const auto tilt=[&](const Settings& s)
     {
         Proc p;set(p,plain),set(p,{{"density",24},{"size",200}}),set(p,s),prepare(p);
         Run r;r.input=[](int i,int){return (float)(.1*std::sin(2*pi*500*i/48000)+.1*std::sin(2*pi*4000*i/48000));};
-        const auto a=run(p,96000,512,r);return 10*std::log10(power(a.l,4000)/power(a.l,500));
+        const auto a=run(p,96000,512,r);return 10*std::log10(power(a.l,4000,a.l.size()/2)/power(a.l,500,a.l.size()/2));
     };
     const double flat=tilt({}),low=tilt({{"band",100},{"centre",500}}),high=tilt({{"band",100},{"centre",4000}}),wide=tilt({{"band",1},{"centre",500}}),
         spread=tilt({{"band",100},{"centre",500},{"spectra",100}}),lp=tilt({{"filter",-100}}),hp=tilt({{"filter",100}}),half=tilt({{"filter",-50}});
@@ -887,13 +885,8 @@ static void testSound()
     Proc stereo;set(stereo,plain),set(stereo,{{"density",24},{"size",500}}),prepare(stereo,48000,512,2,0,2);
     Run tones;tones.input=[](int i,int c){return (float)(.15*std::sin(2*pi*(c==0?300:700)*i/48000));};
     const auto separated=run(stereo,144000,512,tones);
-    const auto band=[](const std::vector<float>& audio,double hz) {
-        double re=0,im=0;
-        for(size_t i=96000;i<audio.size();++i)re+=audio[i]*std::cos(2*pi*hz*(double)i/48000),im+=audio[i]*std::sin(2*pi*hz*(double)i/48000);
-        return re*re+im*im;
-    };
-    CHECK(band(separated.l,300)>band(separated.l,700)*std::pow(10.0,1.5));
-    CHECK(band(separated.r,700)>band(separated.r,300)*std::pow(10.0,1.5));
+    CHECK(power(separated.l,300,96000)>power(separated.l,700,96000)*std::pow(10.0,1.5));
+    CHECK(power(separated.r,700,96000)>power(separated.r,300,96000)*std::pow(10.0,1.5));
     // Small pitch-ups retain the top octave rather than jumping straight to the half-rate mip.
     double highBand[2]{};
     for(int pitch=0;pitch<=1;++pitch)
@@ -1057,7 +1050,7 @@ static void testPerformance()
         set(p,plain),set(p,{{"size",4000},{"pitch",12},{"pitchMode",0},{"density",64},{"scatter",100},
             {"oversample",(float)quality},{"reverbOn",1},{"reverb",100},{"bloom",100}}),prepare(p,96000,512);
         run(p,3*96000,512);
-        int voices=0;for(auto& e:p.feed.env)if(e.load()>0)++voices;CHECK(voices==silt::maxGrains);
+        CHECK(voices(p)==silt::maxGrains);
         const double start=juce::Time::getMillisecondCounterHiRes();
         Run r;r.offset=3*96000;run(p,96000,512,r);
         const double elapsed=juce::Time::getMillisecondCounterHiRes()-start;
@@ -1543,14 +1536,20 @@ static juce::Image snapshot(int percent=100,bool freeze=false,float scale=2,bool
     else editor->setSize(juce::roundToInt(905*percent/100.0),836*percent/100);
     return editor->createComponentSnapshot(editor->getLocalBounds(),true,scale);
 }
-static juce::String soundHash()
+// The golden render: a playing host, a note with a mod-wheel move, then its release.
+static Audio goldenRun(Proc& p,int samples)
 {
-    Proc p;prepare(p);Host h;Run r;r.host=&h;
+    prepare(p);Host h;Run r;r.host=&h;
     r.events={{1701,juce::MidiMessage::noteOn(1,64,(juce::uint8)100)},{12001,juce::MidiMessage::controllerEvent(1,1,64)},
         {30000,juce::MidiMessage::noteOff(1,64)}};
-    const auto a=run(p,230400,512,r);CHECK(Level(a).rms>.001);juce::MemoryOutputStream bytes;
+    return run(p,samples,512,r);
+}
+static juce::String audioHash(const Audio& a)
+{
+    juce::MemoryOutputStream bytes;
     bytes.write(a.l.data(),a.l.size()*sizeof(float)),bytes.write(a.r.data(),a.r.size()*sizeof(float));return sha(bytes);
 }
+static juce::String soundHash() { Proc p;const auto a=goldenRun(p,230400);CHECK(Level(a).rms>.001);return audioHash(a); }
 // Old sessions sound bit-identical: v1 documents (the fixture; each factory preset as 0.1.0 saved it; one with an
 // 18-value A/B slot, then selected) render the hashes recorded from the 0.1.0 build (ad32710).
 static std::vector<juce::String> legacyHashes()
@@ -1572,13 +1571,8 @@ static std::vector<juce::String> legacyHashes()
         Proc p,v2;load(p,states[k]);
         if(k==1)p.selectAb(0);
         load(v2,save(p)); // the same session saved by 0.2 (stateVersion 2) and reopened
-        const auto render=[](Proc& q){prepare(q);Host h;Run r;r.host=&h;
-            r.events={{1701,juce::MidiMessage::noteOn(1,64,(juce::uint8)100)},{12001,juce::MidiMessage::controllerEvent(1,1,64)},
-                {30000,juce::MidiMessage::noteOff(1,64)}};
-            return run(q,144000,512,r);};
-        const auto a=render(p);CHECK(render(v2)==a);juce::MemoryOutputStream bytes;
-        bytes.write(a.l.data(),a.l.size()*sizeof(float)),bytes.write(a.r.data(),a.r.size()*sizeof(float));
-        hashes.push_back(sha(bytes).substring(0,16));
+        const auto a=goldenRun(p,144000);CHECK(goldenRun(v2,144000)==a);
+        hashes.push_back(audioHash(a).substring(0,16));
     }
     return hashes;
 }

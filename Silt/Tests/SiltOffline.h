@@ -26,7 +26,7 @@ static void bench(bool profile=false)
         prepare(p,fs,512,2,0);
         juce::AudioBuffer<float> input(2,fs), block(2,512);juce::MidiBuffer midi;
         for(int i=0;i<fs;++i)for(int c=0;c<2;++c)input.setSample(c,i,pad(i+c*47,fs));
-        double seconds=0;int voices=0;
+        double seconds=0;int most=0;
         const int duration=profile?5:28,warmup=profile?4:8;
         for(int start=0;start<duration*fs;start+=512)
         {
@@ -35,11 +35,11 @@ static void bench(bool profile=false)
             const double before=juce::Time::getHighResolutionTicks();
             p.processBlock(block,midi);
             if(start>=warmup*fs)seconds+=(juce::Time::getHighResolutionTicks()-before)/juce::Time::getHighResolutionTicksPerSecond();
-            int active=0;for(auto& e:p.feed.env)active+=e.load()>0?1:0;voices=std::max(voices,active);
+            most=std::max(most,voices(p));
         }
         const juce::String name=sound<0?"default":sound<10?p.getProgramName(sound):sound>=19?p.getProgramName(sound-9):sound==10?"dense":sound==11?"dense tiny":sound==12?"dense legacy 2x":sound==13?"0.2 grain":sound==14?"0.2 heads":sound==15?"0.2 tone":sound==16?"0.2 colour":sound==17?"0.2 space":"dense colour";
-        std::cout<<fs<<" | "<<name<<" | "<<(duration-warmup)<<" | "<<seconds<<" | "<<(duration-warmup)/seconds<<" | "<<seconds*100/(duration-warmup)<<" | "<<voices<<"\n";
-        if(sound==10 || sound==12 || sound==18)CHECK(voices==128);
+        std::cout<<fs<<" | "<<name<<" | "<<(duration-warmup)<<" | "<<seconds<<" | "<<(duration-warmup)/seconds<<" | "<<seconds*100/(duration-warmup)<<" | "<<most<<"\n";
+        if(sound==10 || sound==12 || sound==18)CHECK(most==128);
     }
 }
 static void writeWav(const juce::File& file,const Audio& a)
