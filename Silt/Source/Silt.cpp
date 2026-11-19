@@ -775,24 +775,15 @@ struct SiltProcessor::Engine
     {
         for (int c = 0; c < (spatial > 0 ? 9 : 2); ++c) std::fill_n(out[c], length, 0.0f);
         std::fill_n(weights, length, 0.0f);
-        int frozenHeads[Capture::batch] {}, advance = 0;
-        float futureGain = capture.gain;
-        if (frozen)
-            for (int j = 0; j < length; ++j)
-            {
-                frozenHeads[j] = advance;
-                futureGain = jmax(0.0f, futureGain - freezeStep);
-                if (futureGain > 0) ++advance;
-            }
         for (int k = 0; k < voiceCount; ++k)
         {
             auto& g = grains[(size_t) k];
             if (g.wait > 0) { g.wait -= length; continue; }
+            trace(g, feed, now, capture.head); // a grain can only start at a span's first sample
             double positions[Capture::batch], positions2[Capture::batch];
             alignas(16) float w[Capture::batch], a[Capture::batch], audio[2][Capture::batch], other[2][Capture::batch];
             for (int j = 0; j < length; ++j)
             {
-                trace(g, feed, now + j, capture.head + (frozen ? frozenHeads[j] : j));
                 w[j] = envelope(g);
                 positions[j] = g.pos;
                 if (g.shifted)
@@ -951,7 +942,7 @@ struct SiltProcessor::Engine
                 if (cloudAt == cloudLength)
                 {
                     cloudAt = cloudLength = 0;
-                    if (trigger == 0 && voiceCount >= 16 && stolen == 0) // stolen grains release on this scalar path
+                    if (trigger == 0 && stolen == 0) // stolen grains release on this scalar path
                     {
                         // Samples until the next tick; the synced clock's phase is already the next sample's.
                         int span = jmin(n - t, (int) jlimit(1.0, (double) Capture::batch, std::floor((synced ? lastTick + 1 - phase : 1 - (phase - std::floor(phase))) * gap - 1e-6)));
@@ -1101,7 +1092,7 @@ struct SiltProcessor::Engine
         auto& d = diffusion[k];
         const float delayed = d[diffusionAt[k]], w = x + 0.5f * delayed;
         d[diffusionAt[k]] = std::abs(w) < 1e-15f ? 0.0f : w;
-        diffusionAt[k] = (diffusionAt[k] + 1) % d.size();
+        if (++diffusionAt[k] == d.size()) diffusionAt[k] = 0;
         return delayed - 0.5f * w;
     }
     void publish(silt::Feed& feed)

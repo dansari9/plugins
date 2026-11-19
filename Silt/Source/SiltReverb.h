@@ -47,7 +47,7 @@ public:
             float p = (float) at - len[k];
             p += p < 0 ? (float) n : 0.0f;
             const auto i = std::min((size_t) p, n - 1); // p + n can round up to n
-            const float f = p - (float) i, a = lines[k][i], b = lines[k][(i + 1) % n];
+            const float f = p - (float) i, a = lines[k][i], b = lines[k][i + 1 == n ? 0 : i + 1];
             state[k] += damp * (a + f * (b - a) - state[k]);
             out[k] = gain[k] * state[k];
         }
@@ -58,7 +58,7 @@ public:
             const float v = 0.5f * h[k] + in[k % 2];
             lines[k][at] = std::abs(v) < 1e-15f ? 0.0f : v;
         }
-        at = (at + 1) % n;
+        if (++at == n) at = 0;
         l = norm * (out[0] + out[2]), r = norm * (out[1] + out[3]);
     }
 
@@ -68,7 +68,7 @@ private:
         auto& d = diffusers[k];
         const float delayed = d[dAt[k]], v = x + 0.6f * delayed;
         d[dAt[k]] = std::abs(v) < 1e-15f ? 0.0f : v;
-        dAt[k] = (dAt[k] + 1) % d.size();
+        if (++dAt[k] == d.size()) dAt[k] = 0;
         return delayed - 0.6f * v;
     }
     static constexpr double base[4] { 1931, 2459, 2903, 3449 }, diffuse[4] { 211, 337, 283, 409 };
