@@ -5,6 +5,7 @@
 // A small stereo feedback delay network: two allpass diffusers per side, four lines mixed by a 4 x 4 Hadamard
 // matrix, a one-pole damping filter in each line. size 0..1 sets the line lengths (glided, so automation never clicks)
 // and the decay (0.4 .. 6 s); the output is scaled so the reverb sits near the level of what goes in.
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <vector>
@@ -45,7 +46,7 @@ public:
         {
             float p = (float) at - len[k];
             p += p < 0 ? (float) n : 0.0f;
-            const auto i = (size_t) p;
+            const auto i = std::min((size_t) p, n - 1); // p + n can round up to n
             const float f = p - (float) i, a = lines[k][i], b = lines[k][(i + 1) % n];
             state[k] += damp * (a + f * (b - a) - state[k]);
             out[k] = gain[k] * state[k];

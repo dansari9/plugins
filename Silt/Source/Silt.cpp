@@ -953,7 +953,8 @@ struct SiltProcessor::Engine
                     cloudAt = cloudLength = 0;
                     if (trigger == 0 && voiceCount >= 16 && stolen == 0) // stolen grains release on this scalar path
                     {
-                        int span = jmin(n - t, (int) jlimit(1.0, (double) Capture::batch, std::floor((1 - (phase - std::floor(phase))) * gap - 1e-6)));
+                        // Samples until the next tick; the synced clock's phase is already the next sample's.
+                        int span = jmin(n - t, (int) jlimit(1.0, (double) Capture::batch, std::floor((synced ? lastTick + 1 - phase : 1 - (phase - std::floor(phase))) * gap - 1e-6)));
                         if (event != midiBuffer.cend()) span = jmin(span, jmax(1, (*event).samplePosition - t));
                         for (int k = 0; k < voiceCount; ++k)
                         {

@@ -994,6 +994,16 @@ static void testLoudness(bool tableOnly=false)
 static void testEdges()
 {
     {
+        Proc p;set(p,"bloom",23.8f);prepare(p,176400);
+        (void) Level(run(p,176400)); // fractional reverb tap at the end of the delay line
+    }
+    {
+        Proc p;prepare(p);
+        juce::Random rng(1);Run r;
+        r.perBlock=[&](int t){if(t%4800==0)set(p,"bloom",(float)rng.nextInt(1001)/10);};
+        (void) Level(run(p,20*48000,512,r));
+    }
+    {
         Proc p;set(p,{{"trigger",2},{"lock",2},{"onset",1}});float lo=1e9f,hi=0;int coloured=0,binaural=0,heads=0;
         for(int seed=0;seed<50;++seed)
         {
@@ -1093,6 +1103,20 @@ static void testDenseBlocks()
                 CHECK(output==reference);
             }
             CHECK(p.feed.frozen==frozen);
+        }
+    }
+    for(float density:{64.0f,24.0f})for(double bpm:{120.0,97.3})
+    {
+        Audio reference;
+        for(int block:{512,1,17,64,0})
+        {
+            Proc p;set(p,{{"density",density},{"scatter",30}});
+            p.apvts.getParameter("size")->setValueNotifyingHost(1.0f); // two bars
+            prepare(p);
+            Host host;host.bpm=bpm;Run r;r.host=&host;
+            auto output=run(p,96000,block,r);
+            if(block==512)reference=std::move(output);
+            else CHECK(output==reference);
         }
     }
     for(int mode:{0,1})for(float pitch:{7.0f,24.0f,48.0f})
@@ -1638,8 +1662,7 @@ int main(int argc,char** argv)
     CHECK(audioAllocations>0);audioAllocations=0;
     testContract();testParameterText();testState();testPresets();testDryAndLifecycle();testTimingAndMidi();testRatios();testOnsetsAndSource();testFreezeAndWindows();
     testGrainFeatures();testHeadsAndLock();testColourAndSpace();testSound();testEdges();testDenseBlocks();
-    if(argc>=2 && juce::String(argv[1])=="--core")return failures?1:0;
-    testEditor();testGoldens();testPerformance();testLoudness();
+    if(argc<2 || juce::String(argv[1])!="--core")testEditor(),testGoldens(),testPerformance(),testLoudness();
     CHECK(audioAllocations==0);
     std::cout<<"Audio allocations: "<<audioAllocations<<"\n"<<(failures?"Silt tests FAILED\n":"All Silt tests passed\n");
     return failures?1:0;
