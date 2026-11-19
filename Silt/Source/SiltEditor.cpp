@@ -75,8 +75,14 @@ struct Grid
 
 struct Key : Button
 {
-    explicit Key(const String& id) : Button(id) { setComponentID(id), setRepaintsOnMouseActivity(false); }
+    explicit Key(const String& id) : Button(id)
+    {
+        setComponentID(id), setRepaintsOnMouseActivity(false);
+        setWantsKeyboardFocus(false), setMouseClickGrabsKeyboardFocus(false);
+    }
     void paintButton(Graphics&, bool, bool) override {}
+    std::function<void(const ModifierKeys&)> action;
+    String hint;
     std::function<void(int)> wheel, choose;
     std::function<void()> finish;
     std::function<void(bool)> hold;
@@ -88,7 +94,7 @@ struct Key : Button
         struct Handler : AccessibilityHandler
         {
             explicit Handler(Key& k) : AccessibilityHandler(k, k.choose ? AccessibilityRole::radioButton : AccessibilityRole::toggleButton,
-                AccessibilityActions().addAction(AccessibilityActionType::press, [&k] { if (k.onClick) k.onClick(); })), key(k) {}
+                AccessibilityActions().addAction(AccessibilityActionType::press, [&k] { k.clicked({}); })), key(k) {}
             AccessibleState getCurrentState() const override
             {
                 auto state = AccessibilityHandler::getCurrentState().withCheckable();
@@ -98,6 +104,8 @@ struct Key : Button
         };
         return std::make_unique<Handler>(*this);
     }
+    using Button::clicked;
+    void clicked(const ModifierKeys& mods) override { action(mods); }
     void mouseDown(const MouseEvent& e) override
     {
         if (finish) finish();
@@ -115,9 +123,10 @@ struct Key : Button
     }
     bool keyPressed(const KeyPress& k) override
     {
+        if (!getWantsKeyboardFocus()) return false;
         const auto code = k.getKeyCode();
         if (code == KeyPress::escapeKey) { giveAwayKeyboardFocus(); return true; }
-        if (code == KeyPress::returnKey) { if (onClick) onClick(); return true; }
+        if (code == KeyPress::returnKey) { clicked(k.getModifiers()); return true; }
         if (choose && (code == KeyPress::leftKey || code == KeyPress::upKey || code == KeyPress::rightKey || code == KeyPress::downKey
                        || code == KeyPress::homeKey || code == KeyPress::endKey))
         {
@@ -152,16 +161,14 @@ void knob(Grid& g, int x, int y, float norm, const String& name, const String& v
     }
     if (named) g.centre(x, 11, y, name, dim ? dark : grey);
     g.centre(x, 11, y + 4, value, dim ? grey : white, !dim);
-    if (focused) g.underline(x + (11 - name.length()) / 2, name.length(), y + !named);
+    const auto label = named ? name : value.substring(0, 11);
+    if (focused) g.underline(x + (11 - label.length()) / 2, label.length(), named ? y : y + 4);
 }
 
-struct Panel { const char* name; int x, y, w, h; };
 // Groups span the window (absolute cells) and take clicks only on their children, except the cloud.
-constexpr Panel panels[] { {"header",0,0,C,R}, {"cloud",3,5,100,12}, {"tier1",0,0,C,R}, {"tier2",0,0,C,R}, {"macros",0,0,C,R}, {"freeze",0,0,C,R} };
 struct Group : Component
 {
     SiltProcessor& p;
-    Panel spec;
     struct Choice : Timer
     {
         RangedAudioParameter& param;
@@ -184,46 +191,52 @@ struct Group : Component
     std::vector<std::unique_ptr<ParameterAttachment>> attachments;
     std::vector<std::unique_ptr<Choice>> choices;
     OwnedArray<Key> keys;
-    Group(SiltProcessor& proc, Panel panel) : p(proc), spec(panel)
+    Group(SiltProcessor& proc, const char* name, Rectangle<int> bounds = cells(0, 0, C, R)) : p(proc)
     {
-        setComponentID(String("group:") + panel.name), setBounds(cells(panel.x, panel.y, panel.w, panel.h));
-        setInterceptsMouseClicks(String(panel.name) == "cloud", true);
+        setComponentID(String("group:") + name), setBounds(bounds), setInterceptsMouseClicks(false, true);
     }
     virtual void draw(Grid&) = 0;
     float value(const char* id) const { return p.apvts.getRawParameterValue(id)->load(); }
-    Key& key(const String& id, int x, int y, int w, std::function<void()> action)
+    Key& key(const String& id, int x, int y, int w, std::function<void(const ModifierKeys&)> action, String hint = {})
     {
-        auto& k = *keys.add(new Key(id)); k.onClick = std::move(action);
+        auto& k = *keys.add(new Key(id));
+        k.action = std::move(action), k.hint = std::move(hint);
         addAndMakeVisible(k), k.setBounds(cells(x, y, w, 1)); return k;
     }
     ParameterAttachment& attach(const char* id) { return *attachments.emplace_back(std::make_unique<ParameterAttachment>(*p.apvts.getParameter(id), [](float) {})); }
-    static bool resetting() { const auto m = ModifierKeys::getCurrentModifiersRealtime(); return m.isAltDown() || m.isCommandDown(); }
-    void word(const char* id, int index, int x, int y, int w)
+    static bool resetting(const ModifierKeys& mods) { return mods.isAltDown() || mods.isCommandDown(); }
+    Choice& choice(const char* id) { return *choices.emplace_back(std::make_unique<Choice>(*p.apvts.getParameter(id))); }
+    Key& word(Choice& row, int index, int x, int y, int w, const char* meaning)
     {
-        auto& q = *p.apvts.getParameter(id);
-        if (index == 0) choices.push_back(std::make_unique<Choice>(q));
-        auto& choice = *choices.back();
-        auto& k = key(String(id) + ":" + String(index), x, y, w, [index, &choice, &q] {
-            if (choice.isTimerRunning()) choice.timerCallback();
-            choice.attachment.setValueAsCompleteGesture(resetting() ? q.convertFrom0to1(q.getDefaultValue()) : (float) index);
-        });
-        k.setTitle(q.name + ", " + q.getAllValueStrings()[index] + ", " + String(index + 1) + " of " + String(q.getNumSteps()));
-        k.setToggleable(true);
-        k.active = roundToInt(value(id)) == index;
-        k.wheel = k.choose = [&choice](int d) { choice.step(d); };
-        k.finish = [&choice] { if (choice.isTimerRunning()) choice.timerCallback(); };
+        auto& q = row.param;
+        const auto item = q.getAllValueStrings()[index];
+        auto& k = key(q.paramID + ":" + String(index), x, y, w, [index, &row, &q](const ModifierKeys& mods) {
+            if (row.isTimerRunning()) row.timerCallback();
+            row.attachment.setValueAsCompleteGesture(resetting(mods) ? q.convertFrom0to1(q.getDefaultValue()) : (float) index);
+        }, item + u(" · ") + meaning + u(" · click · wheel · alt/cmd reset"));
+        k.setTitle(q.name + ", " + item + ", " + String(index + 1) + " of " + String(q.getNumSteps()));
+        k.setToggleable(true), k.setWantsKeyboardFocus(true), k.setMouseClickGrabsKeyboardFocus(true);
+        k.active = roundToInt(q.convertFrom0to1(q.getValue())) == index;
+        k.wheel = k.choose = [&row](int d) { row.step(d); };
+        k.finish = [&row] { if (row.isTimerRunning()) row.timerCallback(); };
+        return k;
     }
-    Key& toggle(const char* id, const char* text, int x, int y)
+    Key& toggle(const char* id, const char* label, int x, int y, ParameterAttachment& attachment, String gestures = {})
     {
-        auto& a = attach(id);
         auto* q = p.apvts.getParameter(id);
-        auto& k = key(id, x, y, String(text).length() + 2, [this, id, &a, q] {
-            a.setValueAsCompleteGesture(resetting() ? q->getDefaultValue() : value(id) > .5f ? 0.0f : 1.0f);
-        });
+        auto& k = key(id, x, y, String(label).length() + 2, [this, id, &attachment, q](const ModifierKeys& mods) {
+            attachment.setValueAsCompleteGesture(resetting(mods) ? q->getDefaultValue() : value(id) > .5f ? 0.0f : 1.0f);
+        }, label + u(" · click · alt/cmd reset") + gestures);
         k.setTitle(q->name);
-        k.setToggleable(true);
+        k.setToggleable(true), k.setWantsKeyboardFocus(true), k.setMouseClickGrabsKeyboardFocus(true);
         k.active = value(id) > .5f;
         return k;
+    }
+    void drawToggle(Grid& g, Key& k, const char* label, int x, int y)
+    {
+        g.toggle(x, y, label, k.active = value(k.getComponentID().toRawUTF8()) > .5f);
+        if (k.isMouseOver() && !k.active) g.put(x, y, emptyBox, white);
+        if (k.hasKeyboardFocus(false)) g.underline(x + 2, (int) strlen(label), y);
     }
 };
 
@@ -232,45 +245,54 @@ struct Header : Group
     String hint, name, notice;
     uint32 noticeTime = 0;
     int program = -2;
-    explicit Header(SiltProcessor& proc) : Group(proc, panels[0])
+    Key &nextPreset, &picker;
+    std::array<Key*, 4> oversampling {};
+    explicit Header(SiltProcessor& proc) : Group(proc, "header"),
+        nextPreset(key("next", 0, 0, 0, [this](const ModifierKeys&) { p.stepPreset(1); })),
+        picker(key("presets", 0, 0, 0, [this](const ModifierKeys&) { showPresets(); }, u("preset list · click · wheel")))
     {
-        key("prev", 9, 1, 2, [this] { p.stepPreset(-1); }).setTitle("previous preset");
-        key("next", 21, 1, 1, [this] { p.stepPreset(1); }).setTitle("next preset");
-        auto& picker = key("presets", 12, 1, 8, [this] {
-            PopupMenu menu;
-            auto files = p.presetFolder().findChildFiles(File::findFiles, false, "*.xml");
-            files.sort();
-            for (int i = 0; i < silt::numPresets; ++i)
-                menu.addItem(i + 1, String(i + 1).paddedLeft('0', 2) + " " + silt::presets[i].name, true, p.preset == i);
-            if (!files.isEmpty()) menu.addSeparator();
-            for (int i = 0; i < files.size(); ++i)
-                menu.addItem(silt::numPresets + i + 1, files[i].getFileNameWithoutExtension(), true, p.preset < 0 && files[i].getFileNameWithoutExtension() == name);
-            menu.showMenuAsync(PopupMenu::Options().withTargetComponent(keys[2]), [self = SafePointer<Header>(this), files = std::move(files)](int r) {
-                if (self && r > 0)
-                {
-                    if (r <= silt::numPresets) self->p.setCurrentProgram(r - 1);
-                    else self->p.loadUserPreset(files[r - silt::numPresets - 1]);
-                }
-            });
-        });
+        key("prev", 9, 1, 2, [this](const ModifierKeys&) { p.stepPreset(-1); }).setTitle("previous preset");
+        nextPreset.setTitle("next preset");
         picker.setTitle("preset list");
         picker.wheel = [this](int d) { p.stepPreset(d); };
-        key("save", 26, 1, 6, [this] {
+        key("save", 26, 1, 6, [this](const ModifierKeys&) {
             if (const auto file = p.saveUserPreset(); file != File())
                 tell(u("saved · ") + file.getFileNameWithoutExtension());
         }).setTitle("save a user preset");
         for (int slot = 0; slot < 2; ++slot)
-            key(slot == 0 ? "A" : "B", 33 + 2 * slot, 1, 2, [this, slot] {
-                const bool copy = resetting();
+            key(slot == 0 ? "A" : "B", 33 + 2 * slot, 1, 2, [this, slot](const ModifierKeys& mods) {
+                const bool copy = resetting(mods);
                 if (copy && p.abSlot() != slot) tell(u(slot == 1 ? "A → B" : "B → A"));
                 p.selectAb(slot, copy);
-            }).setTitle(slot == 0 ? "slot A" : "slot B");
-        key("rnd", 41, 1, 11, [this] {
+            }, u(slot == 0 ? "slot A · click · alt/cmd copies here" : "slot B · click · alt/cmd copies here")).setTitle(slot == 0 ? "slot A" : "slot B");
+        key("rnd", 41, 1, 11, [this](const ModifierKeys& mods) {
             const auto seed = Time::getHighResolutionTicks();
-            if (ModifierKeys::getCurrentModifiersRealtime().isShiftDown()) p.nudge(seed);
+            if (mods.isShiftDown()) p.nudge(seed);
             else p.randomise(seed);
-        }).setTitle("randomize");
-        for (int i = 0; i < 4; ++i) word("oversample", i, i ? 76 + 3 * i : 75, 1, 2 + (i == 0));
+        }, u("randomize · click · shift nudges")).setTitle("randomize");
+        auto& row = choice("oversample");
+        const char* meanings[] { "no feedback oversampling", "double the feedback sample rate", "quadruple the feedback sample rate", "eight times the feedback sample rate" };
+        for (int i = 0; i < 4; ++i)
+            oversampling[(size_t) i] = &word(row, i, qualityColumn(i), 1, 2 + (i == 0), meanings[i]);
+    }
+    static int qualityColumn(int index) { return index ? 76 + 3 * index : 75; }
+    void showPresets()
+    {
+        PopupMenu menu;
+        auto files = p.presetFolder().findChildFiles(File::findFiles, false, "*.xml");
+        files.sort();
+        for (int i = 0; i < silt::numPresets; ++i)
+            menu.addItem(i + 1, String(i + 1).paddedLeft('0', 2) + " " + silt::presets[i].name, true, p.preset == i);
+        if (!files.isEmpty()) menu.addSeparator();
+        for (int i = 0; i < files.size(); ++i)
+            menu.addItem(silt::numPresets + i + 1, files[i].getFileNameWithoutExtension(), true, p.preset < 0 && files[i].getFileNameWithoutExtension() == name);
+        menu.showMenuAsync(PopupMenu::Options().withTargetComponent(&picker), [self = SafePointer<Header>(this), files = std::move(files)](int r) {
+            if (self && r > 0)
+            {
+                if (r <= silt::numPresets) self->p.setCurrentProgram(r - 1);
+                else self->p.loadUserPreset(files[r - silt::numPresets - 1]);
+            }
+        });
     }
     void tell(String message) { notice = std::move(message), noticeTime = Time::getMillisecondCounter(); }
     void place(int index, const String& user)
@@ -278,8 +300,8 @@ struct Header : Group
         if (index == program && (index >= 0 || name == user.substring(0, 9))) return;
         program = index;
         name = (index >= 0 ? p.getProgramName(index) : user).substring(0, 9);
-        keys[1]->setBounds(cells(15 + name.length(), 1, 2, 1));
-        keys[2]->setBounds(cells(11, 1, 4 + name.length(), 1));
+        nextPreset.setBounds(cells(15 + name.length(), 1, 2, 1));
+        picker.setBounds(cells(11, 1, 4 + name.length(), 1));
     }
     void draw(Grid& g) override
     {
@@ -293,33 +315,13 @@ struct Header : Group
         const char* q[] { "off", "2x", "4x", "8x" };
         for (int i = 0; i < 4; ++i)
         {
-            auto& key = *keys[7 + i];
+            auto& key = *oversampling[(size_t) i];
             key.active = roundToInt(value("oversample")) == i;
-            g.put(i ? 76 + 3 * i : 75, 1, q[i], key.active || key.isMouseOver() ? white : dark, key.active);
+            g.put(qualityColumn(i), 1, q[i], key.active || key.isMouseOver() ? white : dark, key.active);
+            if (key.hasKeyboardFocus(false)) g.underline(qualityColumn(i), 2 + (i == 0), 1);
         }
-        if (hint.isEmpty()) g.put(93, 1, "daveydidit", dark);
-        else g.right(102, 4, hint.substring(0, 100), grey);
+        g.put(93, 1, "daveydidit", dark);
         g.rule(3, 103, 2);
-    }
-};
-struct Freeze : Group
-{
-    explicit Freeze(SiltProcessor& proc) : Group(proc, panels[5])
-    {
-        auto& k = toggle("freeze", "freeze", 95, 16);
-        k.hold = [this, restore = 0.0f](bool pressed) mutable {
-            auto& a = *attachments.front();
-            if (pressed) restore = value("freeze"), a.beginGesture();
-            a.setValueAsPartOfGesture(pressed ? 1.0f : restore);
-            if (!pressed) a.endGesture();
-        };
-    }
-    ~Freeze() override { if (keys[0]->holding) keys[0]->hold(false); }
-    void draw(Grid& g) override
-    {
-        auto& key = *keys[0];
-        g.toggle(95, 16, "freeze", key.active = value("freeze") > .5f);
-        if (key.isMouseOver() && !key.active) g.put(95, 16, emptyBox, white);
     }
 };
 
@@ -330,12 +332,26 @@ struct Freeze : Group
 struct Cloud : Group
 {
     ParameterAttachment &freeze, &position;
+    Key& freezeKey;
     std::function<void(int)> focusHead;
     std::array<int, 4> carets { -1, -1, -1, -1 };
     bool scrubbing = false;
     double scrubbed = 0;
-    explicit Cloud(SiltProcessor& proc) : Group(proc, panels[1]), freeze(attach("freeze")), position(attach("position")) { setTitle("cloud"); }
-    ~Cloud() override { if (scrubbing) position.endGesture(); }
+    explicit Cloud(SiltProcessor& proc) : Group(proc, "cloud", cells(3, 5, 100, 12)),
+        freeze(attach("freeze")), position(attach("position")), freezeKey(toggle("freeze", "freeze", 92, 11, freeze, u(" · shift holds")))
+    {
+        setTitle("cloud"), setInterceptsMouseClicks(true, true);
+        freezeKey.hold = [this, restore = 0.0f](bool pressed) mutable {
+            if (pressed) restore = value("freeze"), freeze.beginGesture();
+            freeze.setValueAsPartOfGesture(pressed ? 1.0f : restore);
+            if (!pressed) freeze.endGesture();
+        };
+    }
+    ~Cloud() override
+    {
+        if (freezeKey.holding) freezeKey.hold(false);
+        if (scrubbing) position.endGesture();
+    }
     void mouseDoubleClick(const MouseEvent& e) override
     {
         if (e.y < cells(0, 11, 1, 1).getY())
@@ -446,6 +462,7 @@ struct Cloud : Group
             if (g.at[g.oy + h][g.ox + x].line)
                 g.put(x, h, caret, heads[k]);
         }
+        drawToggle(g, freezeKey, "freeze", 92, h);
     }
 };
 // The inline value field: Return commits, Esc cancels, Tab / ⇧Tab commit and open the next / previous dial's field.
@@ -533,19 +550,15 @@ struct Dial : Component, Timer
         if (typed) attachment.setValueAsCompleteGesture(*typed); // nothing when unchanged
         return true;
     }
-    Dial& next(int direction) // reading order over the visible dials, wrapping
+    Dial& next(int direction) // the editor's Tab order, skipping choices and wrapping
     {
-        auto* top = getTopLevelComponent();
-        std::vector<Dial*> dials;
-        std::function<void(Component&)> collect = [&](Component& c) {
-            for (auto* child : c.getChildren())
-                if (child->isVisible()) { if (auto* d = dynamic_cast<Dial*>(child)) dials.push_back(d); else collect(*child); }
-        };
-        collect(*top);
-        const auto at = [top](Dial* d) { const auto o = top->getLocalPoint(d, Point<int>()); return std::pair(o.y, o.x); };
-        std::sort(dials.begin(), dials.end(), [&](Dial* a, Dial* b) { return at(a) < at(b); });
-        const int k = (int) (std::find(dials.begin(), dials.end(), this) - dials.begin()), n = (int) dials.size();
-        return *dials[(size_t) ((k + direction + n) % n)];
+        const auto focusable = createKeyboardFocusTraverser()->getAllComponents(findKeyboardFocusContainer());
+        const auto count = (int) focusable.size();
+        for (int i = (int) (std::find(focusable.begin(), focusable.end(), this) - focusable.begin());;)
+        {
+            i = (i + direction + count) % count;
+            if (auto* dial = dynamic_cast<Dial*>(focusable[(size_t) i])) return *dial;
+        }
     }
     void move(double delta) { value = jlimit(0.0, 1.0, value + delta), attachment.setValueAsPartOfGesture(q.convertFrom0to1((float) value)); }
     void mouseDown(const MouseEvent& e) override
@@ -563,7 +576,7 @@ struct Dial : Component, Timer
         const float along = (fader || std::abs(d.x) > std::abs(d.y) ? d.x : -d.y) * scale(); // screen px; faders ignore vertical
         if (!dragging)
         {
-            if (std::abs(along) <= 3) return; // 3 screen px or less is a click
+            if (std::abs(along) <= 3.0001f) return; // 3 screen px or less, allowing for transform rounding
             dragging = true, value = q.getValue();
             attachment.beginGesture(), e.source.enableUnboundedMouseMovement(true); // the cursor hides; the drag never stops at the screen edge
         }
@@ -661,6 +674,7 @@ struct Dial : Component, Timer
         const auto chTyped = k.getTextCharacter();
         if (!k.getModifiers().isCommandDown() && (CharacterFunctions::isDigit(chTyped) || chTyped == '+' || chTyped == '-' || chTyped == '.' || chTyped == 0x2212))
         {
+            if (isTimerRunning()) timerCallback();
             edit();
             field.setText(String::charToString(chTyped));
             return true;
@@ -670,7 +684,14 @@ struct Dial : Component, Timer
     void timerCallback() override { stopTimer(), attachment.endGesture(); }
 };
 struct DialSpec { const char *id, *name; int x, y; bool centred = false; std::function<String()> idle = {}; bool named = true; }; // idle: why it does nothing now
-struct ListSpec { const char *id, *name; int x, y, cols = 1, colw = 0; bool row = false; }; // row: a dial's sub-choice, items side by side
+struct ListSpec
+{
+    const char *id, *name;
+    int x, y;
+    std::array<const char*, 6> meanings;
+    int cols = 1, colw = 0;
+    bool row = false; // a dial's sub-choice, items side by side
+};
 // A set of dials (or macro faders) and choice lists at absolute cells, plus any extra marks.
 struct Controls : Group
 {
@@ -679,21 +700,23 @@ struct Controls : Group
     bool fader;
     std::function<void(Grid&)> extra;
     OwnedArray<Dial> dials;
-    Controls(SiltProcessor& proc, Panel panel, std::initializer_list<DialSpec> ds, std::initializer_list<ListSpec> ls = {}, bool horizontal = false)
-        : Group(proc, panel), specs(ds), lists(ls), fader(horizontal)
+    Controls(SiltProcessor& proc, const char* name, std::initializer_list<DialSpec> ds, std::initializer_list<ListSpec> ls = {}, bool horizontal = false)
+        : Group(proc, name), specs(ds), lists(ls), fader(horizontal)
     {
         for (const auto& d : specs)
         {
             auto& k = *dials.add(new Dial(p, d.id, fader));
             addAndMakeVisible(k), k.setBounds(fader ? cells(d.x, d.y, 22, 1) : cells(d.x, d.y + !d.named, 11, 5 - !d.named));
+            k.setExplicitFocusOrder(getNumChildComponents());
         }
         for (const auto& l : lists)
-            place(l, [this, &l](int i, int x, int y, const String& item, int w) {
-                const bool leftPad = !l.row && x != 3 && x != 25;
-                const int left = x - (int) leftPad;
-                const int width = l.row ? item.length() + (i == 0 ? 1 : 0) : w + 1 + (int) leftPad;
-                word(l.id, i, left, y, width);
+        {
+            auto& row = choice(l.id);
+            place(l, [this, &l, &row](int i, int x, int y, const String& item, int w) {
+                const int width = l.row ? item.length() + (i == 0 ? 1 : 0) : w + 1;
+                word(row, i, x, y, width, l.meanings[(size_t) i]).setExplicitFocusOrder(getNumChildComponents());
             });
+        }
     }
     // Each item's cell: a row puts them side by side, centred in the module; a list fills `cols` columns top-down.
     template <typename F> void place(const ListSpec& l, F&& at)
@@ -759,36 +782,43 @@ struct Editor : AudioProcessorEditor, Timer
     SiltProcessor& proc;
     Component layer;
     Header header;
+    Controls macros;
     Cloud cloud;
-    Controls tier1, tier2, macros;
-    Freeze freeze;
+    Controls tier1, tier2;
     std::unique_ptr<Grid> next { new Grid }, shown { new Grid };
     std::array<float, silt::numParams> drawnParams;
     std::tuple<juce::int64, juce::int64, juce::int64, int, float, bool> drawnCloud {};
     std::array<int, 3> drawnMeters { -1, -1, -1 };
     int drawnNote = -1, drawnSlot = -1;
     bool drawnHeld = false;
-    Component::SafePointer<Component> drawnFocus;
-    String drawnName;
-    Component::SafePointer<Component> hovered;
-    uint32 hintUntil = 0;
+    Component::SafePointer<Component> drawnFocus, drawnUnder;
+    String drawnName, hoverHint;
+    uint32 hintLeft = 0;
     Image image;
     std::unique_ptr<Graphics> imageGraphics;
     double pixelCell = designCell;
     Font fonts[2] { mono(1, false), mono(1, true) };
-    explicit Editor(SiltProcessor& p) : AudioProcessorEditor(p), proc(p), header(p), cloud(p),
-        tier1(p, panels[2], { { "size", "size", 20, 20 }, { "density", "density", 31, 20, false, [this] { return tier1.value("trigger") > .5f ? String("idle while trigger = ") + (tier1.value("trigger") > 1.5f ? "sidechain" : "transient") : String(); } },
+    explicit Editor(SiltProcessor& p) : AudioProcessorEditor(p), proc(p), header(p),
+        macros(p, "macros", { { "motion", "motion", 3, 3 }, { "texture", "texture", 29, 3 }, { "bloom", "bloom", 55, 3 }, { "chaos", "chaos", 81, 3 } }, {}, true),
+        cloud(p),
+        tier1(p, "tier1", { { "size", "size", 20, 20 }, { "density", "density", 31, 20, false, [this] { return tier1.value("trigger") > .5f ? String("idle while trigger = ") + (tier1.value("trigger") > 1.5f ? "sidechain" : "transient") : String(); } },
                               { "position", "position", 20, 27 }, { "scan", "scan", 31, 27, true }, { "scatter", "scatter", 42, 27 },
                               { "shape", "shape", 70, 20 }, { "tilt", "tilt", 81, 20, true }, { "reverse", "reverse", 70, 27 }, { "drop", "drop", 81, 27 }, { "repeat", "repeat", 92, 27 } },
-              { { "trigger", "trigger", 3, 20 }, { "sizeSync", "", 20, 25, 1, 0, true }, { "lock", "lock", 44, 20 }, { "onset", "onset", 56, 20 }, { "sprayDir", "spray", 56, 27 } }),
-        tier2(p, panels[3], { { "pitch", "pitch", 3, 36, true }, { "detune", "detune", 14, 36 }, { "band", "band", 42, 36 },
+              { { "trigger", "trigger", 3, 20, { "spawn on the grain clock", "spawn on input transients", "spawn from the sidechain" } },
+                { "sizeSync", "", 20, 25, { "size in notes", "size in time" }, 1, 0, true },
+                { "lock", "lock", 44, 20, { "density sets the rate", "density sets grains per size", "one grain per period of the played note" } },
+                { "onset", "onset", 56, 20, { "build the cloud over time", "fill the cloud on note-on or freeze release" } },
+                { "sprayDir", "spray", 56, 27, { "scatter around the anchor", "scatter toward older audio", "scatter toward newer audio" } } }),
+        tier2(p, "tier2", { { "pitch", "pitch", 3, 36, true }, { "detune", "detune", 14, 36 }, { "band", "band", 42, 36 },
                               { "centre", "centre", 53, 36, false, [this] { return tier2.value("band") <= 0 && tier2.value("spectra") <= 0 ? String("idle while band and spectra = 0") : String(); } },
                               { "spectra", "spectra", 42, 43 }, { "filter", "filter", 53, 43, true }, { "width", "width", 70, 36 },
                               { "reverb", "reverb", 81, 36, false, [this] { return tier2.value("reverbOn") < .5f ? String("idle while reverb is off") : String(); }, false },
                               { "feedback", "feedback", 81, 43 }, { "mix", "mix", 92, 36 }, { "output", "output", 92, 43, true } },
-              { { "pitchMode", "", 3, 41, 1, 0, true }, { "scale", "scale", 25, 36 }, { "heads", "heads", 6, 43 }, { "harmony", "harmony", 16, 43, 2, 9 }, { "space", "stereo", 71, 43 } }),
-        macros(p, panels[4], { { "motion", "motion", 3, 3 }, { "texture", "texture", 29, 3 }, { "bloom", "bloom", 55, 3 }, { "chaos", "chaos", 81, 3 } }, {}, true),
-        freeze(p)
+              { { "pitchMode", "", 3, 41, { "shift pitch at fixed grain length", "pitch sets grain playback speed" }, 1, 0, true },
+                { "scale", "scale", 25, 36, { "continuous pitch", "snap to semitones", "snap to the major scale", "snap to the minor scale", "snap to the pentatonic scale" } },
+                { "heads", "heads", 6, 43, { "one read head", "share grains between two heads", "share grains between three heads", "share grains between four heads" } },
+                { "harmony", "harmony", 16, 43, { "all heads play the same pitch", "add fifths", "add octaves", "major chord", "minor chord", "one head per held MIDI note" }, 2, 9 },
+                { "space", "stereo", 71, 43, { "stereo panning", "use timing and level cues for stereo position" } } })
     {
         drawnParams.fill(-1);
         tier1.extra = [this](Grid& g) {
@@ -803,23 +833,26 @@ struct Editor : AudioProcessorEditor, Timer
                 for (int y = top + 2; y <= 11; y += 2) g.dot(188 + i, 84 + y, rule, 8);
             }
         };
-        auto& window = tier1.key("window-glyph", 94, 21, 8, [this] { dial("shape")->grabKeyboardFocus(); });
+        auto& window = tier1.key("window-glyph", 94, 21, 8, [this](const ModifierKeys&) { dial("shape")->grabKeyboardFocus(); });
         window.setBounds(cells(94, 21, 8, 3)), window.setTitle("grain window shape");
-        tier2.toggle("reverbOn", "reverb", 83, 36);
+        auto& reverbKey = tier2.toggle("reverbOn", "reverb", 83, 36, tier2.attach("reverbOn"));
+        reverbKey.setExplicitFocusOrder(tier2.getNumChildComponents());
         cloud.focusHead = [this](int index) {
             const auto id = "heads:" + String(index);
             for (auto* k : tier2.keys) if (k->getComponentID() == id) k->grabKeyboardFocus();
         };
-        tier2.extra = [this](Grid& g) {
+        tier2.extra = [this, &reverbKey](Grid& g) {
             g.put(1, 34, u("↳"), grey), title(g, 3, 34, "voices", 39, ""), title(g, 42, 34, "colour", 67, "→");
             title(g, 70, 34, "space", 89, "→"), title(g, 92, 34, "out", 103, "→");
-            auto& key = *tier2.keys.getLast();
-            g.toggle(83, 36, "reverb", key.active = tier2.value("reverbOn") > .5f);
-            if (key.isMouseOver() && !key.active) g.put(83, 36, emptyBox, white);
-            if (key.hasKeyboardFocus(false)) g.underline(85, 6, 36);
+            tier2.drawToggle(g, reverbKey, "reverb", 83, 36);
         };
+        setFocusContainerType(FocusContainerType::keyboardFocusContainer);
         setOpaque(true), addAndMakeVisible(layer), addMouseListener(this, true), layer.setBounds(0, 0, W, H);
-        for (auto* group : groups()) layer.addAndMakeVisible(group);
+        for (auto* group : std::array<Group*, 5> { &header, &macros, &cloud, &tier1, &tier2 })
+        {
+            layer.addAndMakeVisible(group);
+            group->setExplicitFocusOrder(layer.getNumChildComponents());
+        }
         // Stepped wheels: pitch by a semitone, size in sync by a note value.
         auto& pitch = *dial("pitch");
         pitch.step = [q = pitch.q.getNormalisableRange()](double n, int d) { return (double) q.convertTo0to1(jlimit(q.start, q.end, std::round(q.convertFrom0to1((float) n)) + (float) d)); };
@@ -833,45 +866,36 @@ struct Editor : AudioProcessorEditor, Timer
         const int width = stored > 0 ? jlimit(W / 2, W * 2, roundToInt(stored * (double) W / 1024)) : W;
         setSize(width, roundToInt((double) width * H / W)), timerCallback(), startTimerHz(30);
     }
-    std::array<Controls*, 3> controls() { return { &tier1, &tier2, &macros }; }
+    std::array<Controls*, 3> controls() { return { &macros, &tier1, &tier2 }; }
     Dial* dial(const char* id) { for (auto* c : controls()) for (auto* d : c->dials) if (d->getComponentID() == id) return d; return nullptr; }
-    std::array<Group*, 6> groups() { return { &header, &cloud, &tier1, &tier2, &macros, &freeze }; }
     // A click anywhere but in the open field, or a resize, commits it.
     void commitFields(const Component* except = nullptr) { for (auto* c : controls()) for (auto* d : c->dials) if (except != &d->field && !d->field.isParentOf(except)) d->commit(true); }
     void mouseDown(const MouseEvent& e) override
     {
         commitFields(e.eventComponent);
-        if (e.eventComponent == this || e.eventComponent == &layer || (e.eventComponent == &cloud && e.y < cells(0, 11, 1, 1).getY()))
+        const auto* key = dynamic_cast<Key*>(e.eventComponent);
+        if ((key && !key->getWantsKeyboardFocus()) || e.eventComponent == this || e.eventComponent == &layer
+            || (e.eventComponent == &cloud && e.y < cells(0, 11, 1, 1).getY()))
             giveAwayKeyboardFocus();
     }
-    // The hint line: what is under the pointer, until 1.5 s after it leaves.
-    void mouseEnter(const MouseEvent& e) override { mouseMove(e); }
-    void mouseMove(const MouseEvent& e) override
+    String hintFor(Component& target)
     {
-        if (dynamic_cast<Dial*>(e.eventComponent) || dynamic_cast<Key*>(e.eventComponent) || e.eventComponent == &cloud)
-            hovered = e.eventComponent, hintUntil = 0;
-    }
-    void mouseExit(const MouseEvent& e) override { if (hovered == e.eventComponent) hintUntil = Time::getMillisecondCounter() + 1500; }
-    String hint()
-    {
-        const auto time = Time::getMillisecondCounter();
-        if (header.notice.isNotEmpty() && time - header.noticeTime < 2000) return header.notice;
-        if (hovered == nullptr || (hintUntil != 0 && Time::getMillisecondCounter() > hintUntil)) return hovered = nullptr, String();
-        if (auto* d = dynamic_cast<Dial*>(hovered.getComponent()))
+        if (auto* d = dynamic_cast<Dial*>(&target))
         {
             String idle;
             for (auto* c : controls()) for (auto& s : c->specs) if (d->getComponentID() == s.id && s.idle) idle = s.idle();
-            return d->q.name.toLowerCase() + " " + d->q.getCurrentValueAsText() + (idle.isNotEmpty() ? u(" · ") + idle : u(" · drag · shift fine · alt/cmd reset · double-click types"));
+            return d->q.name.toLowerCase() + " " + d->q.getCurrentValueAsText() + (idle.isNotEmpty() ? u(" · ") + idle : String())
+                   + u(" · drag · shift fine · alt/cmd reset · double-click types");
         }
-        if (dynamic_cast<Key*>(hovered.getComponent())) return hovered->getTitle().toLowerCase() + u(" · click") + (hovered->getComponentID().contains(":") ? u(" · alt/cmd reset · wheel") : String());
-        if (hovered == &cloud)
-        {
-            const auto& f = proc.feed;
-            const auto live = std::count_if(f.env.begin(), f.env.end(), [](const auto& v) { return v.load() > 0; });
-            return String(f.centre.load(), 2) + u(" s back · ") + String(f.lastPitch.load(), 1) + u(" st · ")
-                   + String(live) + u(" grains · double-click freezes · drag timeline");
-        }
-        return {};
+        if (auto* k = dynamic_cast<Key*>(&target))
+            return k->hint.isNotEmpty() ? k->hint : k->getTitle().toLowerCase() + u(" · click");
+
+        const auto& f = proc.feed;
+        const auto live = std::count_if(f.env.begin(), f.env.end(), [](const auto& v) { return v.load() > 0; });
+        const float pitch = f.lastPitch.load();
+        const auto st = String(pitch, std::abs(pitch - std::round(pitch)) < .005f ? 0 : 2).replaceCharacter('-', 0x2212);
+        return u("−") + String(f.centre.load(), 2) + u(" s · ") + (pitch > 0 ? "+" : "") + st + u(" st · ")
+               + String(live) + u(" grains · double-click freezes · drag timeline");
     }
     void resized() override
     {
@@ -891,45 +915,55 @@ struct Editor : AudioProcessorEditor, Timer
             changed |= std::abs(drawnParams[(size_t) i] - value) > 0;
             drawnParams[(size_t) i] = value;
         }
+        auto* focused = Component::getCurrentlyFocusedComponent();
+        if (!isParentOf(focused)) focused = nullptr;
+        auto* under = Desktop::getInstance().getMainMouseSource().getComponentUnderMouse();
+        if (!isParentOf(under) || !under->isMouseOver()
+            || !(dynamic_cast<Dial*>(under) || dynamic_cast<Key*>(under) || under == &cloud)) under = nullptr;
+        const auto interactionChanged = [&](const Group& group) {
+            return (drawnFocus != focused && (group.isParentOf(drawnFocus) || group.isParentOf(focused)))
+                || (drawnUnder != under && (group.isParentOf(drawnUnder) || group.isParentOf(under)));
+        };
         const auto frame = std::tuple { f.time.load(), f.events.load(), f.captureHead.load(), f.at.load(), f.centre.load(), f.frozen.load() };
-        if (changed || frame != drawnCloud)
+        if (changed || frame != drawnCloud || interactionChanged(cloud))
         {
             drawnCloud = frame;
-            g.clear(3, 5, 100, 11), g.clear(3, 16, 92, 1);
+            g.clear(3, 5, 100, 12);
             g.ox = 3, g.oy = 5;
             cloud.draw(g);
             g.ox = g.oy = 0;
-            show(3, 5, 100, 11), show(3, 16, 92, 1);
+            show(3, 5, 100, 12);
         }
-        const auto previousHint = header.hint;
-        const auto line = hint();
-        auto* focused = Component::getCurrentlyFocusedComponent();
-        if (!isParentOf(focused)) focused = nullptr;
-        const bool focusChanged = drawnFocus != focused;
-        drawnFocus = focused;
+        const auto now = Time::getMillisecondCounter();
+        if (under != nullptr)
+        {
+            if (under != drawnUnder || changed || under == &cloud) hoverHint = hintFor(*under);
+        }
+        else if (drawnUnder != nullptr) hintLeft = now;
+        else if (now - hintLeft >= 1500) hoverHint.clear();
+        const auto& line = now - header.noticeTime < 2000 && header.notice.isNotEmpty() ? header.notice : hoverHint;
+        if (header.hint != line)
+        {
+            header.hint = line;
+            setHelpText(line);
+            g.clear(0, 4, C, 1), g.right(102, 4, line.substring(0, 100), grey), show(0, 4, C, 1);
+        }
         const int preset = proc.preset, slot = proc.abSlot();
         const auto name = preset < 0 ? proc.presetName() : String();
-        if (changed || focusChanged || header.program != preset || name != drawnName || slot != drawnSlot || line != header.hint)
+        if (changed || interactionChanged(header) || header.program != preset || name != drawnName || slot != drawnSlot)
         {
-            drawnName = name, drawnSlot = slot, header.hint = line;
+            drawnName = name, drawnSlot = slot;
             header.place(preset, name);
-            g.clear(0, 0, C, 3), g.clear(0, 4, C, 1);
-            header.draw(g), show(0, 0, C, 3), show(0, 4, C, 1);
+            g.clear(0, 0, C, 3), header.draw(g), show(0, 0, C, 3);
         }
         const int note = f.note;
         const bool held = f.held;
-        const bool drawTiers = changed || focusChanged || line != previousHint;
-        if (drawTiers)
-        {
-            g.clear(95, 16, 8, 1), freeze.draw(g);
-            if (freeze.keys[0]->hasKeyboardFocus(false)) g.underline(97, 6, 16);
-            show(95, 16, 8, 1);
-        }
-        if (drawTiers)
-        {
+        if (changed || interactionChanged(macros))
             g.clear(0, 3, C, 1), macros.draw(g), show(0, 3, C, 1);
+        const bool drawTiers = changed || interactionChanged(tier1) || interactionChanged(tier2);
+        drawnFocus = focused, drawnUnder = under;
+        if (drawTiers)
             g.clear(0, 18, C, 31), tier1.draw(g), tier2.draw(g);
-        }
         if (drawTiers || note != drawnNote || held != drawnHeld)
         {
             drawnNote = note, drawnHeld = held;

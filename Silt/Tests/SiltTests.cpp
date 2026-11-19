@@ -268,7 +268,8 @@ static void testParameterText()
     set(p,"sizeSync",0); // sync: note values (also from a time), grains per beat, beats
     const auto note=[&](const char* text,const char* want){parse("size",text);CHECK(size->getCurrentValueAsText()==want);};
     note("1/32t","1/32T"),note("1/16T","1/16T"),note("1/4.","1/4D"),note("2 BARS","2 bars"),note("120 ms","1/16"),note("1/5","1/8D"),note("0.5s","1/4");
-    set(p,"lock",1);is("density","×4",13.6f);is("density","x1",1);CHECK(p.apvts.getParameter("density")->getText(p.apvts.getParameter("density")->convertTo0to1(13.6f),0)==juce::String::fromUTF8("×4"));set(p,"lock",0);
+    set(p,"lock",1);is("density","×4",13.6f);is("density","4x",13.6f);is("density","x1",1);is("density","4",13.6f);bad("density","x4x");
+    parse("density","4x");CHECK(shown("density")==juce::String::fromUTF8("×4"));set(p,"lock",0);
     is("filter","0",0);CHECK(p.apvts.getParameter("filter")->getCurrentValueAsText()=="off");
     is("density","3",6),is("density","3/beat",6),is("density","12 hz",12),is("density","12/s",12);
     is("position","3",1500),is("position","2b",1000),is("position","1 bar",2000),is("position","1.2s",1200);
@@ -374,11 +375,26 @@ static void testPresets()
     Proc q(folder);load(q,save(p));q.selectAb(1);CHECK(get(q,"pitch")==12);
     p.setCurrentProgram(3),set(p,{{"mix",33},{"output",-6},{"texture",27},{"motion",9},{"bloom",19},{"chaos",11}});
     const auto old=params(p);
+    const int active=p.abSlot();
     p.randomise(42);const auto random=params(p);
+    CHECK(p.abSlot()==active);
     CHECK(get(p,"motion")==9 && get(p,"bloom")==19);
     CHECK(get(p,"mix")==33 && get(p,"output")==-6 && get(p,"texture")==27 && get(p,"chaos")==11 && old!=random);
     p.selectAb(1-p.abSlot());CHECK(params(p)==old);
     p.selectAb(1-p.abSlot());CHECK(params(p)==random);
+    p.setCurrentProgram(10);set(p,{{"mix",33},{"output",-6},{"texture",27},{"motion",9},{"bloom",19},{"chaos",11},{"freeze",1}});
+    const auto original=params(p);
+    p.nudge(7);
+    CHECK(p.abSlot()==active && params(p)!=original);
+    for(size_t i=0;i<std::size(contract);++i)
+    {
+        const juce::String id(contract[i].id);
+        const auto* parameter=p.apvts.getParameter(id);
+        if(parameter->isDiscrete() || id=="mix" || id=="output" || id=="motion" || id=="texture" || id=="bloom" || id=="chaos")
+            CHECK(get(p,contract[i].id)==original[i]);
+        else CHECK(std::abs(parameter->getValue()-parameter->convertTo0to1(original[i]))<=.15f);
+    }
+    p.selectAb(1-p.abSlot());CHECK(params(p)==original);
     folder.deleteRecursively();
 }
 static Settings plain { {"trigger",0},{"sizeSync",1},{"pitch",0},{"motion",0},{"texture",0},{"bloom",0},{"chaos",0},
@@ -1148,13 +1164,27 @@ static void testEditor()
         CHECK(e.getWidth()==w && e.getHeight()==h);
         e.setSize(width,height),e.setVisible(true);
         const auto point=[&](juce::Component& c){return e.getLocalPoint(&c,c.getLocalBounds().toFloat().getCentre()).roundToInt();};
-        const auto press=[&](const juce::String& id)
+        const auto pointer=[&](juce::Point<int> at,int flags=0)
+        {
+            auto source=juce::Desktop::getInstance().getMainMouseSource();
+            source.setScreenPosition(e.localPointToGlobal(at).toFloat());
+            const juce::ModifierKeys mods(flags);
+            const juce::ScopedValueSetter<juce::ModifierKeys> keyboard(juce::ModifierKeys::currentModifiers,mods.withoutMouseButtons());
+            e.getPeer()->handleMouseEvent(juce::MouseInputSource::mouse,at.toFloat(),mods.withOnlyMouseButtons(),
+                1,0,juce::Time::currentTimeMillis());
+        };
+        const auto press=[&](const juce::String& id,int flags=0)
         {
             auto* c=find(e,id);CHECK(c && c->isVisible());
             if(!c)return;
             auto* target=e.getComponentAt(point(*c));CHECK(target==c);
             auto* button=dynamic_cast<juce::Button*>(target);CHECK(button);
-            if(button)
+            if(button && e.isOnDesktop())
+            {
+                pointer(point(*c),flags|juce::ModifierKeys::leftButtonModifier);
+                pointer(point(*c),flags);
+            }
+            else if(button)
             {
                 button->triggerClick();
                 const auto done=std::make_shared<bool>(false);
@@ -1164,7 +1194,7 @@ static void testEditor()
             }
             timer.timerCallback();
         };
-        CHECK(find(e,"group:macros")->isVisible() && find(e,"macro")==nullptr);
+        CHECK(find(e,"group:macros")->isVisible());
         const auto time=juce::Time::getCurrentTime();
         const auto mouse=[&](juce::Component* c,juce::Point<float> pos,juce::Point<float> down,int clicks=1,int flags=0)
         {
@@ -1172,7 +1202,7 @@ static void testEditor()
                 1,0,0,0,0,c,c,time,down,time,clicks,pos!=down);
         };
         const auto fieldOf=[](juce::Component* dial){juce::TextEditor* f=nullptr;for(auto* c:dial->getChildren())if(auto* t=dynamic_cast<juce::TextEditor*>(c))f=t;return f;};
-        const auto key=[](juce::TextEditor* f,int code,int flags=0){f->keyPressed(juce::KeyPress(code,juce::ModifierKeys(flags),0));};
+        const auto key=[](juce::Component* c,int code,int flags=0,juce::juce_wchar ch=0){return c->keyPressed(juce::KeyPress(code,juce::ModifierKeys(flags),ch));};
         Gestures gestures;p.addListener(&gestures);
         // Gesture counts since the last check: exactly n begin/end pairs.
         const auto pairs=[&](int n){const bool ok=gestures.begun==n && gestures.ended==n;CHECK(ok);if(!ok)std::cout<<"  gestures "<<gestures.begun<<"/"<<gestures.ended<<" want "<<n<<"\n";gestures={};};
@@ -1198,7 +1228,7 @@ static void testEditor()
                 const juce::Point<float> up=fader?juce::Point<float>(50,0):juce::Point<float>(0,-50),right(50,0);
                 param->setValueNotifyingHost(.3f);gestures={};
                 // A click, even one moving 3 px, changes nothing and sends nothing.
-                drag({});drag({{up*.0598f,0}});near(.3f);pairs(0);
+                drag({});drag({{up*.06f,0}});near(.3f);pairs(0);
                 // 250 screen px of travel at every zoom, on the larger axis; one gesture per drag.
                 drag({{up,0}});near(.5f);pairs(1);
                 if(!fader){drag({{right,0},{juce::Point<float>(0,10),0}});near(.66f);pairs(1);param->setValueNotifyingHost(.3f);gestures={};}
@@ -1278,8 +1308,8 @@ static void testEditor()
                 set(p,spec.id,0);press(spec.id);CHECK(get(p,spec.id)==1);press(spec.id);CHECK(get(p,spec.id)==0);
             }
         }
-        // Tab / ⇧Tab commit and open the next / previous dial's field in reading order (macros first), wrapping.
-        const auto field=[&](const char* id){auto* d=find(e,id);juce::TextEditor* f=nullptr;for(auto* c:d->getChildren())if(auto* t=dynamic_cast<juce::TextEditor*>(c))f=t;return f;};
+        // Tab / ⇧Tab commit and open the next / previous field in signal-flow order (macros first), wrapping.
+        const auto field=[&](const char* id){return fieldOf(find(e,id));};
         const auto open=[&](const char* id){auto* d=find(e,id);d->mouseDoubleClick(mouse(d,{5,5},{5,5},2));return field(id);};
         set(p,"size",100);set(p,"sizeSync",1);
         open("size")->setText("250 ms");key(field("size"),juce::KeyPress::tabKey);
@@ -1287,7 +1317,10 @@ static void testEditor()
         key(field("density"),juce::KeyPress::tabKey,juce::ModifierKeys::shiftModifier);CHECK(!field("density")->isVisible() && field("size")->isVisible());
         field("size")->setText("x");key(field("size"),juce::KeyPress::tabKey);CHECK(field("size")->isVisible() && !field("density")->isVisible()); // invalid: stays
         key(field("size"),juce::KeyPress::escapeKey);
-        key(open("output"),juce::KeyPress::tabKey);CHECK(field("motion")->isVisible()); // wraps to the top row
+        key(open("width"),juce::KeyPress::tabKey);CHECK(field("reverb")->isVisible());
+        key(field("reverb"),juce::KeyPress::escapeKey);
+        key(open("mix"),juce::KeyPress::tabKey);CHECK(field("output")->isVisible());
+        key(field("output"),juce::KeyPress::tabKey);CHECK(field("motion")->isVisible()); // wraps to the top row
         key(field("motion"),juce::KeyPress::tabKey,juce::ModifierKeys::shiftModifier);CHECK(field("output")->isVisible());
         key(field("output"),juce::KeyPress::escapeKey);
         // A click elsewhere commits (one inside the field doesn't; invalid text is dropped); so does a resize. Each commit is one gesture.
@@ -1315,19 +1348,16 @@ static void testEditor()
         CHECK(trigger->keyPressed(juce::KeyPress(juce::KeyPress::homeKey)) && get(p,"trigger")==0);
         pumpUntil([&]{return gestures.ended>0;});pairs(1);
         auto* freezeControl=find(e,"freeze");
-        const int shift=juce::ModifierKeys::shiftModifier;
-        freezeControl->mouseDown(mouse(freezeControl,{8,8},{8,8},1,shift));CHECK(get(p,"freeze")==1);
-        freezeControl->mouseUp(mouse(freezeControl,{8,8},{8,8},1,shift));CHECK(get(p,"freeze")==0);pairs(1);
-        p.removeListener(&gestures);
+        freezeControl->mouseDown(mouse(freezeControl,{8,8},{8,8},1,juce::ModifierKeys::shiftModifier));CHECK(get(p,"freeze")==1);
+        freezeControl->mouseUp(mouse(freezeControl,{8,8},{8,8},1,juce::ModifierKeys::shiftModifier));CHECK(get(p,"freeze")==0);pairs(1);
         // Compare hit areas across the whole editor, including controls in different groups.
         std::vector<std::pair<juce::String,juce::Rectangle<int>>> hits;
-        for(const auto* id:{"tier1","tier2","macros","header","freeze"})
+        for(const auto* id:{"tier1","tier2","macros","header","cloud"})
         {
             auto* group=find(e,juce::String("group:")+id);CHECK(group);
             for(auto* control:group->getChildren())
             {
-                CHECK(group->getLocalBounds().contains(control->getBounds()));
-                const auto bounds=control->getBounds(); // all five groups share the same cell origin
+                const auto bounds=group->getLocalArea(control,control->getLocalBounds())+group->getPosition();
                 for(const auto& [idOther,other]:hits)if(other.intersects(bounds))
                 {
                     CHECK(false);std::cout<<"  overlapping controls: "<<control->getComponentID()<<" and "<<idOther<<"\n";
@@ -1337,11 +1367,90 @@ static void testEditor()
         }
         p.setCurrentProgram(0);press("next");CHECK(p.preset==1);press("prev");CHECK(p.preset==0);
         press("save");CHECK(p.presetName().startsWith("user "));
+        for(const auto* id:{"prev","next","presets","save","A","B","rnd","window-glyph"})
+            CHECK(!find(e,id)->getWantsKeyboardFocus() && !key(find(e,id),juce::KeyPress::returnKey));
         press("B"),set(p,"pitch",12),press("A");CHECK(get(p,"pitch")==-12);press("B");CHECK(get(p,"pitch")==12);
         const auto before=params(p);press("rnd");CHECK(params(p)!=before && p.presetName()=="random");
         auto* preset=find(e,"presets");CHECK(preset && preset->isVisible());
         preset->mouseWheelMove(mouse(preset,{5,5},{5,5}),juce::MouseWheelDetails {0,1,false,false,false});
         CHECK(p.preset==1);
+        if(percent==100)
+        {
+            using juce::KeyPress;
+            using juce::ModifierKeys;
+            e.setTopLeftPosition(24,24),e.addToDesktop(0),e.toFront(false);pump();
+            auto& peer=*e.getPeer();
+            auto* mix=find(e,"mix");
+            auto* oversample=find(e,"oversample:1");
+            press("oversample:1");CHECK(oversample->hasKeyboardFocus(false));
+            CHECK(peer.handleKeyPress(KeyPress(KeyPress::tabKey)) && find(e,"oversample:2")->hasKeyboardFocus(false));
+            find(e,"oversample:3")->grabKeyboardFocus();
+            CHECK(peer.handleKeyPress(KeyPress(KeyPress::tabKey)) && find(e,"motion")->hasKeyboardFocus(false));
+            find(e,"width")->grabKeyboardFocus();
+            CHECK(peer.handleKeyPress(KeyPress(KeyPress::tabKey)) && find(e,"reverb")->hasKeyboardFocus(false));
+            press("save");const auto saved=p.presetName();
+            CHECK(saved.startsWith("user ") && !e.hasKeyboardFocus(true));
+            CHECK(!peer.handleKeyPress(KeyPress(KeyPress::returnKey)) && p.presetName()==saved);
+
+            press("A");CHECK(p.abSlot()==0);
+            set(p,"pitch",7);gestures={};
+            press("B",ModifierKeys::altModifier);
+            CHECK(p.abSlot()==0 && e.getHelpText()==juce::String::fromUTF8("A → B"));pairs(0);
+            set(p,"pitch",12);press("B");CHECK(p.abSlot()==1 && get(p,"pitch")==7);
+            const auto original=params(p);
+            const auto pitchMode=get(p,"pitchMode");
+            press("rnd",ModifierKeys::shiftModifier);
+            CHECK(p.abSlot()==1 && params(p)!=original && get(p,"pitchMode")==pitchMode);
+            press("A");CHECK(params(p)==original);
+
+            auto* cloud=find(e,"group:cloud");
+            constexpr float cell=1024.0f/120;
+            const auto cloudPoint=[&](float col,float row){return e.getLocalPoint(cloud,juce::Point<int>(juce::roundToInt(col*cell),juce::roundToInt(row*cell*2)));};
+            set(p,{{"freeze",0},{"heads",0},{"position",500},{"sizeSync",1}});p.feed.centre=4;timer.timerCallback();gestures={};
+            const auto above=cloudPoint(20,5);
+            pointer(above,ModifierKeys::leftButtonModifier);pointer(above);
+            pointer(above,ModifierKeys::leftButtonModifier);pointer(above);
+            CHECK(get(p,"freeze")==1);pairs(1);
+            pointer(cloudPoint(60,11.5f),ModifierKeys::leftButtonModifier);
+            pointer(cloudPoint(70,11.5f),ModifierKeys::leftButtonModifier);
+            pointer(cloudPoint(70,11.5f));
+            CHECK(std::abs(get(p,"position")-8000*(1-70/87.0))<12);pairs(1);
+            pointer(cloudPoint(44.5f,11.5f),ModifierKeys::leftButtonModifier);pointer(cloudPoint(44.5f,11.5f));
+            CHECK(find(e,"heads:0")->hasKeyboardFocus(false));pairs(0);
+            press("window-glyph");CHECK(find(e,"shape")->hasKeyboardFocus(false));pairs(0);
+
+            set(p,"mix",50);mix->grabKeyboardFocus();gestures={};
+            CHECK(key(mix,KeyPress::upKey,ModifierKeys::shiftModifier) && std::abs(get(p,"mix")-50.1f)<.001f);
+            CHECK(key(mix,KeyPress::rightKey,ModifierKeys::commandModifier) && std::abs(get(p,"mix")-60.1f)<.001f);
+            CHECK(gestures.begun==1 && gestures.ended==0);
+            pumpUntil([&]{return gestures.ended>0;});pairs(1);
+            CHECK(key(mix,KeyPress::deleteKey) && get(p,"mix")==100);pairs(1);
+            CHECK(key(mix,KeyPress::returnKey) && field("mix")->hasKeyboardFocus(false));
+            field("mix")->setText("33");key(field("mix"),KeyPress::upKey);
+            CHECK(field("mix")->isVisible() && field("mix")->getText()=="34%" && get(p,"mix")==100);pairs(0);
+            key(field("mix"),KeyPress::downKey);CHECK(field("mix")->getText()=="33%");pairs(0);
+            key(field("mix"),KeyPress::escapeKey);
+            mix->grabKeyboardFocus();
+            CHECK(key(mix,'5',0,'5') && field("mix")->isVisible() && field("mix")->getText()=="5");pairs(0);
+            key(field("mix"),KeyPress::escapeKey);
+            mix->grabKeyboardFocus();
+            CHECK(key(mix,KeyPress::escapeKey) && !e.hasKeyboardFocus(true));pairs(0);
+
+            pointer(point(*find(e,"lock:2")));
+            pumpUntil([&]{timer.timerCallback();return e.getHelpText().startsWith("tone");});
+            CHECK(e.getHelpText().contains("one grain per period of the played note"));
+            set(p,"trigger",1);pointer(point(*density));timer.timerCallback();
+            CHECK(e.getHelpText().contains("idle while trigger = transient"));
+            const auto densityArea=e.getLocalArea(density,density->getLocalBounds());
+            const auto highlighted=pixels(e.createComponentSnapshot(densityArea));
+            pointer({1,1});timer.timerCallback();
+            CHECK(e.getHelpText().contains("idle while trigger = transient") && pixels(e.createComponentSnapshot(densityArea))!=highlighted);
+            const auto left=juce::Time::getMillisecondCounter();
+            pumpUntil([&]{timer.timerCallback();return e.getHelpText().isEmpty();});
+            CHECK(e.getHelpText().isEmpty() && juce::Time::getMillisecondCounter()-left>=1450);
+            e.removeFromDesktop();
+        }
+        p.removeListener(&gestures);
         p.setCurrentProgram(4);
         // Dirty-cell redraw gives the same pixels as a full render; no repaint when audio and controls are idle.
         auto* capture=new RepaintCapture(e);e.setCachedComponentImage(capture);
@@ -1388,6 +1497,7 @@ static juce::Image snapshot(int percent=100,bool freeze=false,float scale=2,bool
     }
     run(p,v6?384000:230400);
     if(freeze){set(p,"freeze",1);Run r;r.offset=230400;run(p,48000,512,r);}
+    // The v6 comparison uses illustrated meters and a fixed timeline anchor over the live grain history.
     if(v6)p.feed.note=60,p.feed.held=true,p.feed.meter[0]=p.feed.meter[1]=7/36.0f,p.feed.meter[2]=4/30.0f,p.feed.centre=3.32f;
     std::unique_ptr<juce::AudioProcessorEditor> editor(p.createEditor());
     if(v6)

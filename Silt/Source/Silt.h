@@ -105,6 +105,7 @@ public:
     void selectAb(int slot, bool copy = false);
     // A musical, loudness-safe random sound from `seed`; mix, output, trigger, quality, onset and the macros stay. Undo with A/B.
     void randomise(juce::int64 seed);
+    // Nudge continuous parameters by up to 15% of travel, preserving mix, output and macros and backing up to the other slot.
     void nudge(juce::int64 seed);
     // A typed value for a float parameter (PLAN 4.1 grammar), as a clamped plain value; nothing if the text is invalid.
     std::optional<float> parse(const juce::String& id, const juce::String& text) const;

@@ -31,6 +31,8 @@ constexpr Travel sizeTravel { 0.5, 4000, 0.762, true };
 int pick(double travel, int count) { return jlimit(0, count - 1, roundToInt(travel * (count - 1))); }
 int hint(int i) { return i < silt::numParamsV1 ? 1 : 2; } // the ParameterID version: 0.1.0's, then 0.2's
 int syncIndex(double n) { return pick(std::pow(n, 1.6), silt::numNotes); }
+float overlapOf(float density) { return 1 + 15 * (density - 1) / 63; }
+double densityFromOverlap(double overlap) { return 1 + (overlap - 1) * 63 / 15; }
 String msText(double ms) { return ms >= 1000 ? String(ms / 1000, 1) + " s" : String(ms, ms < 10 ? 2 : ms < 100 ? 1 : 0) + " ms"; }
 AudioProcessorValueTreeState::ParameterLayout layout(const SiltProcessor& self)
 {
@@ -61,7 +63,7 @@ AudioProcessorValueTreeState::ParameterLayout layout(const SiltProcessor& self)
         num(Density,"Density",1,64,24,.1f,Travel {1,64,1.26,false},[sync,&self](float v) {
             if (roundToInt(self.apvts.getRawParameterValue("lock")->load()) == 1)
             {
-                const float overlap = 1 + 15 * (v - 1) / 63;
+                const float overlap = overlapOf(v);
                 return String::fromUTF8("×") + String(overlap, std::abs(overlap - std::round(overlap)) < .05f ? 0 : 1);
             }
             return sync() ? String(jmax(1,roundToInt(v/2)))+"/beat" : String(v,std::abs(v-std::round(v))<.05f?0:1)+"/s"; }),
@@ -143,8 +145,9 @@ std::optional<float> SiltProcessor::parse(const String& id, const String& typed)
         case Filter: out = t == "off" ? 0.0 : prefixed("lp", "hp"); break;
         case Tilt: out = prefixed("pluck", "swell"); break;
         case Density:
-            if (v && unit.isEmpty() && (word == "x" || (word.isEmpty() && roundToInt(apvts.getRawParameterValue("lock")->load()) == 1)))
-                out = 1 + (*v - 1) * 63 / 15;
+            if (v && ((word == "x" && unit.isEmpty()) || (word.isEmpty() && (unit == "x"
+                  || (unit.isEmpty() && roundToInt(apvts.getRawParameterValue("lock")->load()) == 1)))))
+                out = densityFromOverlap(*v);
             else out = in({ { "", sync ? 2 : 1 }, { "/s", 1 }, { "hz", 1 }, { "/beat", 2 }, { "/b", 2 } });
             break; // grains/s; a beat holds two
         case Position: out = in({ { "", sync ? 500 : 1 }, { "ms", 1 }, { "s", 1000 }, { "b", beats }, { "beat", beats }, { "beats", beats }, { "bar", 4 * beats }, { "bars", 4 * beats } }); break;
@@ -871,7 +874,7 @@ struct SiltProcessor::Engine
             quality = selectedQuality;
             oversamplers[(size_t) quality]->reset();
         }
-        // The clock: free reads density; overlap reads it as x1-x16 grains per size; tone, one grain per period.
+        // The clock: free reads density; overlap reads it as x1-x16 grains per size (see overlapOf); tone, one grain per period.
         const int lock = roundToInt(v[Lock]);
         gap = lock == 0 ? period(bpm) : lock == 1 ? grainSize(bpm) / (1 + 15 * (v[Density] - 1) / 63) : toneGap();
         const double quartersPerGrain = 1.0 / jmax(1, roundToInt(v[Density] / 2));
@@ -1352,9 +1355,12 @@ void SiltProcessor::nudge(int64 seed)
     {
         auto* param = apvts.getParameter(ids[i]);
         next[i] = param->getValue();
-        if (i != Mix && i != Output && i != Trigger && i != Oversample && !(i >= Motion && i <= Chaos)
-            && i != Freeze && i != OnsetMode && !param->isDiscrete())
-            next[i] = jlimit(0.0f, 1.0f, next[i] + .3f * (random.nextFloat() - .5f));
+        if (!param->isDiscrete() && i != Mix && i != Output && (i < Motion || i > Chaos))
+        {
+            const float target = next[i] + .3f * (random.nextFloat() - .5f);
+            const float snapped = param->convertTo0to1(param->convertFrom0to1(target));
+            if (std::abs(snapped - next[i]) <= .15f) next[i] = snapped;
+        }
     }
     selectAb(1 - abSlot(), true);
     setAll(next);
@@ -1364,10 +1370,7 @@ void SiltProcessor::nudge(int64 seed)
 void SiltProcessor::randomise(int64 seed)
 {
     // Store the sound being left in the other slot: A/B is a one-click undo even on the first randomise.
-    float current[silt::numParams];
-    for (int i = 0; i < silt::numParams; ++i) current[i] = apvts.getParameter(ids[i])->getValue();
-    selectAb(1 - abSlot());
-    setAll(current);
+    selectAb(1 - abSlot(), true);
     Random r(seed);
     r.nextInt(); // a small seed's first value is always near zero
     const auto between = [&r](float lo, float hi) { return lo + r.nextFloat() * (hi - lo); };
