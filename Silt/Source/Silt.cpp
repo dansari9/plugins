@@ -104,6 +104,8 @@ std::optional<double> number(const String& t) // the whole text is one finite nu
 } // namespace
 std::optional<float> SiltProcessor::parse(const String& id, const String& typed) const
 {
+    auto* q = dynamic_cast<AudioParameterFloat*>(apvts.getParameter(id)); // continuous parameters only
+    if (q == nullptr) return std::nullopt;
     const int i = (int) (std::find_if(std::begin(ids), std::end(ids), [&](const char* s) { return id == s; }) - std::begin(ids));
     auto t = typed.toLowerCase().replace(String::fromUTF8("−"), "-").removeCharacters(" \t");
     if (!t.containsChar('.')) t = t.replaceCharacter(',', '.');
@@ -156,8 +158,7 @@ std::optional<float> SiltProcessor::parse(const String& id, const String& typed)
         }
         default: out = in({ { "", 1 }, { "%", 1 } }); // percentages: 0.45 is 0.45%
     }
-    const auto range = apvts.getParameter(id)->getNormalisableRange();
-    return out && std::isfinite(*out) ? std::optional((float) jlimit((double) range.start, (double) range.end, *out)) : std::nullopt;
+    return out && std::isfinite(*out) ? std::optional((float) jlimit((double) q->range.start, (double) q->range.end, *out)) : std::nullopt;
 }
 namespace
 {
@@ -577,6 +578,7 @@ struct SiltProcessor::Engine
             for (int k = 0; k < voiceCount; ++k)
                 if (auto& o = grains[(size_t) k]; o.fade == 0 && (oldest == nullptr || nextGrain - o.tag > nextGrain - oldest->tag)) oldest = &o;
             oldest->fade = oldest->left = jmin(oldest->left, jmax(1, roundToInt(0.002 * fs))), ++stolen;
+            if (oldest->wait > 0) oldest->length = oldest->left; // not started: trace() still sees its first sample
         }
         auto* g = &grains[(size_t) voiceCount++];
         g->tag = ++nextGrain, g->fade = 0;
@@ -602,6 +604,7 @@ struct SiltProcessor::Engine
         // a tiny grain can still read through a longer, smooth pitch crossfade.
         // The read: how long it sounds and how much source it covers.
         const double dur = jmin(2.0e9, shifted ? size : size / r), span = shifted ? .04 * fs * jmax(1.0, r - 1) : 0;
+        early = jmin(early, dur - 1); // a burst spaced over the plain size never back-dates past a shorter grain's end
         // How far back it starts: position (+ the scan) + spray, kept inside what the buffer holds for the whole grain
         // (live, the head moves on while it plays; frozen, it stands still). a: room needed ahead, b: behind.
         const double maxBack = silt::maxBackSeconds * fs;
@@ -622,7 +625,7 @@ struct SiltProcessor::Engine
         else a = jmax(0.0, dur * (r - 1)), b = jmax(0.0, dur * (1 - r));
         // Fit the whole segment when possible; longer notes retain their duration and use the capture's splice.
         back = a + b < maxBack - 2 * readMargin ? jlimit(readMargin + a, maxBack - readMargin - b, back) : jlimit((double) readMargin, maxBack - readMargin, back);
-        const double start = (double) capture.head + (frozen ? 0 : wait) - back - early;
+        const double start = (double) capture.head + (frozen ? 0 : wait) - back - (frozen ? 0 : early); // frozen, the head stood still
         lastStart = start;
         g->wait = wait, g->length = jmax(2, (int) dur), g->left = g->length, g->phase = 0, g->inc = 1.0 / g->left;
         g->shape = macro(Texture) < .33f ? 0 : macro(Texture) < .66f ? 1 : 2;
@@ -681,7 +684,10 @@ struct SiltProcessor::Engine
     void midi(const MidiMessage& m, int at, double bpm, bool frozen)
     {
         if (m.isAllNotesOff() || m.isAllSoundOff())
+        {
             heldCount = 0, velocity = 1, slotNote.fill(-1);
+            if (v[Lock] > 1.5f) gap = toneGap(); // tone lock's period follows the notes from their event on
+        }
         else if (m.isNoteOn())
         {
             const auto end = std::remove(held.begin(), held.begin() + heldCount, m.getNoteNumber());
@@ -699,6 +705,7 @@ struct SiltProcessor::Engine
                 for (int k = 1; k < heads; ++k) slot = slotOrder[(size_t) k] < slotOrder[(size_t) slot] ? k : slot;
             }
             slotNote[(size_t) slot] = lastNote, slotOrder[(size_t) slot] = ++noteOrder;
+            if (v[Lock] > 1.5f) gap = toneGap(); // before the note's own burst
             fill(at, bpm, frozen, v[Harmony] > 4.5f ? slot : -1);
         }
         else if (m.isNoteOff())
@@ -707,6 +714,7 @@ struct SiltProcessor::Engine
             heldCount = (int) (end - held.begin());
             velocity = heldCount > 0 ? velocities[(size_t) held[(size_t) heldCount - 1]] : 1;
             std::replace(slotNote.begin(), slotNote.end(), m.getNoteNumber(), -1);
+            if (v[Lock] > 1.5f) gap = toneGap();
         }
         else if (m.isController())
         {
@@ -881,7 +889,6 @@ struct SiltProcessor::Engine
                 frozen = holding();
                 if (wasFrozen && !frozen && v[OnsetMode] > .5f) fill(0, bpm, frozen, -1); // onset full: fresh audio at once
                 wasFrozen = frozen;
-                if (lock == 2) gap = toneGap(); // follows the held note sample by sample
                 float x[2], side[2] {}, dry[2];
                 for (int c = 0; c < 2; ++c)
                 {
@@ -991,10 +998,11 @@ struct SiltProcessor::Engine
                 y[0] = mid + sd, y[1] = mid - sd;
                 if (filterMode != 0 || toneMix > 0) // it fades in and out over 20 ms; bypassed at rest
                 {
-                    if (filterMode != 0 && (toneMix <= 0 || toneMode != filterMode)) // low-pass starts settled on the signal, high-pass at rest
-                        for (int c = 0; c < 2; ++c) toneCoef = toneTarget, tone[c][0].s = tone[c][1].s = filterMode < 0 ? y[c] : 0.0f;
-                    if (filterMode != 0) toneMode = filterMode, toneCoef += ccGlide * (toneTarget - toneCoef);
-                    toneMix = jlimit(0.0f, 1.0f, toneMix + (filterMode != 0 ? freezeStep : -freezeStep));
+                    const int mode = toneMix > 0 && toneMode != filterMode ? 0 : filterMode; // a flip fades the old side out first
+                    if (mode != 0 && toneMix <= 0) // low-pass starts settled on the signal, high-pass at rest
+                        for (int c = 0; c < 2; ++c) toneCoef = toneTarget, tone[c][0].s = tone[c][1].s = mode < 0 ? y[c] : 0.0f;
+                    if (mode != 0) toneMode = mode, toneCoef += ccGlide * (toneTarget - toneCoef);
+                    toneMix = jlimit(0.0f, 1.0f, toneMix + (mode != 0 ? freezeStep : -freezeStep));
                     for (int c = 0; c < 2; ++c)
                     {
                         const float low = tone[c][0].low(y[c], toneCoef);

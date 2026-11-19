@@ -180,16 +180,11 @@ struct Presets : Group
 {
     // The row shows the bank of ten holding the current preset; the rest are a ‹ › step away.
     explicit Presets(SiltProcessor& proc) : Group(proc,panels[6])
-    { for(int i=0;i<10;++i) key("preset:"+String(i),11*i,0,1,[this,i] { p.setCurrentProgram(bank()+i); }); }
+    { for(int i=0;i<10;++i) key("preset:"+String(i),11*i,0,1,[this,i] { p.setCurrentProgram(bank()+i); }); place(); }
     int bank() const { return p.preset >= 10 ? 10 : 0; }
+    void place() { for(int i=0;i<10;++i) keys[i]->setBounds(cells(11*i,0,String(silt::presets[bank()+i].name).length(),1)); } // per bank
     void draw(Grid& g) override
-    {
-        for(int i=0;i<10;++i)
-        {
-            const char* name=silt::presets[bank()+i].name;
-            g.put(11*i,0,name,p.preset==bank()+i?red:grey),keys[i]->setBounds(cells(11*i,0,String(name).length(),1));
-        }
-    }
+    { for(int i=0;i<10;++i) g.put(11*i,0,silt::presets[bank()+i].name,p.preset==bank()+i?red:grey); }
 };
 struct Freeze : Group
 {
@@ -376,6 +371,7 @@ struct Dial : Component, Timer
     {
         if (isTimerRunning()) timerCallback();
         dragging = false;
+        if (e.mods.isPopupMenu() && !e.mods.isCommandDown()) { reset = true; return; } // right-click is the menu's (4.1), never a drag
         if ((reset = e.mods.isAltDown() || e.mods.isCommandDown()))
             field.setVisible(false), attachment.setValueAsCompleteGesture(q.convertFrom0to1(q.getDefaultValue())); // ⌥/⌘, and ctrl where it is the command key
     }
@@ -409,6 +405,7 @@ struct Dial : Component, Timer
     void mouseDoubleClick(const MouseEvent& e) override { if (!e.mods.isAltDown() && !e.mods.isCommandDown()) edit(); }
     void mouseWheelMove(const MouseEvent& e, const MouseWheelDetails& w) override
     {
+        if (dragging || field.isVisible()) return; // never a second gesture inside a drag, nor under its own open field
         const float delta = (std::abs(w.deltaY) > 0 ? w.deltaY : -w.deltaX) * (w.isReversed ? -1.0f : 1.0f); // up / right increases
         if (std::abs(delta) <= 0) return;
         if (!isTimerRunning()) value = q.getValue(), attachment.beginGesture();
@@ -546,7 +543,7 @@ struct Editor : AudioProcessorEditor, Timer
         for (size_t k = 0; k < silt::Feed::bins; ++k) now.insert(now.end(), { f.wave[k].load() });
         if (now == drawnFrom && proc.presetName() == drawnName) return;
         drawnFrom = std::move(now), drawnName = proc.presetName();
-        macros.setVisible(proc.showMacros), presets.setVisible(!proc.showMacros), refresh();
+        macros.setVisible(proc.showMacros), presets.setVisible(!proc.showMacros), presets.place(), refresh();
     }
     void refresh()
     {

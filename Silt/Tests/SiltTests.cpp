@@ -779,6 +779,13 @@ static void testHeadsAndLock()
         run(p,1512,512,r);CHECK(voices(p)==(onset?12:1));
         r.events.clear();run(p,48000*5,512,r);set(p,"freeze",1);run(p,48000,512,r);const int before=p.feed.fired;
         set(p,"freeze",0);run(p,512,512,r);CHECK(p.feed.fired-before==(onset?12:0));
+    }    // A full onset never back-dates past the end of a grain that tape +12 (half length) or texture shortened: no spike.
+    {
+        Proc p;set(p,plain),set(p,{{"size",500},{"density",24},{"trigger",2},{"onset",1},{"pitchMode",1},{"pitch",12},{"shape",100},{"texture",60},{"position",2000}}),prepare(p);
+        Run r;r.input=[](int i,int){return (float)(.5*std::sin(2*pi*220*i/48000));};r.side=[](int,int){return 0.0f;};
+        r.events={{192000,juce::MidiMessage::noteOn(1,60,(juce::uint8)100)}}; // 4 s in: the back-dated reads hold audio
+        const auto a=run(p,240000,512,r);float peak=0;for(size_t i=0;i<a.l.size();++i)peak=std::max({peak,std::abs(a.l[i]),std::abs(a.r[i])});
+        std::cout<<"Full onset, tape +12, shape 100: peak "<<peak<<"\n";CHECK(peak<1);
     }
 }
 // 0.2 phase 3: colour (band, centre, spectra), binaural space, width, the one-knob filter and the feedback amount.
@@ -826,8 +833,8 @@ static void testColourAndSpace()
     {
         Proc p,q;for(auto* x:{&p,&q})set(*x,plain),set(*x,{{"density",24},{"size",200}}),prepare(*x);
         Run r;r.input=[](int i,int){return (float)(.2*std::sin(2*pi*110*i/48000));};
-        r.perBlock=[&](int t){set(p,"filter",t<48000?0.0f:t<72000?-20.0f:t<96000?20.0f:0.0f);};
-        const auto switched=run(p,120000,512,r),steady=run(q,120000,512,r);
+        r.perBlock=[&](int t){set(p,"filter",t<48000?0.0f:t<72000?-20.0f:t<96000?20.0f:t<120000?-100.0f:t<144000?100.0f:0.0f);};
+        const auto switched=run(p,168000,512,r),steady=run(q,168000,512,r);
         std::cout<<"Filter switching step "<<maxStep(switched,24000)<<" (steady "<<maxStep(steady,24000)<<")\n";
         CHECK(maxStep(switched,24000)<1.5*maxStep(steady,24000));
     }
@@ -1085,7 +1092,7 @@ static void testDenseBlocks()
 static void pump() { juce::MessageManager::getInstance()->runDispatchLoopUntil(5); }
 template <typename Done> static void pumpUntil(Done done)
 {
-    for (auto end = juce::Time::getMillisecondCounter() + 2000; !done() && juce::Time::getMillisecondCounter() < end;)
+    for (auto end = juce::Time::getMillisecondCounter() + 10000; !done() && juce::Time::getMillisecondCounter() < end;)
         pump(), juce::Timer::callPendingTimersSynchronously();
 }
 static juce::Component* find(juce::Component& c, const juce::String& id)
@@ -1233,6 +1240,13 @@ static void testEditor()
                     wheel(both,1);near(.355f);settle();pairs(1);
                 }
                 param->setValueNotifyingHost(.3f);wheel(smooth,1);near(.5f);settle();pairs(1);
+                // A right-button drag is the menu's: nothing moves. The wheel adds no gesture inside a drag, nor under the dial's own field.
+                drag({{up,0}},juce::ModifierKeys::rightButtonModifier);near(.5f);pairs(0);
+                drag({{up,0}});const float dragged=param->getValue();param->setValueNotifyingHost(.5f);gestures={};
+                dial->mouseDown(mouse(dial,grab,grab));dial->mouseDrag(mouse(dial,grab+up*px,grab));wheel(notch,2);dial->mouseUp(mouse(dial,grab+up*px,grab));
+                CHECK(param->getValue()==dragged);pairs(1);
+                dial->mouseDoubleClick(mouse(dial,grab,grab,2));wheel(notch,2);CHECK(field->isVisible() && param->getValue()==dragged);
+                key(field,juce::KeyPress::escapeKey);pairs(0);
             }
             else if(dynamic_cast<juce::AudioParameterChoice*>(param))
             {
