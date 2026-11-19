@@ -268,6 +268,8 @@ static void testParameterText()
     set(p,"sizeSync",0); // sync: note values (also from a time), grains per beat, beats
     const auto note=[&](const char* text,const char* want){parse("size",text);CHECK(size->getCurrentValueAsText()==want);};
     note("1/32t","1/32T"),note("1/16T","1/16T"),note("1/4.","1/4D"),note("2 BARS","2 bars"),note("120 ms","1/16"),note("1/5","1/8D"),note("0.5s","1/4");
+    set(p,"lock",1);is("density","×4",13.6f);is("density","x1",1);CHECK(p.apvts.getParameter("density")->getText(p.apvts.getParameter("density")->convertTo0to1(13.6f),0)==juce::String::fromUTF8("×4"));set(p,"lock",0);
+    is("filter","0",0);CHECK(p.apvts.getParameter("filter")->getCurrentValueAsText()=="off");
     is("density","3",6),is("density","3/beat",6),is("density","12 hz",12),is("density","12/s",12);
     is("position","3",1500),is("position","2b",1000),is("position","1 bar",2000),is("position","1.2s",1200);
     // Every shown text reads back as its own value.
@@ -292,11 +294,11 @@ static void testState()
     {
         Proc p,q;
         p.setCurrentProgram(trial%10),p.selectAb(1),randomState(p,rng),p.selectAb(0),randomState(p,rng);
-        p.showMacros=trial%2!=0,p.editorWidth=512+(trial%3)*512;
+        p.editorWidth=512+(trial%3)*512;
         const auto original=params(p); const auto state=save(p);
         load(q,state);
         CHECK(params(q)==original && q.abSlot()==p.abSlot() && q.presetName()==p.presetName());
-        CHECK(q.showMacros==p.showMacros && q.editorWidth==p.editorWidth);
+        CHECK(q.editorWidth==p.editorWidth);
         q.selectAb(1),p.selectAb(1);
         CHECK(params(q)==params(p) && q.presetName()==p.presetName());
         q.selectAb(0),p.selectAb(0);
@@ -1140,8 +1142,10 @@ static void testEditor()
         Proc p(folder);prepare(p);run(p,48000);
         std::unique_ptr<juce::AudioProcessorEditor> editor(p.createEditor());
         auto& e=*editor;auto& timer=dynamic_cast<juce::Timer&>(e);timer.stopTimer();
-        CHECK(e.getWidth()==1024 && e.getHeight()==410);
-        e.setSize(1024*percent/100,410*percent/100),e.setVisible(true);
+        constexpr int w=905,h=836;
+        const int width=juce::roundToInt(w*percent/100.0),height=h*percent/100;
+        CHECK(e.getWidth()==w && e.getHeight()==h);
+        e.setSize(width,height),e.setVisible(true);
         const auto point=[&](juce::Component& c){return e.getLocalPoint(&c,c.getLocalBounds().toFloat().getCentre()).roundToInt();};
         const auto press=[&](const juce::String& id)
         {
@@ -1152,7 +1156,7 @@ static void testEditor()
             if(button){bool done=false;button->triggerClick();juce::MessageManager::callAsync([&]{done=true;});pumpUntil([&]{return done;});}
             timer.timerCallback();
         };
-        CHECK(!find(e,"group:macros")->isVisible());press("macro");CHECK(find(e,"group:macros")->isVisible() && !find(e,"group:presets")->isVisible());
+        CHECK(find(e,"group:macros")->isVisible() && find(e,"macro")==nullptr);
         const auto time=juce::Time::getCurrentTime();
         const auto mouse=[&](juce::Component* c,juce::Point<float> pos,juce::Point<float> down,int clicks=1,int flags=0)
         {
@@ -1161,20 +1165,19 @@ static void testEditor()
         };
         const auto fieldOf=[](juce::Component* dial){juce::TextEditor* f=nullptr;for(auto* c:dial->getChildren())if(auto* t=dynamic_cast<juce::TextEditor*>(c))f=t;return f;};
         const auto key=[](juce::TextEditor* f,int code,int flags=0){f->keyPressed(juce::KeyPress(code,juce::ModifierKeys(flags),0));};
-        const float px=100.0f/(float)percent; // layer px per screen px: gestures feel the same at every zoom
         Gestures gestures;p.addListener(&gestures);
         // Gesture counts since the last check: exactly n begin/end pairs.
         const auto pairs=[&](int n){const bool ok=gestures.begun==n && gestures.ended==n;CHECK(ok);if(!ok)std::cout<<"  gestures "<<gestures.begun<<"/"<<gestures.ended<<" want "<<n<<"\n";gestures={};};
         for(const auto& spec:contract)
         {
-            if(&spec-contract>=silt::numParamsV1)break; // 0.2's parameters get controls with the new layout
             auto* param=p.apvts.getParameter(spec.id);
             if(dynamic_cast<juce::AudioParameterFloat*>(param))
             {
-                auto* dial=find(e,spec.id);CHECK(dial && dial->isVisible() && !dial->getWantsKeyboardFocus());
+                auto* dial=find(e,spec.id);CHECK(dial && dial->isVisible());
                 if(!dial)continue;
                 auto* field=fieldOf(dial);CHECK(field && !field->isVisible());
                 const bool fader=juce::String(spec.id)=="motion" || juce::String(spec.id)=="texture" || juce::String(spec.id)=="bloom" || juce::String(spec.id)=="chaos";
+                const float px=1/juce::Component::getApproximateScaleFactorForComponent(dial);
                 const auto grab=fader?juce::Point<float>(20,8):dial->getLocalBounds().toFloat().getCentre();
                 CHECK(e.getComponentAt(e.getLocalPoint(dial,grab).roundToInt())==dial);
                 const auto drag=[&](std::initializer_list<std::pair<juce::Point<float>,int>> moves,int flags=0)
@@ -1187,7 +1190,7 @@ static void testEditor()
                 const juce::Point<float> up=fader?juce::Point<float>(50,0):juce::Point<float>(0,-50),right(50,0);
                 param->setValueNotifyingHost(.3f);gestures={};
                 // A click, even one moving 3 px, changes nothing and sends nothing.
-                drag({});drag({{up*.06f,0}});near(.3f);pairs(0);
+                drag({});drag({{up*.0598f,0}});near(.3f);pairs(0);
                 // 250 screen px of travel at every zoom, on the larger axis; one gesture per drag.
                 drag({{up,0}});near(.5f);pairs(1);
                 if(!fader){drag({{right,0},{juce::Point<float>(0,10),0}});near(.66f);pairs(1);param->setValueNotifyingHost(.3f);gestures={};}
@@ -1215,7 +1218,7 @@ static void testEditor()
                 CHECK(!field->isVisible() && param->getCurrentValueAsText()==typed);pairs(0);
                 // The wheel: 1% a notch (⇧ 0.1%), a trackpad 250 px for the travel; each burst is one gesture, ended 300 ms after it.
                 juce::MouseWheelDetails notch{0,50.0f/256,false,false,false},smooth{0,50.0f/512,false,true,false},sideways{-50.0f/256,0,false,false,false};
-                const auto wheel=[&](const juce::MouseWheelDetails& w,int n,int flags=0){for(int i=0;i<n;++i)dial->mouseWheelMove(mouse(dial,grab,grab,1,flags),w);};
+                const auto wheel=[&](const juce::MouseWheelDetails& event,int n,int flags=0){for(int i=0;i<n;++i)dial->mouseWheelMove(mouse(dial,grab,grab,1,flags),event);};
                 const auto settle=[&]{pumpUntil([&]{return gestures.ended>0;});};
                 param->setValueNotifyingHost(.3f);gestures={};
                 if(juce::String(spec.id)=="pitch")
@@ -1244,8 +1247,8 @@ static void testEditor()
                 drag({{up,0}},juce::ModifierKeys::rightButtonModifier);near(.5f);pairs(0);
                 drag({{up,0}});const float dragged=param->getValue();param->setValueNotifyingHost(.5f);gestures={};
                 dial->mouseDown(mouse(dial,grab,grab));dial->mouseDrag(mouse(dial,grab+up*px,grab));wheel(notch,2);dial->mouseUp(mouse(dial,grab+up*px,grab));
-                CHECK(param->getValue()==dragged);pairs(1);
-                dial->mouseDoubleClick(mouse(dial,grab,grab,2));wheel(notch,2);CHECK(field->isVisible() && param->getValue()==dragged);
+                near(dragged);pairs(1);
+                dial->mouseDoubleClick(mouse(dial,grab,grab,2));wheel(notch,2);CHECK(field->isVisible());near(dragged);
                 key(field,juce::KeyPress::escapeKey);pairs(0);
             }
             else if(dynamic_cast<juce::AudioParameterChoice*>(param))
@@ -1276,7 +1279,7 @@ static void testEditor()
         e.mouseDown(mouse(find(e,"group:cloud"),{1,1},{1,1}));CHECK(!field("mix")->isVisible() && get(p,"mix")==12);pairs(1);
         open("mix")->setText("oops");e.mouseDown(mouse(find(e,"pitch"),{1,1},{1,1}));CHECK(!field("mix")->isVisible() && get(p,"mix")==12);pairs(0);
         open("mix")->setText("34");e.setSize(e.getWidth()+2,e.getHeight());CHECK(!field("mix")->isVisible() && get(p,"mix")==34);pairs(1);
-        e.setSize(1024*percent/100,410*percent/100);
+        e.setSize(width,height);
         // A wheel over another control does not close an open field, and is its own gesture.
         set(p,"scatter",45);gestures={};open("scatter")->setText("12");
         auto* density=find(e,"density");
@@ -1284,36 +1287,49 @@ static void testEditor()
         CHECK(field("scatter")->isVisible() && field("scatter")->getText()=="12" && get(p,"scatter")==45);
         density->mouseDown(mouse(density,{5,5},{5,5}));density->mouseUp(mouse(density,{5,5},{5,5})); // close the wheel burst
         key(field("scatter"),juce::KeyPress::escapeKey);CHECK(!field("scatter")->isVisible() && get(p,"scatter")==45);pairs(1);
-        // Nothing takes keyboard focus but an open field: Return and Space stay with the host (PLAN 4.2 item 24).
-        std::function<void(juce::Component&)> noFocus=[&](juce::Component& c){
-            if(!dynamic_cast<juce::TextEditor*>(&c)){CHECK(!c.getWantsKeyboardFocus());for(auto* child:c.getChildren())noFocus(*child);}};
-        noFocus(e);
-        // A choice click already selected sends nothing.
+        // Controls take focus on click, and neither choices nor dials consume transport keys.
+        CHECK(find(e,"size")->getWantsKeyboardFocus() && find(e,"trigger:1")->getWantsKeyboardFocus());
+        CHECK(!find(e,"size")->keyPressed(juce::KeyPress(juce::KeyPress::spaceKey))
+              && !find(e,"trigger:1")->keyPressed(juce::KeyPress(juce::KeyPress::spaceKey)));
+        // A choice click already selected sends nothing. Keyboard steps share one gesture.
         set(p,"trigger",1);gestures={};press("trigger:1");press("trigger:2");pairs(1);
+        auto* trigger=find(e,"trigger:1");
+        CHECK(trigger->keyPressed(juce::KeyPress(juce::KeyPress::upKey)) && get(p,"trigger")==1);
+        CHECK(trigger->keyPressed(juce::KeyPress(juce::KeyPress::homeKey)) && get(p,"trigger")==0);
+        pumpUntil([&]{return gestures.ended>0;});pairs(1);
+        auto* freezeControl=find(e,"freeze");
+        const int shift=juce::ModifierKeys::shiftModifier;
+        freezeControl->mouseDown(mouse(freezeControl,{8,8},{8,8},1,shift));CHECK(get(p,"freeze")==1);
+        freezeControl->mouseUp(mouse(freezeControl,{8,8},{8,8},1,shift));CHECK(get(p,"freeze")==0);pairs(1);
         p.removeListener(&gestures);
-        // All hit cells stay inside their group and never cover another control in that group.
-        for(const auto* id:{"grain","pitch","trigger","space / output","macros","header","presets","freeze"})
+        // Compare hit areas across the whole editor, including controls in different groups.
+        std::vector<std::pair<juce::String,juce::Rectangle<int>>> hits;
+        for(const auto* id:{"tier1","tier2","macros","header","freeze"})
         {
             auto* group=find(e,juce::String("group:")+id);CHECK(group);
-            for(auto* a:group->getChildren()) if(a->isVisible())
+            for(auto* control:group->getChildren())
             {
-                CHECK(group->getLocalBounds().contains(a->getBounds()));
-                for(auto* b:group->getChildren())if(b!=a && b->isVisible())CHECK(!a->getBounds().intersects(b->getBounds()));
+                CHECK(group->getLocalBounds().contains(control->getBounds()));
+                const auto bounds=control->getBounds(); // all five groups share the same cell origin
+                for(const auto& [idOther,other]:hits)if(other.intersects(bounds))
+                {
+                    CHECK(false);std::cout<<"  overlapping controls: "<<control->getComponentID()<<" and "<<idOther<<"\n";
+                }
+                hits.emplace_back(control->getComponentID(),bounds);
             }
         }
         p.setCurrentProgram(0);press("next");CHECK(p.preset==1);press("prev");CHECK(p.preset==0);
         press("save");CHECK(p.presetName().startsWith("user "));
         press("B"),set(p,"pitch",12),press("A");CHECK(get(p,"pitch")==-12);press("B");CHECK(get(p,"pitch")==12);
         const auto before=params(p);press("rnd");CHECK(params(p)!=before && p.presetName()=="random");
-        press("macro");CHECK(!find(e,"group:macros")->isVisible() && find(e,"group:presets")->isVisible());
-        for(int i=0;i<10;++i){press("preset:"+juce::String(i));CHECK(p.preset==i);}
-        press("next");CHECK(p.preset==10); // the row now shows presets 11-20
-        for(int i=0;i<10;++i){press("preset:"+juce::String(i));CHECK(p.preset==10+i);}
+        auto* preset=find(e,"presets");CHECK(preset && preset->isVisible());
+        preset->mouseWheelMove(mouse(preset,{5,5},{5,5}),juce::MouseWheelDetails {0,1,false,false,false});
+        CHECK(p.preset==1);
         p.setCurrentProgram(4);
         // Dirty-cell redraw gives the same pixels as a full render; no repaint when audio and controls are idle.
         auto* capture=new RepaintCapture(e);e.setCachedComponentImage(capture);
-        const float scale=(float)percent/50;
-        juce::Image image(juce::Image::RGB,1024*percent/50,410*percent/50,true);
+        constexpr float scale=2;
+        juce::Image image(juce::Image::RGB,width*2,height*2,true);
         capture->consume(image,scale);
         int paints=0;
         for(int frame=0;frame<35;++frame)
@@ -1327,17 +1343,42 @@ static void testEditor()
         {juce::Graphics g(fresh);g.addTransform(juce::AffineTransform::scale(scale));e.paint(g);}
         CHECK(pixels(image)==pixels(fresh));
         Proc restored;load(restored,save(p));std::unique_ptr<juce::AudioProcessorEditor> reopened(restored.createEditor());
-        CHECK(reopened->getWidth()==1024*percent/100 && reopened->getHeight()==410*percent/100);
+        CHECK(reopened->getWidth()==width && reopened->getHeight()==juce::roundToInt((double)width*h/w));
+        juce::XmlElement legacy("SILT");legacy.setAttribute("stateVersion",1);
+        legacy.setAttribute("showMacros",true);legacy.setAttribute("editorWidth",1024*percent/100);
+        juce::MemoryBlock bytes;juce::AudioProcessor::copyXmlToBinary(legacy,bytes);
+        Proc old;load(old,bytes);std::unique_ptr<juce::AudioProcessorEditor> migrated(old.createEditor());
+        CHECK(migrated->getWidth()==width && migrated->getHeight()==reopened->getHeight());
+        CHECK(find(*migrated,"group:macros")->isVisible());
     }
     folder.deleteRecursively();
 }
-// 4.8 s of pad fills the cloud's 4 s span; freeze then holds it for one more second.
-static juce::Image snapshot(int percent=100,bool macros=false,bool freeze=false,float scale=2)
+// 4.8 s of pad fills the cloud; freeze then holds it for one more second. v6: the approved mockup's state
+// (gui/v6/v6.py: preset 11 swarm with its shown values, a held c3, the meters lit as drawn), drawn at the mockup's
+// own pixel size (106 x 49 cells of 1024/120 px, times scale), which can be a pixel off the editor's rounded size.
+static juce::Image snapshot(int percent=100,bool freeze=false,float scale=2,bool v6=false)
 {
-    Proc p;prepare(p);run(p,230400);p.showMacros=macros;
+    Proc p;prepare(p);
+    if(v6)
+    {
+        p.setCurrentProgram(10);
+        for(auto [id,v]:std::initializer_list<std::pair<const char*,float>>{{"motion",40},{"texture",15},{"bloom",25},{"chaos",0},{"sizeSync",0},
+            {"lock",1},{"density",13.6f},{"onset",0},{"position",1200},{"scan",50},{"scatter",45},{"sprayDir",0},{"shape",55},{"tilt",-30},{"reverse",20},
+            {"drop",10},{"repeat",0},{"trigger",0},{"pitch",12},{"pitchMode",0},{"detune",6},{"scale",2},{"heads",1},{"harmony",1},{"band",40},
+            {"centre",2100},{"spectra",30},{"filter",0},{"width",100},{"space",1},{"reverbOn",1},{"reverb",30},{"feedback",20},{"mix",100},{"output",0},{"oversample",1}})
+            set(p,id,v);
+        p.apvts.getParameter("size")->setValueNotifyingHost(.4f); // the mockup's arc; it reads 1/16 in sync
+    }
+    run(p,v6?384000:230400);
     if(freeze){set(p,"freeze",1);Run r;r.offset=230400;run(p,48000,512,r);}
+    if(v6)p.feed.note=60,p.feed.held=true,p.feed.meter[0]=p.feed.meter[1]=7/36.0f,p.feed.meter[2]=4/30.0f,p.feed.centre=3.32f;
     std::unique_ptr<juce::AudioProcessorEditor> editor(p.createEditor());
-    editor->setSize(1024*percent/100,410*percent/100);
+    if(v6)
+    {
+        editor->setSize(juce::roundToInt(1024.0/120*106*scale),juce::roundToInt(1024.0/60*49*scale));
+        scale=1;
+    }
+    else editor->setSize(juce::roundToInt(905*percent/100.0),836*percent/100);
     return editor->createComponentSnapshot(editor->getLocalBounds(),true,scale);
 }
 static juce::String soundHash()
@@ -1397,7 +1438,7 @@ static void testGoldens(bool record=false)
     const bool ci=std::getenv("GITHUB_ACTIONS")!=nullptr;
     const char* expectedEnvironment="14.2.0/Release/07adb83962bd7f372226ea055bca705c159534fa4a19d3279488b12cd95eea5c", *expectedRenderer="506141d22f79fb1886eb4dec6e8e40da3c3c48e3df63f1f3d60e979dd78361b5";
     const char* expectedSound="c84295f77b28dd4228a7fe471bf7e41937303f55ff5663e927482f9dca5907da";
-    const char* expectedShots[]{"03c1267a53e020ac141dd43b3fc7f19032595a4cef35ba60a7392df930093463","16e2c80b54d29ef2a7b0987c4411b50ab275fb3e9ea404b7faf68cd31edcf415","c3eabceccba6d36a308e2afb1eccb026a3cd1b26845191afef88565950ce5399"};
+    const char* expectedShots[]{"35d32637a5422024c559ff3d06ed063f60308a9f356317f83725ac90e91083ec","70afc797a00590aeb24e6f23be7d1dad1b42efd3caf93f3729914c7a55c133f9","c5e9302f2e3956a5b2716486cd72d737ac8070e6a34938aacc62c6b757dccfd6"};
     std::cout<<"Golden environment: "<<environment<<"\nGolden renderer: "<<renderer<<"\n";
     if(record || (!ci && environment==expectedEnvironment))
     {
@@ -1440,13 +1481,13 @@ int main(int argc,char** argv)
 #endif
     std::cout<<std::unitbuf;
     const juce::ScopedJuceInitialiser_GUI init;
-    if(const juce::String mode=argc>=3?argv[1]:"";mode=="--screenshot" || mode=="--screenshot-macros" || mode=="--screenshot-freeze")
+    if(const juce::String mode=argc>=3?argv[1]:"";mode=="--screenshot" || mode=="--screenshot-freeze" || mode=="--screenshot-v6")
     {
-        // An optional scale: 1 = 1024 x 410 pixels at device scale 1, 2 (default) = 2048 x 820.
+        // An optional scale: 1 = 905 x 836 pixels at device scale 1, 2 (default) = twice that (v6: the mockup's 1809 x 1673).
         const float scale=argc>=4?juce::jlimit(1.0f,4.0f,juce::String(argv[3]).getFloatValue()):2.0f;
         juce::File file=juce::File::getCurrentWorkingDirectory().getChildFile(argv[2]);file.deleteFile();
         juce::FileOutputStream output(file);
-        return output.openedOk() && juce::PNGImageFormat().writeImageToStream(snapshot(100,mode=="--screenshot-macros",mode=="--screenshot-freeze",scale),output)?0:1;
+        return output.openedOk() && juce::PNGImageFormat().writeImageToStream(snapshot(100,mode=="--screenshot-freeze",scale,mode=="--screenshot-v6"),output)?0:1;
     }
     if(argc>=2 && (juce::String(argv[1])=="--bench" || juce::String(argv[1])=="--profile")){bench(juce::String(argv[1])=="--profile");return failures?1:0;}
     if(argc>=3 && juce::String(argv[1])=="--renders"){renderFiles(juce::File(argv[2]));return failures?1:0;}

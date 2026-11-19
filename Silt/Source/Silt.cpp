@@ -57,7 +57,14 @@ AudioProcessorValueTreeState::ParameterLayout layout(const SiltProcessor& self)
         num(Size,"Size",.5f,4000,51.78f,.01f,sizeTravel,sizeText),
         choice(SizeSync,"Size Mode",{"sync","free"},0),
         // In sync the engine plays whole grains per quarter and a position quantised to them: say so.
-        num(Density,"Density",1,64,24,.1f,Travel {1,64,1.26,false},[sync](float v) { return sync() ? String(jmax(1,roundToInt(v/2)))+"/beat" : String(v,std::abs(v-std::round(v))<.05f?0:1)+"/s"; }),
+        // Overlap lock reads density as x1-x16 grains per size: say so.
+        num(Density,"Density",1,64,24,.1f,Travel {1,64,1.26,false},[sync,&self](float v) {
+            if (roundToInt(self.apvts.getRawParameterValue("lock")->load()) == 1)
+            {
+                const float overlap = 1 + 15 * (v - 1) / 63;
+                return String::fromUTF8("×") + String(overlap, std::abs(overlap - std::round(overlap)) < .05f ? 0 : 1);
+            }
+            return sync() ? String(jmax(1,roundToInt(v/2)))+"/beat" : String(v,std::abs(v-std::round(v))<.05f?0:1)+"/s"; }),
         num(Position,"Position",0,4000,1200,.1f,{},[sync,perQuarter](float v) { const int q=perQuarter(); return sync() ? String(std::round(v*q/125)*.25/q,2)+" beats" : msText(v); }),
         num(Scatter,"Scatter",0,100,45,.1f,{},percent),
         num(Pitch,"Pitch",-48,48,12,.01f,{},[](float v) { return (v>0?"+":"")+String(v,std::abs(v-std::round(v))<.005f?0:2)+" st"; }),
@@ -85,7 +92,7 @@ AudioProcessorValueTreeState::ParameterLayout layout(const SiltProcessor& self)
         num(Spectra,"Spectra",0,100,0,.1f,{},percent),
         choice(Space,"Space",{"pan","binaural"},0),
         num(Width,"Width",0,200,100,.1f,{},percent),num(Feedback,"Feedback",0,95,0,.1f,{},percent),
-        num(Filter,"Filter",-100,100,0,.1f,{},bipolar),
+        num(Filter,"Filter",-100,100,0,.1f,{},[bipolar](float v) { return std::abs(v)<.05f ? String("off") : bipolar(v); }),
         choice(SprayDir,"Spray",{"both","back","ahead"},0),
         choice(OnsetMode,"Onset",{"ramp","full"},0) };
 }
@@ -107,7 +114,7 @@ std::optional<float> SiltProcessor::parse(const String& id, const String& typed)
     auto* q = dynamic_cast<AudioParameterFloat*>(apvts.getParameter(id)); // continuous parameters only
     if (q == nullptr) return std::nullopt;
     const int i = (int) (std::find_if(std::begin(ids), std::end(ids), [&](const char* s) { return id == s; }) - std::begin(ids));
-    auto t = typed.toLowerCase().replace(String::fromUTF8("−"), "-").removeCharacters(" \t");
+    auto t = typed.toLowerCase().replace(String::fromUTF8("−"), "-").replace(String::fromUTF8("×"), "x").removeCharacters(" \t");
     if (!t.containsChar('.')) t = t.replaceCharacter(',', '.');
     const auto word = t.initialSectionContainingOnly("abcdefghijklmnopqrstuvwxyz#"), rest = t.substring(word.length());
     const auto digits = rest.initialSectionContainingOnly("+-.0123456789"), unit = rest.substring(digits.length());
@@ -135,7 +142,11 @@ std::optional<float> SiltProcessor::parse(const String& id, const String& typed)
         case Scan: out = t == "stop" ? 0.0 : t == "normal" ? 100.0 : t == "rev" ? -100.0 : in({ { "", 1 }, { "%", 1 }, { "x", 100 } }); break;
         case Filter: out = t == "off" ? 0.0 : prefixed("lp", "hp"); break;
         case Tilt: out = prefixed("pluck", "swell"); break;
-        case Density: out = in({ { "", sync ? 2 : 1 }, { "/s", 1 }, { "hz", 1 }, { "/beat", 2 }, { "/b", 2 } }); break; // grains/s; a beat holds two
+        case Density:
+            if (v && unit.isEmpty() && (word == "x" || (word.isEmpty() && roundToInt(apvts.getRawParameterValue("lock")->load()) == 1)))
+                out = 1 + (*v - 1) * 63 / 15;
+            else out = in({ { "", sync ? 2 : 1 }, { "/s", 1 }, { "hz", 1 }, { "/beat", 2 }, { "/b", 2 } });
+            break; // grains/s; a beat holds two
         case Position: out = in({ { "", sync ? 500 : 1 }, { "ms", 1 }, { "s", 1000 }, { "b", beats }, { "beat", beats }, { "beats", beats }, { "bar", 4 * beats }, { "bars", 4 * beats } }); break;
         case Size:
         {
@@ -1156,7 +1167,6 @@ void SiltProcessor::getStateInformation(MemoryBlock& dest)
                 state.setProperty(k == 0 ? "slotNameA" : "slotNameB", slotName[k], nullptr);
             }
     }
-    state.setProperty("showMacros", showMacros.load(), nullptr);
     if (editorWidth > 0)
         state.setProperty("editorWidth", editorWidth.load(), nullptr);
     if (auto xml = state.createXml())
@@ -1198,7 +1208,6 @@ void SiltProcessor::setStateInformation(const void* data, int size)
             for (int i = silt::numParamsV1; i < silt::numParams; ++i) slots[k].push_back(apvts.getParameter(ids[i])->getDefaultValue());
         if (slots[k].size() != silt::numParams) slots[k].clear();
     }
-    showMacros = tree->getBoolAttribute("showMacros", false);
     ab = number(tree->getStringAttribute("ab")).value_or(0) > 0.5 ? 1 : 0;
     editorWidth = (int) jlimit(0.0, 4096.0, number(tree->getStringAttribute("editorWidth")).value_or(0));
     preset = (int) jlimit(-1.0, silt::numPresets - 1.0, number(tree->getStringAttribute("preset")).value_or(-1)), userName = tree->getStringAttribute("presetName");
@@ -1286,8 +1295,13 @@ void SiltProcessor::stepPreset(int delta)
     at = (jmax(0, at) + delta + count) % count; // a custom or random sound steps from the first preset
     if (at < silt::numPresets)
         return setCurrentProgram(at);
-    if (const auto xml = parseXML(files[at - silt::numPresets]); xml != nullptr && xml->hasTagName("SILT"))
-        applyParams(*xml, true), setIdentity(-1, files[at - silt::numPresets].getFileNameWithoutExtension());
+    loadUserPreset(files[at - silt::numPresets]);
+}
+
+void SiltProcessor::loadUserPreset(const File& file)
+{
+    if (const auto xml = parseXML(file); xml != nullptr && xml->hasTagName("SILT"))
+        applyParams(*xml, true), setIdentity(-1, file.getFileNameWithoutExtension());
 }
 
 File SiltProcessor::saveUserPreset()
@@ -1306,7 +1320,7 @@ File SiltProcessor::saveUserPreset()
     return file;
 }
 
-void SiltProcessor::selectAb(int slot)
+void SiltProcessor::selectAb(int slot, bool copy)
 {
     std::vector<float> to;
     int toPreset = 0;
@@ -1316,10 +1330,12 @@ void SiltProcessor::selectAb(int slot)
         const int from = ab;
         if (slot == from || !isPositiveAndBelow(slot, 2))
             return;
-        slots[from].resize(silt::numParams);
+        const int saveTo = copy ? slot : from;
+        slots[saveTo].resize(silt::numParams);
         for (int k = 0; k < silt::numParams; ++k)
-            slots[from][(size_t) k] = apvts.getParameter(ids[k])->getValue();
-        slotPreset[from] = preset, slotName[from] = userName;
+            slots[saveTo][(size_t) k] = apvts.getParameter(ids[k])->getValue();
+        slotPreset[saveTo] = preset, slotName[saveTo] = userName;
+        if (copy) return;
         to = slots[slot], toPreset = slotPreset[slot], toName = slotName[slot], ab = slot;
     }
     if (!to.empty()) // never visited: it starts as a copy of the other slot
@@ -1327,6 +1343,23 @@ void SiltProcessor::selectAb(int slot)
 }
 
 AudioProcessor* JUCE_CALLTYPE createPluginFilter() { return new SiltProcessor(); }
+
+void SiltProcessor::nudge(int64 seed)
+{
+    float next[silt::numParams];
+    Random random(seed);
+    for (int i = 0; i < silt::numParams; ++i)
+    {
+        auto* param = apvts.getParameter(ids[i]);
+        next[i] = param->getValue();
+        if (i != Mix && i != Output && i != Trigger && i != Oversample && !(i >= Motion && i <= Chaos)
+            && i != Freeze && i != OnsetMode && !param->isDiscrete())
+            next[i] = jlimit(0.0f, 1.0f, next[i] + .3f * (random.nextFloat() - .5f));
+    }
+    selectAb(1 - abSlot(), true);
+    setAll(next);
+    setIdentity(-1, "random");
+}
 
 void SiltProcessor::randomise(int64 seed)
 {

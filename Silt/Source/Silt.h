@@ -92,19 +92,20 @@ public:
 
     juce::AudioProcessorValueTreeState apvts;
     silt::Feed feed;
-    std::atomic<int> editorWidth { 0 }; // 0 = never resized; saved as an additive root attribute
-    std::atomic<bool> showMacros { false }; // the editor's macro panel; saved as an additive root attribute
+    std::atomic<int> editorWidth { 0 }; // in 0.1.0's 1024-px-wide units (0 = never resized); saved as an additive root attribute. An old showMacros attribute is ignored.
 
     // Presets and A/B. preset: factory index, -1 = a user file or a custom sound.
     juce::File presetFolder() const;
     void stepPreset(int delta); // through the factory presets, then the user files
     juce::File saveUserPreset();
+    void loadUserPreset(const juce::File& file);
     juce::String presetName() const;
     std::atomic<int> preset { 4 };
     int abSlot() const { return ab.load(); }
-    void selectAb(int slot);
+    void selectAb(int slot, bool copy = false);
     // A musical, loudness-safe random sound from `seed`; mix, output, trigger, quality, onset and the macros stay. Undo with A/B.
     void randomise(juce::int64 seed);
+    void nudge(juce::int64 seed);
     // A typed value for a float parameter (PLAN 4.1 grammar), as a clamped plain value; nothing if the text is invalid.
     std::optional<float> parse(const juce::String& id, const juce::String& text) const;
 
