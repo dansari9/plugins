@@ -1,6 +1,5 @@
 #include "Silt.h"
 #include "SiltReverb.h"
-#include <optional>
 #include <juce_dsp/juce_dsp.h>
 #include <sstream>
 
@@ -264,13 +263,14 @@ struct Capture
         const auto i = (int64) whole; const float fraction = (float) (j - whole);
         l = hermite(data[k][0], mask[k], i, fraction), r = hermite(data[k][1], mask[k], i, fraction);
     }
+    static constexpr int batch = 128;
+    static int readMargin(int k) { return jmax(margin, delay[k] + 4 * (1 << k) + batch); }
     void read(double t, int k, float& l, float& r, double atHead) const
     {
         // Very long synced / reverse / frozen grains loop within recent history. A short splice avoids a step
         // when a reader crosses either edge; ordinary reads away from the edges are unchanged.
         constexpr double fade = 128;
-        const int readMargin = jmax(margin, delay[k] + 4 * (1 << k) + batch);
-        const double lo = atHead - history + readMargin, hi = atHead - readMargin, period = hi - lo - fade;
+        const double lo = atHead - history + readMargin(k), hi = atHead - readMargin(k), period = hi - lo - fade;
         if (t < lo + fade || t >= hi) t -= period * std::floor((t - lo - fade) / period);
         readAt(t, k, l, r);
         if (t > hi - fade)
@@ -281,15 +281,13 @@ struct Capture
             l += mix * (l2 - l), r += mix * (r2 - r);
         }
     }
-    static constexpr int batch = 128;
     void readBatch(const double* positions, int k, float* l, float* r, int length,
                    bool frozen, float freezeStep) const
     {
         alignas(16) float a[2][batch], b[2][batch], c[2][batch], e[2][batch], fraction[batch];
-        const int readMargin = jmax(margin, delay[k] + 4 * (1 << k) + batch);
         bool safe = true;
         for (int i = 0; i < length; ++i)
-            safe = safe && positions[i] >= head - history + readMargin + 128 + batch && positions[i] <= head - readMargin - 128;
+            safe = safe && positions[i] >= head - history + readMargin(k) + 128 + batch && positions[i] <= head - readMargin(k) - 128;
         if (!safe)
         {
             float futureGain = gain;
@@ -417,7 +415,7 @@ struct SiltProcessor::Engine
     static constexpr int K = 32;
     std::array<std::atomic<float>*, silt::numParams> raw {};
     float v[silt::numParams] {}; // this block's parameters
-    double fs = 48000, tempo = 120;
+    double fs = 48000;
     Capture capture;            // main input history; sidechain only triggers
     // Locked clocks steal: the oldest grain moves to one of 16 tail voices and releases over 2 ms, so the new one is on time.
     static constexpr int tail = 16;
@@ -546,7 +544,7 @@ struct SiltProcessor::Engine
     }
 
     float random() { seed ^= seed << 13, seed ^= seed >> 17, seed ^= seed << 5; return (float) (seed >> 8) * 0x1p-24f; } // 0..1
-    float macro(int i) const { return jmin(1.0f, v[i] / 100 + control(i == Motion ? 0 : i == Texture ? 1 : i == Bloom ? 2 : 3)); }
+    float macro(int i) const { return jmin(1.0f, v[i] / 100 + control(i - Motion)); }
     float control(int k) const { return jmax(0.0f, cc[k]); } // a controller's value, 0 until received
     static float lookup(const std::array<float, 1025>& t, float x)
     {
@@ -611,7 +609,7 @@ struct SiltProcessor::Engine
         st = jlimit(-48.0, 48.0, st);
         const double r = std::exp2(st / 12);
         const int mip = r <= 1.19 ? 0 : jmin(levels - 1, (int) std::ceil(std::log2(r / 1.19)));
-        const int readMargin = jmax(margin, delay[mip] + 4 * (1 << mip) + Capture::batch);
+        const int readMargin = Capture::readMargin(mip);
         const bool reverse = random() < 0.65f * macro(Chaos) || (v[Reverse] > 0 && random() < v[Reverse] / 100), shifted = v[PitchMode] < 0.5f;
         const double dir = reverse ? -1 : 1;
         // Keep the tap modulation below 25 Hz even at +48 st. Grain length stays independent of pitch;
@@ -683,7 +681,7 @@ struct SiltProcessor::Engine
     }
     // A note-on's grain; onset full back-dates a whole size of the head's grains, so the cloud is there at once.
     // In held mode the burst goes to the note's head (slot), whose grains arrive every `occupied` clock grains.
-    void fill(int wait, double bpm, bool frozen, int slot)
+    void fill(double bpm, bool frozen, int slot)
     {
         const int heads = roundToInt(v[Heads]) + 1, lanes = jmax(2, heads);
         const int occupied = slot < 0 ? 1 : (int) std::count_if(slotNote.begin(), slotNote.begin() + heads, [](int n) { return n >= 0; });
@@ -692,10 +690,10 @@ struct SiltProcessor::Engine
         for (int k = 0; k < count; ++k)
         {
             if (slot >= 0) stream = (slot + lanes - 1) % lanes;
-            spawn(wait, bpm, frozen, k * size / count);
+            spawn(0, bpm, frozen, k * size / count);
         }
     }
-    void midi(const MidiMessage& m, int at, double bpm, bool frozen)
+    void midi(const MidiMessage& m, double bpm, bool frozen)
     {
         if (m.isAllNotesOff() || m.isAllSoundOff())
         {
@@ -720,7 +718,7 @@ struct SiltProcessor::Engine
             }
             slotNote[(size_t) slot] = lastNote, slotOrder[(size_t) slot] = ++noteOrder;
             if (v[Lock] > 1.5f) gap = toneGap(); // before the note's own burst
-            fill(at, bpm, frozen, v[Harmony] > 4.5f ? slot : -1);
+            fill(bpm, frozen, v[Harmony] > 4.5f ? slot : -1);
         }
         else if (m.isNoteOff())
         {
@@ -733,13 +731,8 @@ struct SiltProcessor::Engine
         else if (m.isController())
         {
             // Fixed smoothed macro offsets, never writes automation: CC1/2/3/4 motion/texture/bloom/chaos.
-            constexpr int map[] { 1, 2, 3, 4 };
-            for (int k = 0; k < 4; ++k)
-                if (map[k] == m.getControllerNumber())
-                {
-                    if (cc[k] < 0) cc[k] = 0.0f;
-                    ccTarget[k] = (float) m.getControllerValue() / 127;
-                }
+            if (const int k = m.getControllerNumber() - 1; isPositiveAndBelow(k, 4))
+                cc[k] = jmax(0.0f, cc[k]), ccTarget[k] = (float) m.getControllerValue() / 127;
             if (m.getControllerNumber() == 121)
                 std::fill(std::begin(cc), std::end(cc), -1.0f), std::fill(std::begin(ccTarget), std::end(ccTarget), -1.0f);
         }
@@ -841,12 +834,12 @@ struct SiltProcessor::Engine
                 if (const auto b = pos->getBpm(); b && std::isfinite(*b) && *b > 0) bpm = jlimit(20.0, 999.0, *b);
                 if (const auto q = pos->getPpqPosition(); q && std::isfinite(*q) && pos->getIsPlaying()) playing = true, ppq = *q;
             }
-        tempo = bpm, feed.tempo = (float) bpm;
+        feed.tempo = (float) bpm;
         const bool synced = v[SizeSync] < 0.5f && playing && v[Lock] < .5f; // locked clocks run free
+        const double quartersPerGrain = 1.0 / jmax(1, roundToInt(v[Density] / 2));
         if (synced)
         {
-            const double quarters = 1.0 / jmax(1, roundToInt(v[Density] / 2));
-            const double target = ppq / quarters;
+            const double target = ppq / quartersPerGrain;
             if (!wasPlaying || std::abs(target - phase) > 1e-5) lastTick = std::ceil(target - 1e-9) - 1;
             phase = target;
         }
@@ -867,8 +860,7 @@ struct SiltProcessor::Engine
         }
         // The clock: free reads density; overlap reads it as x1-x16 grains per size (see overlapOf); tone, one grain per period.
         const int lock = roundToInt(v[Lock]);
-        gap = lock == 0 ? period(bpm) : lock == 1 ? grainSize(bpm) / (1 + 15 * (v[Density] - 1) / 63) : toneGap();
-        const double quartersPerGrain = 1.0 / jmax(1, roundToInt(v[Density] / 2));
+        gap = lock == 0 ? period(bpm) : lock == 1 ? grainSize(bpm) / overlapOf(v[Density]) : toneGap();
         verb.setTargetValue(v[ReverbOn] > .5f ? v[ReverbAmount] / 100 : 0.0f);
         const double scanRange = jmax(1.0, silt::maxBackSeconds * fs - v[Position] * fs / 1000);
         const double anchor = position(bpm), ride = 0.02 * fs, wrap = silt::maxBackSeconds * fs - 2 * ride;
@@ -888,11 +880,11 @@ struct SiltProcessor::Engine
                 const int t = chunk + i;
                 bool frozen = holding();
                 for (; event != midiBuffer.cend() && (*event).samplePosition <= t; ++event)
-                    if ((*event).numBytes <= 3) midi((*event).getMessage(), 0, bpm, frozen); // ignore SysEx without allocating
+                    if ((*event).numBytes <= 3) midi((*event).getMessage(), bpm, frozen); // ignore SysEx without allocating
                 for (int k = 0; k < 4; ++k)
                     if (ccTarget[k] >= 0) cc[k] += ccGlide * (ccTarget[k] - cc[k]);
                 frozen = holding();
-                if (wasFrozen && !frozen && v[OnsetMode] > .5f) fill(0, bpm, frozen, -1); // onset full: fresh audio at once
+                if (wasFrozen && !frozen && v[OnsetMode] > .5f) fill(bpm, frozen, -1); // onset full: fresh audio at once
                 wasFrozen = frozen;
                 float x[2], side[2] {}, dry[2];
                 for (int c = 0; c < 2; ++c)
@@ -967,17 +959,16 @@ struct SiltProcessor::Engine
                         auto& g = grains[(size_t) k];
                         if (g.wait > 0) { --g.wait; continue; }
                         trace(g, feed, now, capture.head);
-                        const auto& cap = capture;
                         const float w = envelope(g) * (g.fade > 0 ? (float) g.left / (float) g.fade : 1.0f);
                         g.phase += g.inc, --g.left;
                         float l, r;
-                        if (!g.shifted) cap.read(g.pos, g.level, l, r, cap.head), g.pos += g.step;
+                        if (!g.shifted) capture.read(g.pos, g.level, l, r, capture.head), g.pos += g.step;
                         else
                         {
                             float l2, r2;
                             const float second = g.tap + 0.5f * g.span >= g.span ? g.tap - 0.5f * g.span : g.tap + 0.5f * g.span;
                             const float a = lookup(taps, g.tap / g.span), b = 1 - a;
-                            cap.read(g.pos - g.step * g.tap, g.level, l, r, cap.head), cap.read(g.pos - g.step * second, g.level, l2, r2, cap.head);
+                            capture.read(g.pos - g.step * g.tap, g.level, l, r, capture.head), capture.read(g.pos - g.step * second, g.level, l2, r2, capture.head);
                             l = a * l + b * l2, r = a * r + b * r2;
                             g.pos += g.step, g.tap += g.tapStep;
                             if (g.tap < 0 || g.tap >= g.span) g.tap -= g.span * std::floor(g.tap / g.span);
@@ -1085,7 +1076,7 @@ struct SiltProcessor::Engine
             }
             chunk += count;
         }
-        publish(feed);
+        publish(feed, bpm);
     }
     float diffuse(float x, size_t k)
     {
@@ -1095,7 +1086,7 @@ struct SiltProcessor::Engine
         if (++diffusionAt[k] == d.size()) diffusionAt[k] = 0;
         return delayed - 0.5f * w;
     }
-    void publish(silt::Feed& feed)
+    void publish(silt::Feed& feed, double bpm)
     {
         size_t k = 0;
         for (int i = 0; i < voiceCount; ++i)
@@ -1104,7 +1095,7 @@ struct SiltProcessor::Engine
                 feed.env[k++].store(jmax(0.001f, envelope(g)), std::memory_order_relaxed);
             }
         for (; k < (size_t) silt::Feed::dots; ++k) feed.env[k].store(0, std::memory_order_relaxed);
-        feed.centre.store((float) ((position(tempo) + scanned) / fs), std::memory_order_relaxed);
+        feed.centre.store((float) ((position(bpm) + scanned) / fs), std::memory_order_relaxed);
         feed.frozen.store(capture.gain <= 0, std::memory_order_relaxed);
         feed.captureHead.store(capture.head, std::memory_order_relaxed);
         feed.time.store(now, std::memory_order_relaxed), feed.sampleRate.store((float) fs, std::memory_order_relaxed);
@@ -1119,8 +1110,6 @@ SiltProcessor::SiltProcessor(File directory)
       apvts(*this, nullptr, "SILT", layout(*this)), presetDirectory(directory), engine(std::make_unique<Engine>())
 {
     for (int i = 0; i < silt::numParams; ++i) engine->raw[(size_t) i] = apvts.getRawParameterValue(ids[i]);
-    preset = 4;
-    setLatencySamples(0);
 }
 SiltProcessor::~SiltProcessor() = default;
 void SiltProcessor::prepareToPlay(double sr, int)

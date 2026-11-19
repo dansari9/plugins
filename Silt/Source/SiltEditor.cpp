@@ -2,7 +2,6 @@
 // Coordinates are the v6 mockup's cells (gui/v6/v6.py); each group owns its hit cells, and only changed cells repaint.
 #include "BinaryData.h"
 #include "Silt.h"
-#include <optional>
 #include <tuple>
 using namespace juce;
 namespace
