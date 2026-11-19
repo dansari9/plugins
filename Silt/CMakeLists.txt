@@ -63,15 +63,12 @@ target_compile_definitions(Silt
         JUCE_USE_CURL=0
         JUCE_VST3_CAN_REPLACE_VST2=0
         JUCE_FORCE_USE_LEGACY_PARAM_IDS=0
-        JUCE_REPORT_APP_USAGE=0
 )
 
 # Every block size must render bit-identically (SiltTests' dense block equivalence). With FMA targets (e.g. GCC 15
 # -march=x86-64-v3 reproduces the ubuntu-26.04 runner exactly) the default -ffp-contract=fast fuses the scalar and
 # batched grain readers differently (2.98e-08 mismatches).
-if(NOT MSVC)
-    target_compile_options(Silt PRIVATE -ffp-contract=off)
-endif()
+target_compile_options(Silt PRIVATE -ffp-contract=off)
 
 target_link_libraries(Silt
     PRIVATE
@@ -96,9 +93,7 @@ target_link_libraries(SiltTests
         juce::juce_recommended_warning_flags
 )
 # The tests compare floats bit-exactly on purpose and replace the global operator new.
-if(NOT MSVC)
-    set_source_files_properties(Tests/SiltTests.cpp PROPERTIES COMPILE_OPTIONS "-Wno-float-equal;-Wno-mismatched-new-delete")
-endif()
+set_source_files_properties(Tests/SiltTests.cpp PROPERTIES COMPILE_OPTIONS "-Wno-float-equal;-Wno-mismatched-new-delete")
 set_target_properties(SiltTests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
 target_compile_definitions(SiltTests PRIVATE JUCE_MODAL_LOOPS_PERMITTED=1) # public message pump for the editor tests
 

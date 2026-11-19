@@ -79,7 +79,7 @@ def main():
 '''
     for m in rows:report+=f"| {m['file']} | {m['peak']:.3f} | {m['rms']:.3f} | {m['dc']:.3f} | {m['crest']:.3f} | {m['max_step']:.6f} | {m['hp_peak']:.3f} | {m['clicks']} |\n"
     report+='\n## Pitched sine sweeps\n\n30 Hz–20 kHz logarithmic source sweep over 4 seconds, captured then read at +24/+48 st in both modes. The first grain is analysed before delayed feedback returns. STFT expected bands include the exact sweep slope, frame support, pitch-scaled tap support, and four Hann main-lobe bins. Nonharmonic includes all energy outside that interval; above-band counts energy above its upper edge. Folded stop compares output when the expected band is wholly above 26 kHz with the mean in-band output below 20 kHz. These metrics distinguish alias foldback from intended tap/window sidebands.\n\n| Mode | Pitch st | Nonharmonic dBc | Above band dBc | Folded stop dB |\n| --- | ---: | ---: | ---: | ---: |\n'
-    for m in aliases:report+=f"| {m['mode']} | {m['pitch']} | {m['nonharmonic_db']:.2f} | {m['above_band_db']:.2f} | {m['folded_stop_db']:.2f} |\n"
+    for m in aliases:report+=f"| {m['mode']} | {m['pitch']} | {m['nonharmonic_db']:.2f} | {m['above_band_db']:.2f} | {'n/a' if m['folded_stop_db'] is None else format(m['folded_stop_db'],'.2f')} |\n"
     report+=f'\n{len(rows)} program renders; {len(fail)} level/DC/click failures. {len(alias_fail)} sweep failures (bounds: nonharmonic ≤ −45 dBc, above-band ≤ −50 dBc, folded stop ≤ −80 dB).\n'
     args.output.write_text(report);args.output.with_suffix('.json').write_text(json.dumps(dict(renders=rows,aliases=aliases,failures=fail,alias_failures=alias_fail),indent=2)+'\n')
     print(report[-1300:]);print('Failures:',[(m['file'],m['clicks'],round(m['dc'],2)) for m in fail])
