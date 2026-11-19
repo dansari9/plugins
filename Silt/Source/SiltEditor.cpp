@@ -2,6 +2,7 @@
 // Coordinates are the v6 mockup's cells (gui/v6/v6.py); each group owns its hit cells, and only changed cells repaint.
 #include "BinaryData.h"
 #include "Silt.h"
+#include <optional>
 #include <tuple>
 using namespace juce;
 namespace
@@ -795,7 +796,6 @@ struct Editor : AudioProcessorEditor, Timer
     String drawnName, hoverHint;
     uint32 hintLeft = 0;
     Image image;
-    std::unique_ptr<Graphics> imageGraphics;
     double pixelCell = designCell;
     Font fonts[2] { mono(1, false), mono(1, true) };
     explicit Editor(SiltProcessor& p) : AudioProcessorEditor(p), proc(p), header(p),
@@ -997,13 +997,19 @@ struct Editor : AudioProcessorEditor, Timer
     void show(int x, int y, int w, int h)
     {
         const double sx = (double) getWidth() / C, sy = (double) getHeight() / R;
+        std::optional<Graphics> graphics;
         for (int j = y; j < y + h; ++j)
             for (int i = x, first = -1, last = -1; i <= x + w; ++i)
             {
                 if (i < x + w && next->at[j][i] != shown->at[j][i])
                 {
                     shown->at[j][i] = next->at[j][i], first = first < 0 ? i : first, last = i;
-                    if (imageGraphics) drawCell(*imageGraphics, i, j);
+                    if (image.isValid())
+                    {
+                        // Opening a new context invalidates the native image's cached CoreGraphics copy.
+                        if (!graphics) graphics.emplace(image);
+                        drawCell(*graphics, i, j);
+                    }
                 }
                 else if (first >= 0 && (i == x + w || i - last > 8))
                 {
@@ -1018,9 +1024,8 @@ struct Editor : AudioProcessorEditor, Timer
         const int iw = jmax(1, roundToInt(getWidth() * scale)), ih = jmax(1, roundToInt(getHeight() * scale));
         if (image.getWidth() != iw || image.getHeight() != ih)
         {
-            imageGraphics.reset();
             image = Image(Image::RGB, iw, ih, false);
-            imageGraphics = std::make_unique<Graphics>(image);
+            Graphics graphics(image);
             pixelCell = (double) iw / C;
             for (const double zoom : { 1.0, 2.0, 4.0 })
                 if (std::abs(iw - zoom * C * designCell) <= 1 && std::abs(ih - zoom * R * 2 * designCell) <= 1)
@@ -1029,7 +1034,7 @@ struct Editor : AudioProcessorEditor, Timer
             fonts[0] = mono(em, false), fonts[1] = mono(em, true);
             for (int j = 0; j < R; ++j)
                 for (int i = 0; i < C; ++i)
-                    drawCell(*imageGraphics, i, j);
+                    drawCell(graphics, i, j);
         }
         g.drawImageTransformed(image, AffineTransform::scale((float) getWidth() / (float) iw, (float) getHeight() / (float) ih));
     }

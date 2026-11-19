@@ -1166,12 +1166,20 @@ static void testEditor()
         const auto point=[&](juce::Component& c){return e.getLocalPoint(&c,c.getLocalBounds().toFloat().getCentre()).roundToInt();};
         const auto pointer=[&](juce::Point<int> at,int flags=0)
         {
-            auto source=juce::Desktop::getInstance().getMainMouseSource();
-            source.setScreenPosition(e.localPointToGlobal(at).toFloat());
             const juce::ModifierKeys mods(flags);
             const juce::ScopedValueSetter<juce::ModifierKeys> keyboard(juce::ModifierKeys::currentModifiers,mods.withoutMouseButtons());
             e.getPeer()->handleMouseEvent(juce::MouseInputSource::mouse,at.toFloat(),mods.withOnlyMouseButtons(),
                 1,0,juce::Time::currentTimeMillis());
+        };
+        const auto movePointer=[&](juce::Point<int> at)
+        {
+            // A macOS cursor warp can dispatch a mouse event. Move before the synthetic button pair.
+            auto source=juce::Desktop::getInstance().getMainMouseSource();
+            const auto screen=e.localPointToGlobal(at).toFloat();
+            source.setScreenPosition(screen);
+            pumpUntil([&]{return source.getScreenPosition().getDistanceFrom(screen)<=1;});
+            CHECK(source.getScreenPosition().getDistanceFrom(screen)<=1);
+            pointer(at);
         };
         const auto press=[&](const juce::String& id,int flags=0)
         {
@@ -1181,8 +1189,10 @@ static void testEditor()
             auto* button=dynamic_cast<juce::Button*>(target);CHECK(button);
             if(button && e.isOnDesktop())
             {
-                pointer(point(*c),flags|juce::ModifierKeys::leftButtonModifier);
-                pointer(point(*c),flags);
+                const auto at=point(*c);
+                movePointer(at);
+                pointer(at,flags|juce::ModifierKeys::leftButtonModifier);
+                pointer(at,flags);
             }
             else if(button)
             {
@@ -1436,15 +1446,16 @@ static void testEditor()
             mix->grabKeyboardFocus();
             CHECK(key(mix,KeyPress::escapeKey) && !e.hasKeyboardFocus(true));pairs(0);
 
-            pointer(point(*find(e,"lock:2")));
+            movePointer(point(*find(e,"lock:2")));
             pumpUntil([&]{timer.timerCallback();return e.getHelpText().startsWith("tone");});
             CHECK(e.getHelpText().contains("one grain per period of the played note"));
-            set(p,"trigger",1);pointer(point(*density));timer.timerCallback();
+            set(p,"trigger",1);movePointer(point(*density));timer.timerCallback();
             CHECK(e.getHelpText().contains("idle while trigger = transient"));
             const auto densityArea=e.getLocalArea(density,density->getLocalBounds());
             const auto highlighted=pixels(e.createComponentSnapshot(densityArea));
-            pointer({1,1});timer.timerCallback();
-            CHECK(e.getHelpText().contains("idle while trigger = transient") && pixels(e.createComponentSnapshot(densityArea))!=highlighted);
+            movePointer({1,1});timer.timerCallback();
+            CHECK(e.getHelpText().contains("idle while trigger = transient"));
+            CHECK(pixels(e.createComponentSnapshot(densityArea))!=highlighted);
             const auto left=juce::Time::getMillisecondCounter();
             pumpUntil([&]{timer.timerCallback();return e.getHelpText().isEmpty();});
             CHECK(e.getHelpText().isEmpty() && juce::Time::getMillisecondCounter()-left>=1450);
