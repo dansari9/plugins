@@ -7,8 +7,8 @@ namespace snap
 {
 // The shared wrapper for modules with Mix, Target and Focus (drive, push). begin() measures the mask on the full input,
 // delays the audio by the lookahead (that delay is the module's latency) and leaves only the Focus band in the buffer.
-// The module then processes the band in place with no further latency, and end() puts the rest back and crossfades the
-// processed band against its own dry by Mix x Target. Full-range Focus with an unprocessed band is an exact pass-through.
+// The module then processes the band in place with no further latency, and end() adds the band's change, weighted by
+// Mix x Target, to the delayed input. An unprocessed band is an exact pass-through for any Focus.
 class TargetFocusMix
 {
 public:

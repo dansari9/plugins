@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<SNAP stateVersion="2" order="press,space,drive,shift" name="thud through felt" tags="Dark,Warm,Kick">
+  <PARAM id="sub_amt" value="25"/>
+  <PARAM id="sub_sens" value="57"/>
+  <PARAM id="sub_det_lo" value="37"/>
+  <PARAM id="sub_det_hi" value="125"/>
+  <PARAM id="sub_pitch" value="34"/>
+  <PARAM id="sub_decay" value="133"/>
+  <PARAM id="sub_color" value="37"/>
+  <PARAM id="space_amt" value="9"/>
+  <PARAM id="space_type" value="5"/>
+  <PARAM id="space_decay" value="20"/>
+  <PARAM id="space_stretch" value="-36"/>
+  <PARAM id="space_width" value="42"/>
+  <PARAM id="space_focus_lo" value="210"/>
+  <PARAM id="space_focus_hi" value="2100"/>
+  <PARAM id="press_amt" value="25"/>
+  <PARAM id="press_mode" value="4"/>
+  <PARAM id="press_downup" value="-0.76"/>
+  <PARAM id="press_mix" value="59"/>
+  <PARAM id="drive_amt" value="28"/>
+  <PARAM id="drive_mode" value="2"/>
+  <PARAM id="drive_flavor" value="-0.76"/>
+  <PARAM id="drive_focus_hi" value="2900"/>
+  <PARAM id="out_gain" value="-0.7"/>
+  <PARAM id="cut_hi" value="5600"/>
+  <PARAM id="tone" value="-17"/>
+  <PARAM id="attack" value="-12"/>
+  <PARAM id="sustain" value="-18"/>
+</SNAP>

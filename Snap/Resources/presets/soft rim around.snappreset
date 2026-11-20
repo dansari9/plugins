@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<SNAP stateVersion="2" order="drive,press,shift,space" name="soft rim around" tags="Warm,Smooth,Drum Bus,Glue">
+  <PARAM id="press_amt" value="23"/>
+  <PARAM id="press_mode" value="3"/>
+  <PARAM id="press_mix" value="62"/>
+  <PARAM id="drive_amt" value="18"/>
+  <PARAM id="drive_mode" value="3"/>
+  <PARAM id="drive_flavor" value="-0.65"/>
+  <PARAM id="drive_mix" value="54"/>
+  <PARAM id="drive_focus_hi" value="5400"/>
+  <PARAM id="out_gain" value="-0.7"/>
+  <PARAM id="tone" value="14"/>
+  <PARAM id="tone_shape" value="1"/>
+  <PARAM id="attack" value="-7"/>
+</SNAP>

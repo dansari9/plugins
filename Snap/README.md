@@ -1,6 +1,6 @@
 # snap
 
-A one-screen drum multi-FX by daveydidit. Version 0.2.0 (in development). Mono or stereo.
+A one-screen drum multi-FX by daveydidit. Version 0.2.0. Mono or stereo.
 
 The 0.2 chain is six modules plus a master section, with one **Magnitude** macro that scales the
 module amounts and the master's continuous controls toward neutral:
@@ -9,17 +9,22 @@ module amounts and the master's continuous controls toward neutral:
 in -> input -> sub/hiss -> [shift | space | press | drive, any order] -> push -> master -> output
 ```
 
-Status of this build: the full parameter set exists, and the master **Attack** / **Sustain**
-transient shaper, **Input**, **Output**, **Magnitude** and **Bypass** work. The modules and the
-other master stages are not wired yet, so their controls do nothing. The editor is an interim one
-(Attack, Sustain, Magnitude, Output and the gain display); the full screen comes later.
+A new instance starts on the factory preset **hit hard**, a deliberately loud showcase. Turn Magnitude
+down to hear less of it, or load another preset. With every control at its parameter default (all
+amounts 0), snap passes the audio through unchanged, delayed by its constant latency.
 
-The shaper follows the level of the drum with a fast and a slow envelope. While a hit starts, the
-fast envelope is above the slow one, and **Attack** turns that part up or down. While the hit rings
-out, the slow envelope is above the fast one, and **Sustain** turns that part up or down. Both
-channels share one gain, so the stereo image stays put.
+- **sub/hiss**: a sub synth and 18 procedural noise layers, triggered by the drums.
+- **shift**: pitch and formant shift (off in Low Latency Mode).
+- **space**: 20 generated impulse responses.
+- **press**: a four-band compressor (downward, upward or parallel).
+- **drive**: six saturation modes with a Flavor blend.
+- **push**: density shaper and limiter, x1/x2/x4.
+- **master**: Input, Cut, Tone (4 shapes), Air, Attack/Sustain, Clip, Output, and Loudness Match.
 
-With every control at its default, snap passes the audio through unchanged.
+The middle four modules can be reordered without clicks. Locks, four snapshots (A–D) and undo live in
+the session. Latency is constant whatever is switched on or reordered; Low Latency Mode is exactly 64
+samples. The editor is still an interim one (Attack, Sustain, Magnitude, Output and the gain display);
+the full screen comes later.
 
 ## Build
 
@@ -33,7 +38,8 @@ On macOS, use `-G Xcode` and build `Snap_AU` and `Snap_VST3`. The bundles are `s
 `SnapTests --screenshot editor.png` renders the editor to a PNG.
 
 Source layout: `Source/Parameters.*` (the parameter table), `Source/PluginProcessor.*`,
-`Source/presets/StateIO.*` (state and migration), `Source/chain/` (module order),
+`Source/presets/StateIO.*` (state and migration), `Source/presets/PresetStore.*` (preset files and browser data),
+`Source/chain/` (module order),
 `Source/dsp/common|modules|master/` (DSP and its tunable constants).
 
 ## Install in Logic Pro
@@ -82,3 +88,22 @@ off, so an old session sounds as it did.
 Loading ignores unknown entries, clamps out-of-range values, resets missing or unreadable values to
 their default, and ignores data that is not one complete snap state. The state is read with a flat,
 non-recursive scan rather than JUCE's XML parser, so deep nesting and DTDs cannot hurt it.
+
+## Presets
+
+30 factory presets ship inside the plug-in (`Resources/presets/*.snappreset`, read-only). A preset file
+is the same flat `<SNAP stateVersion="2" order="...">` element as the session, plus `name` and `tags`
+attributes; parameters it leaves out take their default. A preset holds every parameter and the module
+order. It does not hold the session toggles (Bypass, Low Latency, Oversampling), the locks or the
+snapshots. Loading a preset keeps locked modules (their values and their slot) and is one undo step.
+
+User presets are plain files, so they can be copied, backed up or synced:
+
+| | Location |
+| --- | --- |
+| macOS | `~/Library/Application Support/daveydidit/snap/Presets/*.snappreset` |
+| Linux | `~/.config/daveydidit/snap/Presets/*.snappreset` |
+
+Favourites and named collections are kept next to them in `library.xml`. A preset can sit in several
+collections. Tags come from two fixed lists, Character (Dark, Warm, Punchy, …) and Function (Kick,
+Snare, Drum Bus, …), in `Source/presets/PresetStore.h`.

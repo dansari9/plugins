@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<SNAP stateVersion="2" order="drive,press,space,shift" name="shine between cracks" tags="Bright,Hi-Fi,Drum Bus,Loop,Glue">
+  <PARAM id="space_amt" value="20"/>
+  <PARAM id="space_type" value="12"/>
+  <PARAM id="space_decay" value="30"/>
+  <PARAM id="space_predelay" value="13"/>
+  <PARAM id="space_duck" value="42"/>
+  <PARAM id="space_focus_lo" value="420"/>
+  <PARAM id="space_focus_hi" value="8500"/>
+  <PARAM id="press_amt" value="28"/>
+  <PARAM id="press_mode" value="3"/>
+  <PARAM id="press_downup" value="-0.63"/>
+  <PARAM id="press_bands" value="0.44"/>
+  <PARAM id="drive_amt" value="18"/>
+  <PARAM id="drive_flavor" value="0.42"/>
+  <PARAM id="drive_mix" value="58"/>
+  <PARAM id="drive_focus_lo" value="3500"/>
+  <PARAM id="out_gain" value="-1.2"/>
+  <PARAM id="tone" value="30"/>
+  <PARAM id="tone_shape" value="3"/>
+  <PARAM id="air" value="22"/>
+  <PARAM id="attack" value="9"/>
+</SNAP>

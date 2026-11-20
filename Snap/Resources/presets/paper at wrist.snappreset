@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<SNAP stateVersion="2" order="space,press,shift,drive" name="paper at wrist" tags="Tight,Bright,Snare">
+  <PARAM id="hiss_amt" value="24"/>
+  <PARAM id="hiss_sens" value="57"/>
+  <PARAM id="hiss_det_lo" value="1900"/>
+  <PARAM id="hiss_det_hi" value="7000"/>
+  <PARAM id="hiss_decay" value="94"/>
+  <PARAM id="hiss_type" value="6"/>
+  <PARAM id="hiss_pitch" value="2"/>
+  <PARAM id="hiss_env" value="54"/>
+  <PARAM id="hiss_res" value="17"/>
+  <PARAM id="space_amt" value="15"/>
+  <PARAM id="space_type" value="1"/>
+  <PARAM id="space_decay" value="23"/>
+  <PARAM id="space_predelay" value="9"/>
+  <PARAM id="space_width" value="69"/>
+  <PARAM id="space_focus_lo" value="450"/>
+  <PARAM id="space_focus_hi" value="8000"/>
+  <PARAM id="press_amt" value="28"/>
+  <PARAM id="press_mix" value="71"/>
+  <PARAM id="out_gain" value="-1.2"/>
+  <PARAM id="cut_lo" value="105"/>
+  <PARAM id="attack" value="17"/>
+  <PARAM id="sustain" value="-15"/>
+</SNAP>

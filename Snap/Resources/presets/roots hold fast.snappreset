@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<SNAP stateVersion="2" order="press,drive,shift,space" name="roots hold fast" tags="Fat,Warm,Instrument">
+  <PARAM id="press_amt" value="42"/>
+  <PARAM id="press_mode" value="4"/>
+  <PARAM id="press_downup" value="-0.56"/>
+  <PARAM id="press_mix" value="70"/>
+  <PARAM id="drive_amt" value="36"/>
+  <PARAM id="drive_mode" value="3"/>
+  <PARAM id="drive_flavor" value="-0.74"/>
+  <PARAM id="drive_focus_lo" value="85"/>
+  <PARAM id="drive_focus_hi" value="2900"/>
+  <PARAM id="push_amt" value="24"/>
+  <PARAM id="push_mult" value="1"/>
+  <PARAM id="push_tone" value="-0.52"/>
+  <PARAM id="push_mix" value="58"/>
+  <PARAM id="push_focus_hi" value="560"/>
+  <PARAM id="out_gain" value="-2"/>
+  <PARAM id="cut_lo" value="29"/>
+  <PARAM id="cut_hi" value="11200"/>
+  <PARAM id="tone" value="27"/>
+  <PARAM id="tone_shape" value="1"/>
+  <PARAM id="attack" value="-9"/>
+  <PARAM id="sustain" value="8"/>
+</SNAP>

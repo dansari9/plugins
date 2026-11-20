@@ -211,7 +211,7 @@ void testFocusSplitter()
         CHECK(same(run(*prepared(constants::focusMinHz, constants::focusMaxHz, 100), in, delayed, 0.5f), in, 100));
     }
 
-    // In range: the unprocessed split sums flat; muting the band removes it and leaves the outside alone.
+    // In range: an unprocessed band is exact; muting the band removes it and leaves the outside alone.
     auto level = [&](float lo, float hi, double hz, std::function<void(juce::AudioBuffer<float>&, int)> process) {
         juce::AudioBuffer<float> s(channels, n);
         for (int c = 0; c < channels; ++c)
@@ -222,8 +222,7 @@ void testFocusSplitter()
         return db(energy(a, n / 2) / energy(b, n / 2));
     };
     auto mute = [](juce::AudioBuffer<float>& b, int len) { b.clear(0, len); };
-    for (double hz : { 40.0, 200.0, 1000.0, 5000.0, 15000.0 })
-        CHECK(std::abs(level(200, 2000, hz, identity)) < 0.01f);
+    CHECK(same(run(*prepared(200, 2000, 0), in, identity, 1), in, 0));
     CHECK(level(200, 2000, 630, mute) < -20 && std::abs(level(200, 2000, 40, mute)) < 0.2f && std::abs(level(200, 2000, 10000, mute)) < 0.2f);
     CHECK(std::abs(level(constants::focusMinHz, 1000, 40, doubled) - 6.02f) < 0.2f && std::abs(level(constants::focusMinHz, 1000, 10000, doubled)) < 0.2f);
 }

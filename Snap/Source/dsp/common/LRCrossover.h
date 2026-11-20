@@ -28,7 +28,7 @@ public:
         logHz.setTarget(std::log2(hz)), toSplit.setTarget(route(1)), toLow.setTarget(route(2)), toHigh.setTarget(route(0));
     }
 
-    // Advance the glide by one sample; call once per sample frame, before split()/allpass() for each channel.
+    // Advance the glide by one sample; call once per sample frame, before split() for each channel.
     void step()
     {
         if (logHz.isSmoothing())
@@ -42,15 +42,6 @@ public:
         filter.processSample(channel, x, lo, hi);
         low = s * lo + l * x, high = s * hi + h * x;
     }
-    // The phase shift that low + high carries, for a band that skips this split (keeps 3-way sums flat).
-    // Use a separate instance at the same cutoff: it shares no state with split().
-    float allpass(int channel, float x)
-    {
-        float lo, hi;
-        filter.processSample(channel, x, lo, hi);
-        return s * (lo + hi) + (1.0f - s) * x;
-    }
-
     void snapToZero() { filter.snapToZero(); }
     bool isBypassed() const { return s == 0.0f && !toSplit.isSmoothing(); }
 

@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<SNAP stateVersion="2" order="shift,press,drive,space" name="hit hard" tags="Punchy,Huge,Aggressive,Drum Bus,General Purpose">
+  <PARAM id="sub_amt" value="35"/>
+  <PARAM id="sub_pitch" value="31"/>
+  <PARAM id="sub_color" value="35"/>
+  <PARAM id="hiss_amt" value="22"/>
+  <PARAM id="hiss_type" value="3"/>
+  <PARAM id="space_amt" value="22"/>
+  <PARAM id="space_type" value="2"/>
+  <PARAM id="press_amt" value="55"/>
+  <PARAM id="press_mode" value="1"/>
+  <PARAM id="drive_amt" value="40"/>
+  <PARAM id="drive_mode" value="1"/>
+  <PARAM id="push_amt" value="45"/>
+  <PARAM id="push_mult" value="1"/>
+  <PARAM id="air" value="25"/>
+  <PARAM id="attack" value="35"/>
+  <PARAM id="sustain" value="-10"/>
+  <PARAM id="clip_on" value="1"/>
+</SNAP>

@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<SNAP stateVersion="2" order="drive,press,space,shift" name="pebbles in palm" tags="Crunchy,Tight,Percussion">
+  <PARAM id="space_amt" value="16"/>
+  <PARAM id="space_type" value="13"/>
+  <PARAM id="space_decay" value="17"/>
+  <PARAM id="space_stretch" value="-46"/>
+  <PARAM id="space_pan" value="-12"/>
+  <PARAM id="space_width" value="60"/>
+  <PARAM id="space_focus_lo" value="520"/>
+  <PARAM id="space_focus_hi" value="5100"/>
+  <PARAM id="press_amt" value="24"/>
+  <PARAM id="press_mode" value="3"/>
+  <PARAM id="press_mix" value="64"/>
+  <PARAM id="drive_amt" value="34"/>
+  <PARAM id="drive_mode" value="5"/>
+  <PARAM id="drive_flavor" value="-0.62"/>
+  <PARAM id="drive_mix" value="56"/>
+  <PARAM id="drive_target" value="-0.29"/>
+  <PARAM id="drive_focus_lo" value="410"/>
+  <PARAM id="drive_focus_hi" value="5200"/>
+  <PARAM id="out_gain" value="-1.1"/>
+  <PARAM id="cut_lo" value="147"/>
+  <PARAM id="tone" value="18"/>
+  <PARAM id="tone_shape" value="2"/>
+  <PARAM id="attack" value="13"/>
+  <PARAM id="sustain" value="-11"/>
+</SNAP>

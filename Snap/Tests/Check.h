@@ -17,5 +17,6 @@ void testMaster(); // MasterTests.cpp
 void testSpace();  // SpaceTests.cpp
 void testSubHiss(); // SubHissTests.cpp
 void testChain();   // ChainTests.cpp: M7 reorder, Magnitude, locks, snapshots, undo, oversampling
+void testPresets(); // PresetTests.cpp: M8 preset store, factory presets, browser model
 int renderSpace(const juce::File&);   // SpaceTests.cpp: --render-space <dir>
 int renderSubHiss(const juce::File&); // SubHissTests.cpp: --render-subhiss <dir>

@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<SNAP stateVersion="2" order="space,press,drive,shift" name="rafters hold still" tags="Roomy,Warm,Drum Bus,Glue">
+  <PARAM id="space_amt" value="22"/>
+  <PARAM id="space_type" value="3"/>
+  <PARAM id="space_decay" value="42"/>
+  <PARAM id="space_predelay" value="11"/>
+  <PARAM id="space_duck" value="34"/>
+  <PARAM id="space_focus_lo" value="250"/>
+  <PARAM id="space_focus_hi" value="6300"/>
+  <PARAM id="press_amt" value="36"/>
+  <PARAM id="press_mode" value="1"/>
+  <PARAM id="press_downup" value="-0.68"/>
+  <PARAM id="press_mix" value="66"/>
+  <PARAM id="drive_amt" value="16"/>
+  <PARAM id="drive_mode" value="2"/>
+  <PARAM id="drive_flavor" value="-0.54"/>
+  <PARAM id="drive_mix" value="64"/>
+  <PARAM id="out_gain" value="-1.5"/>
+  <PARAM id="cut_lo" value="32"/>
+  <PARAM id="cut_hi" value="16200"/>
+</SNAP>

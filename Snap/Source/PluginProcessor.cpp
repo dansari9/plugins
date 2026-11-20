@@ -1,5 +1,6 @@
 #include "PluginProcessor.h"
 #include "chain/Latency.h"
+#include "presets/PresetStore.h"
 
 using namespace juce;
 
@@ -321,4 +322,9 @@ void SnapProcessor::setStateInformation(const void* data, int size)
         commit(), undoManager.clearUndoHistory();
 }
 
-AudioProcessor* JUCE_CALLTYPE createPluginFilter() { return new SnapProcessor(); }
+AudioProcessor* JUCE_CALLTYPE createPluginFilter() // a new instance starts on the bold default preset; a host restore replaces it
+{
+    auto* p = new SnapProcessor();
+    snap::loadDefaultPreset(*p);
+    return p;
+}

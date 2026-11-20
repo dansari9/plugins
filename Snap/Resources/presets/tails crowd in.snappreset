@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<SNAP stateVersion="2" order="space,press,shift,drive" name="tails crowd in" tags="Huge,Roomy,Loop,Glue">
+  <PARAM id="space_amt" value="43"/>
+  <PARAM id="space_type" value="7"/>
+  <PARAM id="space_decay" value="62"/>
+  <PARAM id="space_predelay" value="32"/>
+  <PARAM id="space_duck" value="63"/>
+  <PARAM id="space_focus_lo" value="430"/>
+  <PARAM id="space_focus_hi" value="7600"/>
+  <PARAM id="press_amt" value="56"/>
+  <PARAM id="press_mode" value="5"/>
+  <PARAM id="press_downup" value="0.34"/>
+  <PARAM id="press_mix" value="46"/>
+  <PARAM id="press_bands" value="0.62"/>
+  <PARAM id="drive_amt" value="30"/>
+  <PARAM id="drive_mode" value="3"/>
+  <PARAM id="drive_flavor" value="-0.38"/>
+  <PARAM id="drive_target" value="0.75"/>
+  <PARAM id="drive_focus_lo" value="440"/>
+  <PARAM id="in_gain" value="-1.5"/>
+  <PARAM id="out_gain" value="-0.5"/>
+  <PARAM id="tone" value="-19"/>
+  <PARAM id="tone_shape" value="3"/>
+  <PARAM id="attack" value="12"/>
+  <PARAM id="sustain" value="14"/>
+</SNAP>

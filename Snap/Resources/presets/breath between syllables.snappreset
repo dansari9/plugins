@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<SNAP stateVersion="2" order="drive,press,space,shift" name="breath between syllables" tags="Smooth,Roomy,Vocal">
+  <PARAM id="space_amt" value="19"/>
+  <PARAM id="space_type" value="6"/>
+  <PARAM id="space_decay" value="48"/>
+  <PARAM id="space_predelay" value="39"/>
+  <PARAM id="space_duck" value="72"/>
+  <PARAM id="space_width" value="78"/>
+  <PARAM id="space_focus_lo" value="300"/>
+  <PARAM id="space_focus_hi" value="6900"/>
+  <PARAM id="press_amt" value="30"/>
+  <PARAM id="press_mode" value="3"/>
+  <PARAM id="press_downup" value="-0.72"/>
+  <PARAM id="press_mix" value="72"/>
+  <PARAM id="drive_amt" value="12"/>
+  <PARAM id="drive_mode" value="3"/>
+  <PARAM id="drive_flavor" value="-0.61"/>
+  <PARAM id="drive_mix" value="48"/>
+  <PARAM id="drive_focus_hi" value="3900"/>
+  <PARAM id="out_gain" value="1"/>
+  <PARAM id="cut_lo" value="79"/>
+  <PARAM id="tone" value="-18"/>
+  <PARAM id="tone_shape" value="3"/>
+  <PARAM id="air" value="18"/>
+</SNAP>

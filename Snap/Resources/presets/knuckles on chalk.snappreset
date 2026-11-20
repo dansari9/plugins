@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<SNAP stateVersion="2" order="press,drive,space,shift" name="knuckles on chalk" tags="Tight,Lo-Fi,Percussion">
+  <PARAM id="press_amt" value="34"/>
+  <PARAM id="press_mode" value="4"/>
+  <PARAM id="press_mix" value="46"/>
+  <PARAM id="drive_amt" value="32"/>
+  <PARAM id="drive_mode" value="4"/>
+  <PARAM id="drive_flavor" value="-0.55"/>
+  <PARAM id="drive_mix" value="64"/>
+  <PARAM id="drive_target" value="-0.59"/>
+  <PARAM id="drive_focus_lo" value="760"/>
+  <PARAM id="drive_focus_hi" value="6300"/>
+  <PARAM id="push_amt" value="22"/>
+  <PARAM id="push_tone" value="0.44"/>
+  <PARAM id="push_target" value="-0.65"/>
+  <PARAM id="push_focus_lo" value="450"/>
+  <PARAM id="push_focus_hi" value="4600"/>
+  <PARAM id="out_gain" value="-1.6"/>
+  <PARAM id="cut_lo" value="145"/>
+  <PARAM id="cut_hi" value="10400"/>
+  <PARAM id="attack" value="20"/>
+  <PARAM id="sustain" value="-24"/>
+</SNAP>

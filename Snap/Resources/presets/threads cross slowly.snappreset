@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<SNAP stateVersion="2" order="shift,drive,press,space" name="threads cross slowly" tags="Roomy,Hi-Fi,Synth">
+  <PARAM id="shift_amt" value="67"/>
+  <PARAM id="shift_balance" value="0.73"/>
+  <PARAM id="shift_stereo" value="-48"/>
+  <PARAM id="shift_stretch" value="36"/>
+  <PARAM id="shift_fmix" value="72"/>
+  <PARAM id="shift_target" value="0.72"/>
+  <PARAM id="shift_focus_lo" value="540"/>
+  <PARAM id="shift_focus_hi" value="7300"/>
+  <PARAM id="space_amt" value="36"/>
+  <PARAM id="space_type" value="11"/>
+  <PARAM id="space_decay" value="65"/>
+  <PARAM id="space_stretch" value="14"/>
+  <PARAM id="space_predelay" value="34"/>
+  <PARAM id="space_duck" value="49"/>
+  <PARAM id="space_focus_lo" value="410"/>
+  <PARAM id="space_focus_hi" value="8700"/>
+  <PARAM id="drive_amt" value="17"/>
+  <PARAM id="drive_mode" value="2"/>
+  <PARAM id="drive_flavor" value="0.47"/>
+  <PARAM id="drive_mix" value="52"/>
+  <PARAM id="drive_focus_lo" value="470"/>
+  <PARAM id="out_gain" value="1.3"/>
+  <PARAM id="cut_lo" value="66"/>
+  <PARAM id="tone" value="31"/>
+  <PARAM id="tone_shape" value="3"/>
+</SNAP>

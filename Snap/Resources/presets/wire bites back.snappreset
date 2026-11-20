@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<SNAP stateVersion="2" order="shift,drive,press,space" name="wire bites back" tags="Crunchy,Punchy,Snare">
+  <PARAM id="hiss_amt" value="31"/>
+  <PARAM id="hiss_sens" value="62"/>
+  <PARAM id="hiss_det_lo" value="2200"/>
+  <PARAM id="hiss_det_hi" value="9600"/>
+  <PARAM id="hiss_decay" value="117"/>
+  <PARAM id="hiss_duck" value="31"/>
+  <PARAM id="hiss_type" value="11"/>
+  <PARAM id="hiss_tone" value="27"/>
+  <PARAM id="hiss_post" value="1"/>
+  <PARAM id="press_amt" value="37"/>
+  <PARAM id="press_mode" value="5"/>
+  <PARAM id="press_mix" value="47"/>
+  <PARAM id="press_bands" value="0.55"/>
+  <PARAM id="drive_amt" value="49"/>
+  <PARAM id="drive_mode" value="1"/>
+  <PARAM id="drive_flavor" value="0.76"/>
+  <PARAM id="drive_target" value="-0.56"/>
+  <PARAM id="drive_focus_lo" value="510"/>
+  <PARAM id="drive_focus_hi" value="7200"/>
+  <PARAM id="push_amt" value="24"/>
+  <PARAM id="push_mult" value="1"/>
+  <PARAM id="push_tone" value="0.46"/>
+  <PARAM id="push_target" value="-0.56"/>
+  <PARAM id="push_focus_lo" value="450"/>
+  <PARAM id="out_gain" value="-2.8"/>
+  <PARAM id="cut_lo" value="100"/>
+  <PARAM id="attack" value="21"/>
+  <PARAM id="sustain" value="-17"/>
+  <PARAM id="clip_on" value="1"/>
+</SNAP>

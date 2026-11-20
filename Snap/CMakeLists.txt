@@ -52,6 +52,7 @@ target_sources(Snap PRIVATE
     Source/PluginEditor.cpp
     Source/Parameters.cpp
     Source/presets/StateIO.cpp
+    Source/presets/PresetStore.cpp
     Source/dsp/modules/Space.cpp
     Source/dsp/modules/SubHiss.cpp
 )
@@ -61,6 +62,9 @@ file(GLOB snap_irs CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/Resources/irs/*
 file(GLOB snap_noise CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/Resources/noise/*.wav)
 juce_add_binary_data(SnapSpaceIRs HEADER_NAME SpaceIRData.h NAMESPACE SpaceIRData SOURCES ${snap_irs})
 juce_add_binary_data(SnapSubHissNoise HEADER_NAME SubHissNoiseData.h NAMESPACE SubHissNoiseData SOURCES ${snap_noise})
+# The factory presets (read-only; user presets are files in the user folder, see Source/presets/PresetStore.h).
+file(GLOB snap_presets CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/Resources/presets/*.snappreset)
+juce_add_binary_data(SnapFactoryPresets HEADER_NAME FactoryPresetData.h NAMESPACE FactoryPresetData SOURCES ${snap_presets})
 
 target_compile_definitions(Snap
     PUBLIC
@@ -76,6 +80,7 @@ target_link_libraries(Snap
         SnapFonts
         SnapSpaceIRs
         SnapSubHissNoise
+        SnapFactoryPresets
         juce::juce_audio_utils
         juce::juce_dsp
         juce::juce_recommended_config_flags
@@ -85,7 +90,7 @@ target_link_libraries(Snap
 # One test executable that drives the real processor and editor without a host.
 # `SnapTests --screenshot <file.png>` renders the editor instead of running the tests.
 add_executable(SnapTests Tests/SnapTests.cpp Tests/DspTests.cpp Tests/PressTests.cpp Tests/DriveTests.cpp Tests/PushTests.cpp
-    Tests/ShiftTests.cpp Tests/MasterTests.cpp Tests/SpaceTests.cpp Tests/SubHissTests.cpp Tests/ChainTests.cpp)
+    Tests/ShiftTests.cpp Tests/MasterTests.cpp Tests/SpaceTests.cpp Tests/SubHissTests.cpp Tests/ChainTests.cpp Tests/PresetTests.cpp)
 target_include_directories(SnapTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/Source)
 target_link_libraries(SnapTests
     PRIVATE
@@ -100,9 +105,9 @@ target_link_libraries(SnapTests
 # operator new.
 if(NOT MSVC)
     set_source_files_properties(Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/dsp/modules/Space.cpp
-                                Source/dsp/modules/SubHiss.cpp PROPERTIES COMPILE_OPTIONS "-Wno-float-equal")
+                                Source/dsp/modules/SubHiss.cpp Source/presets/PresetStore.cpp PROPERTIES COMPILE_OPTIONS "-Wno-float-equal")
     set_source_files_properties(Tests/SnapTests.cpp PROPERTIES COMPILE_OPTIONS "-Wno-float-equal;-Wno-mismatched-new-delete")
     set_source_files_properties(Tests/DspTests.cpp Tests/PressTests.cpp Tests/DriveTests.cpp Tests/PushTests.cpp Tests/ShiftTests.cpp Tests/MasterTests.cpp
-                                Tests/SpaceTests.cpp Tests/SubHissTests.cpp Tests/ChainTests.cpp PROPERTIES COMPILE_OPTIONS "-Wno-float-equal")
+                                Tests/SpaceTests.cpp Tests/SubHissTests.cpp Tests/ChainTests.cpp Tests/PresetTests.cpp PROPERTIES COMPILE_OPTIONS "-Wno-float-equal")
 endif()
 set_target_properties(SnapTests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")

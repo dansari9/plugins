@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<SNAP stateVersion="2" order="press,drive,shift,space" name="sparks in dust" tags="Lo-Fi,Roomy,Loop,Glue">
+  <PARAM id="hiss_amt" value="12"/>
+  <PARAM id="hiss_det_lo" value="3200"/>
+  <PARAM id="hiss_decay" value="105"/>
+  <PARAM id="hiss_duck" value="32"/>
+  <PARAM id="hiss_type" value="4"/>
+  <PARAM id="hiss_tone" value="-21"/>
+  <PARAM id="space_amt" value="16"/>
+  <PARAM id="space_type" value="18"/>
+  <PARAM id="space_decay" value="34"/>
+  <PARAM id="space_predelay" value="28"/>
+  <PARAM id="space_duck" value="37"/>
+  <PARAM id="space_focus_lo" value="1100"/>
+  <PARAM id="space_focus_hi" value="6400"/>
+  <PARAM id="press_amt" value="38"/>
+  <PARAM id="press_mode" value="4"/>
+  <PARAM id="press_downup" value="-0.43"/>
+  <PARAM id="press_mix" value="65"/>
+  <PARAM id="drive_amt" value="40"/>
+  <PARAM id="drive_mode" value="4"/>
+  <PARAM id="drive_flavor" value="0.62"/>
+  <PARAM id="drive_mix" value="68"/>
+  <PARAM id="drive_focus_lo" value="1200"/>
+  <PARAM id="out_gain" value="-1.5"/>
+  <PARAM id="cut_hi" value="11800"/>
+</SNAP>

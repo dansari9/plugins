@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<SNAP stateVersion="2" order="drive,shift,press,space" name="buckles at edges" tags="Aggressive,Crunchy,Drum Bus,Loop,Glue">
+  <PARAM id="shift_amt" value="-71"/>
+  <PARAM id="shift_balance" value="0.72"/>
+  <PARAM id="shift_fmix" value="78"/>
+  <PARAM id="shift_target" value="0.82"/>
+  <PARAM id="shift_focus_lo" value="340"/>
+  <PARAM id="shift_focus_hi" value="6500"/>
+  <PARAM id="press_amt" value="80"/>
+  <PARAM id="press_mode" value="2"/>
+  <PARAM id="press_downup" value="-0.32"/>
+  <PARAM id="press_mix" value="68"/>
+  <PARAM id="drive_amt" value="72"/>
+  <PARAM id="drive_flavor" value="0.81"/>
+  <PARAM id="drive_mix" value="78"/>
+  <PARAM id="drive_focus_lo" value="150"/>
+  <PARAM id="push_amt" value="54"/>
+  <PARAM id="push_mult" value="2"/>
+  <PARAM id="push_tone" value="0.33"/>
+  <PARAM id="push_mix" value="48"/>
+  <PARAM id="in_gain" value="-1"/>
+  <PARAM id="out_gain" value="2.5"/>
+  <PARAM id="cut_lo" value="31"/>
+  <PARAM id="cut_hi" value="9600"/>
+  <PARAM id="hc_shape" value="1"/>
+  <PARAM id="sustain" value="13"/>
+  <PARAM id="clip_on" value="1"/>
+</SNAP>

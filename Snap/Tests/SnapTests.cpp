@@ -3,6 +3,7 @@
 //   SnapTests --screenshot a.png   render the editor after feeding it drums
 //   SnapTests --render <dir>       render the synthetic loops through a few settings to WAV files
 #include "PluginProcessor.h"
+#include "presets/PresetStore.h"
 #include "presets/StateIO.h"
 #include "chain/Latency.h"
 #include "loops/Loops.h"
@@ -661,14 +662,17 @@ static int render(const juce::File& dir)
         return w != nullptr && w->writeFromAudioSampleBuffer(b, 0, b.getNumSamples());
     };
     bool ok = true;
+    const snap::PresetStore presets(juce::File::getSpecialLocation(juce::File::tempDirectory).getChildFile("snap-render-no-user-presets"));
     for (int which = 0; which < 4; ++which)
     {
         const auto dry = loops::make(which, 48000, 8);
         ok = ok && write(dry, juce::String(loops::names[which]) + "-dry");
         // A setting, optionally in another middle order from the start and/or reordered half way (the M7 crossfade).
-        auto chain = [&](const char* name, const std::vector<std::pair<const char*, float>>& values, std::optional<snap::ChainOrder> from = {},
-                         std::optional<snap::ChainOrder> midway = {}) {
+        auto chain = [&](const juce::String& name, const std::vector<std::pair<const char*, float>>& values, std::optional<snap::ChainOrder> from = {},
+                         std::optional<snap::ChainOrder> midway = {}, const snap::Preset* preset = nullptr) {
             Proc p;
+            if (preset != nullptr)
+                snap::loadPresetXml(p, preset->xml);
             for (auto& [id, v] : values)
                 set(p, id, v);
             if (from)
@@ -694,6 +698,11 @@ static int render(const juce::File& dir)
         auto oversampled = all;
         oversampled.emplace_back("oversampling", 1);
         chain("chain-all-oversampled", oversampled);
+        // M8: the bypassed chain, and the factory presets (every one on the kit loop, the default on every loop).
+        chain("bypass", { { "bypass", 1 }, { "sub_amt", 60 }, { "press_amt", 80 }, { "drive_amt", 80 } });
+        for (auto& preset : presets.presets())
+            if (preset.factory && (which == 2 || preset.name == snap::defaultPresetName))
+                chain("preset-" + preset.name.replaceCharacter(' ', '-'), {}, {}, {}, &preset);
         // The modules on their own, outside the chain: one file per setting.
         auto module = [&](auto m, typename decltype(m)::Params params, const char* name) {
             m.setParams(params);
@@ -740,6 +749,8 @@ int main(int argc, char** argv)
         return renderSubHiss(juce::File::getCurrentWorkingDirectory().getChildFile(argv[2]));
     if (argc == 2 && juce::String(argv[1]) == "--chain") // the M7 chain tests on their own
         testChain();
+    else if (argc == 2 && juce::String(argv[1]) == "--presets") // the M8 preset tests on their own
+        testPresets();
     else
     {
     testIdentity();
@@ -762,6 +773,7 @@ int main(int argc, char** argv)
     testSpace();
     testSubHiss();
     testChain();
+    testPresets();
     }
     std::cout << (failures == 0 ? "All Snap tests passed\n" : "Snap tests FAILED\n");
     return failures == 0 ? 0 : 1;

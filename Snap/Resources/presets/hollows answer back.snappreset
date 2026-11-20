@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<SNAP stateVersion="2" order="press,shift,space,drive" name="hollows answer back" tags="Roomy,Huge,Toms">
+  <PARAM id="shift_amt" value="-39"/>
+  <PARAM id="shift_balance" value="-0.77"/>
+  <PARAM id="shift_target" value="0.54"/>
+  <PARAM id="shift_focus_lo" value="85"/>
+  <PARAM id="shift_focus_hi" value="1600"/>
+  <PARAM id="space_amt" value="34"/>
+  <PARAM id="space_type" value="9"/>
+  <PARAM id="space_decay" value="52"/>
+  <PARAM id="space_predelay" value="21"/>
+  <PARAM id="space_duck" value="35"/>
+  <PARAM id="space_focus_lo" value="220"/>
+  <PARAM id="space_focus_hi" value="6200"/>
+  <PARAM id="press_amt" value="26"/>
+  <PARAM id="press_mix" value="66"/>
+  <PARAM id="out_gain" value="-1.5"/>
+  <PARAM id="cut_lo" value="42"/>
+  <PARAM id="tone" value="-22"/>
+  <PARAM id="tone_shape" value="2"/>
+  <PARAM id="attack" value="9"/>
+</SNAP>

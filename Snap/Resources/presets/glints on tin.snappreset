@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<SNAP stateVersion="2" order="shift,space,drive,press" name="glints on tin" tags="Smooth,Roomy,Cymbals,Hi-Hat">
+  <PARAM id="hiss_amt" value="12"/>
+  <PARAM id="hiss_det_lo" value="4700"/>
+  <PARAM id="hiss_det_hi" value="11000"/>
+  <PARAM id="hiss_decay" value="165"/>
+  <PARAM id="hiss_type" value="7"/>
+  <PARAM id="hiss_tone" value="-23"/>
+  <PARAM id="shift_amt" value="-33"/>
+  <PARAM id="shift_balance" value="0.82"/>
+  <PARAM id="shift_fmix" value="67"/>
+  <PARAM id="shift_target" value="0.68"/>
+  <PARAM id="shift_focus_lo" value="2900"/>
+  <PARAM id="space_amt" value="25"/>
+  <PARAM id="space_type" value="14"/>
+  <PARAM id="space_decay" value="33"/>
+  <PARAM id="space_stretch" value="-19"/>
+  <PARAM id="space_predelay" value="11"/>
+  <PARAM id="space_duck" value="54"/>
+  <PARAM id="space_focus_lo" value="1200"/>
+  <PARAM id="space_focus_hi" value="8100"/>
+  <PARAM id="drive_amt" value="18"/>
+  <PARAM id="drive_mode" value="2"/>
+  <PARAM id="drive_flavor" value="-0.47"/>
+  <PARAM id="drive_target" value="0.58"/>
+  <PARAM id="drive_focus_lo" value="5800"/>
+  <PARAM id="out_gain" value="-0.9"/>
+  <PARAM id="cut_lo" value="340"/>
+  <PARAM id="cut_hi" value="14700"/>
+  <PARAM id="attack" value="-13"/>
+</SNAP>

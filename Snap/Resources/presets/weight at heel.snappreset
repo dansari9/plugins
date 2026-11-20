@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<SNAP stateVersion="2" order="shift,drive,press,space" name="weight at heel" tags="Fat,Tight,Kick">
+  <PARAM id="sub_amt" value="39"/>
+  <PARAM id="sub_sens" value="61"/>
+  <PARAM id="sub_det_hi" value="119"/>
+  <PARAM id="sub_pitch" value="29"/>
+  <PARAM id="sub_decay" value="176"/>
+  <PARAM id="sub_duck" value="24"/>
+  <PARAM id="sub_color" value="32"/>
+  <PARAM id="press_amt" value="26"/>
+  <PARAM id="press_mix" value="61"/>
+  <PARAM id="drive_amt" value="21"/>
+  <PARAM id="drive_mode" value="3"/>
+  <PARAM id="drive_flavor" value="-0.69"/>
+  <PARAM id="drive_focus_hi" value="490"/>
+  <PARAM id="out_gain" value="-2.2"/>
+  <PARAM id="tone" value="16"/>
+  <PARAM id="tone_shape" value="1"/>
+  <PARAM id="attack" value="14"/>
+  <PARAM id="clip_on" value="1"/>
+</SNAP>

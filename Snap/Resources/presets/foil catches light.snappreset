@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<SNAP stateVersion="2" order="press,drive,shift,space" name="foil catches light" tags="Bright,Tight,Hi-Hat">
+  <PARAM id="hiss_amt" value="14"/>
+  <PARAM id="hiss_sens" value="56"/>
+  <PARAM id="hiss_det_lo" value="5600"/>
+  <PARAM id="hiss_det_hi" value="12500"/>
+  <PARAM id="hiss_decay" value="57"/>
+  <PARAM id="hiss_duck" value="36"/>
+  <PARAM id="hiss_type" value="3"/>
+  <PARAM id="hiss_env" value="47"/>
+  <PARAM id="press_amt" value="21"/>
+  <PARAM id="press_mode" value="3"/>
+  <PARAM id="press_mix" value="59"/>
+  <PARAM id="press_bands" value="0.31"/>
+  <PARAM id="drive_amt" value="25"/>
+  <PARAM id="drive_mode" value="3"/>
+  <PARAM id="drive_flavor" value="0.48"/>
+  <PARAM id="drive_mix" value="65"/>
+  <PARAM id="drive_target" value="0.43"/>
+  <PARAM id="drive_focus_lo" value="5100"/>
+  <PARAM id="drive_focus_hi" value="14500"/>
+  <PARAM id="out_gain" value="-1.1"/>
+  <PARAM id="cut_lo" value="380"/>
+  <PARAM id="tone" value="12"/>
+  <PARAM id="air" value="17"/>
+  <PARAM id="sustain" value="-19"/>
+</SNAP>

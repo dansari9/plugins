@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<SNAP stateVersion="2" order="drive,space,press,shift" name="grit between hits" tags="Dirty,Dark,Drum Bus,Loop,Glue">
+  <PARAM id="space_amt" value="20"/>
+  <PARAM id="space_type" value="4"/>
+  <PARAM id="space_decay" value="26"/>
+  <PARAM id="space_width" value="63"/>
+  <PARAM id="space_focus_lo" value="310"/>
+  <PARAM id="press_amt" value="58"/>
+  <PARAM id="press_mode" value="2"/>
+  <PARAM id="press_downup" value="-0.56"/>
+  <PARAM id="press_mix" value="54"/>
+  <PARAM id="drive_amt" value="43"/>
+  <PARAM id="drive_mode" value="1"/>
+  <PARAM id="drive_flavor" value="-0.62"/>
+  <PARAM id="drive_focus_lo" value="90"/>
+  <PARAM id="drive_focus_hi" value="7600"/>
+  <PARAM id="out_gain" value="-1.8"/>
+  <PARAM id="cut_hi" value="8900"/>
+  <PARAM id="tone" value="-16"/>
+  <PARAM id="sustain" value="10"/>
+  <PARAM id="clip_on" value="1"/>
+</SNAP>

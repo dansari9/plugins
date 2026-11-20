@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<SNAP stateVersion="2" order="press,shift,drive,space" name="floor underfoot" tags="Fat,Punchy,Drum Bus,Glue">
+  <PARAM id="press_amt" value="35"/>
+  <PARAM id="press_mix" value="64"/>
+  <PARAM id="drive_amt" value="24"/>
+  <PARAM id="drive_flavor" value="-0.58"/>
+  <PARAM id="drive_mix" value="64"/>
+  <PARAM id="drive_focus_hi" value="630"/>
+  <PARAM id="push_amt" value="33"/>
+  <PARAM id="push_mult" value="1"/>
+  <PARAM id="push_tone" value="-0.48"/>
+  <PARAM id="push_mix" value="61"/>
+  <PARAM id="push_target" value="-0.66"/>
+  <PARAM id="push_focus_hi" value="1300"/>
+  <PARAM id="out_gain" value="-2"/>
+  <PARAM id="cut_lo" value="28"/>
+  <PARAM id="tone" value="28"/>
+  <PARAM id="tone_shape" value="1"/>
+  <PARAM id="attack" value="18"/>
+  <PARAM id="sustain" value="-8"/>
+  <PARAM id="clip_on" value="1"/>
+</SNAP>
