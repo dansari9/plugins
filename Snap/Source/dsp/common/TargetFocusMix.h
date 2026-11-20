@@ -15,7 +15,7 @@ public:
     TargetFocusMix() { mix.reset(1); }
     void prepare(double fs, int channels, int maxBlock, bool lowLatency)
     {
-        const int lookahead = lowLatency ? constants::lowLatencyMaskLookahead : (int) std::lround(fs * constants::maskLookaheadMs * 0.001);
+        const int lookahead = lookaheadFor(fs, lowLatency);
         mask.prepare(fs, channels, lookahead), mask.setLookahead(lookahead);
         focus.prepare(fs, channels, maxBlock, 0); // starts at the last edges set, without a glide
         mix.prepare(fs), target.prepare(fs);
@@ -24,6 +24,10 @@ public:
     }
     void reset() { mask.reset(), focus.reset(), mix.reset(mix.targetValue()), target.reset(target.targetValue()); }
     int latency() const { return mask.getLookahead(); }
+    static int lookaheadFor(double fs, bool lowLatency)
+    {
+        return lowLatency ? constants::lowLatencyMaskLookahead : (int) std::lround(fs * constants::maskLookaheadMs * 0.001);
+    }
 
     // mix 0..1, target -1..1, focus edges in Hz. Set before prepare() to start there without a ramp.
     void setParams(float mixAmount, float targetPosition, float focusLoHz, float focusHiHz)

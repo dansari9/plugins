@@ -4,10 +4,12 @@
 //   SnapTests --render <dir>       render the synthetic loops through a few settings to WAV files
 #include "PluginProcessor.h"
 #include "presets/StateIO.h"
+#include "chain/Latency.h"
 #include "loops/Loops.h"
 #include "dsp/modules/Drive.h"
 #include "dsp/modules/Press.h"
 #include "dsp/modules/Push.h"
+#include "dsp/modules/Shift.h"
 #include "Check.h"
 #include <juce_audio_formats/juce_audio_formats.h>
 #include <cstdlib>
@@ -99,7 +101,7 @@ static float drum(int i, double fs)
                     : (float) (0.6 * loops::noise((juce::uint32) i) * std::exp(-u / 0.05));
 }
 
-// Processes `seconds` of drums scaled by `level`; returns channel 0 out and (via `in`) channel 0 in.
+// Processes `seconds` of drums scaled by `level`; returns channel 0 out, advanced by the reported latency, and (via `in`) channel 0 in.
 static std::vector<float> run(Proc& p, double fs, int block, int ch, double seconds, std::vector<float>* in = nullptr, bool poison = false,
                               float level = 1)
 {
@@ -123,6 +125,7 @@ static std::vector<float> run(Proc& p, double fs, int block, int ch, double seco
     }
     if (in != nullptr)
         *in = input;
+    out.erase(out.begin(), out.begin() + std::min((long) p.getLatencySamples(), (long) out.size())); // aligned with the input
     return out;
 }
 
@@ -344,7 +347,39 @@ static void testIdentity() // (4)
     CHECK(near(get(p, "space_focus_lo"), 150) && near(get(p, "space_focus_hi"), 12000) && get(p, "subhiss_on") == 1 && get(p, "clip_on") == 0);
     CHECK(p.apvts.getParameter("hiss_type")->getNumSteps() == 18 && p.apvts.getParameter("space_type")->getNumSteps() == 20);
     CHECK(p.apvts.getParameter("tone_shape")->getText(1.0f, 32) == "band focus" && p.apvts.getParameter("cut_lo")->getText(1.0f, 32) == "2.00 kHz");
-    CHECK(p.getLatencySamples() == 0 && p.getTailLengthSeconds() == 0 && !p.acceptsMidi() && !p.producesMidi() && p.getNumPrograms() == 1);
+    CHECK(p.getTailLengthSeconds() == 0 && !p.acceptsMidi() && !p.producesMidi() && p.getNumPrograms() == 1);
+}
+
+static void testLatency() // one constant latency; Low Latency Mode reports exactly 64 samples
+{
+    for (double fs : { 44100.0, 48000.0, 96000.0, 192000.0 })
+    {
+        Proc p;
+        prepare(p, fs, 256, 2);
+        const int normal = p.getLatencySamples();
+        CHECK(normal == snap::chainLatency(fs, false) && normal >= snap::Shift::latencyFor(fs, false) && normal > 64);
+        for (auto& m : snap::modules) // switches and amounts never move it
+        {
+            set(p, m.onId, 0), set(p, m.amountIds[0], 50);
+            CHECK(p.getLatencySamples() == normal);
+        }
+        set(p, "low_latency", 1);
+        CHECK(p.getLatencySamples() == 64 && snap::Shift::latencyFor(fs, true) == 0);
+        prepare(p, fs, 256, 2);
+        CHECK(p.getLatencySamples() == 64);
+        set(p, "low_latency", 0);
+        CHECK(p.getLatencySamples() == normal);
+    }
+    for (bool low : { false, true }) // the dry path lands exactly on the reported latency, also when bypassed
+        for (bool bypassed : { false, true })
+        {
+            Proc p;
+            set(p, "low_latency", low), set(p, "bypass", bypassed), set(p, "shift_amt", 0);
+            prepare(p, 48000, 100, 2);
+            std::vector<float> in;
+            const auto out = run(p, 48000, 100, 2, 0.5, &in);
+            CHECK(maxDiff(out, in) == 0 && out.size() + (size_t) p.getLatencySamples() == in.size());
+        }
 }
 
 static void testMagnitude()
@@ -567,6 +602,12 @@ static int render(const juce::File& dir)
         module(snap::Push {}, { .amount = 0.6f }, "push-x1");
         module(snap::Push {}, { .amount = 0.8f, .mult = 2, .tone = 0.5f }, "push-x4-bright");
         module(snap::Push {}, { .amount = 1, .target = -1 }, "push-transients");
+        module(snap::Shift {}, { .amount = 0.7f }, "shift-up");
+        module(snap::Shift {}, { .amount = -0.8f, .balance = -1 }, "shift-down-freq");
+        module(snap::Shift {}, { .amount = 0.7f, .balance = 1 }, "shift-formant-up");
+        module(snap::Shift {}, { .amount = -0.7f, .balance = 1, .stretch = 1 }, "shift-formant-down-stretch");
+        module(snap::Shift {}, { .amount = 0.5f, .stereo = -1 }, "shift-wide");
+        module(snap::Shift {}, { .amount = -1, .target = -1 }, "shift-drop-transients");
     }
     return ok ? 0 : 1;
 }
@@ -580,6 +621,7 @@ int main(int argc, char** argv)
         return render(juce::File::getCurrentWorkingDirectory().getChildFile(argv[2]));
     testIdentity();
     testChainOrder();
+    testLatency();
     testState();
     testMigratedSound();
     testMagnitude();
@@ -590,6 +632,7 @@ int main(int argc, char** argv)
     testPress();
     testDrive();
     testPush();
+    testShift();
     std::cout << (failures == 0 ? "All Snap tests passed\n" : "Snap tests FAILED\n");
     return failures == 0 ? 0 : 1;
 }

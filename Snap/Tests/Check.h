@@ -11,3 +11,4 @@ void testDsp();   // DspTests.cpp
 void testPress(); // PressTests.cpp
 void testDrive(); // DriveTests.cpp
 void testPush();  // PushTests.cpp
+void testShift(); // ShiftTests.cpp

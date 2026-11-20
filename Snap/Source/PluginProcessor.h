@@ -1,16 +1,18 @@
 #pragma once
 #include "Parameters.h"
 #include "chain/ChainOrder.h"
+#include "dsp/common/Delay.h"
 #include "dsp/master/TransientShaper.h"
 #include <array>
 
 // snap: drum multi-FX by daveydidit. Parameter table in Parameters.cpp, session state in presets/StateIO.
-class SnapProcessor : public juce::AudioProcessor
+class SnapProcessor : public juce::AudioProcessor, private juce::AudioProcessorValueTreeState::Listener
 {
 public:
     static constexpr int historySize = 512; // ~2.5 s of display history
 
     SnapProcessor();
+    ~SnapProcessor() override;
     void prepareToPlay(double sampleRate, int blockSize) override;
     void releaseResources() override {}
     bool isBusesLayoutSupported(const BusesLayout&) const override;
@@ -52,8 +54,11 @@ private:
         float target(float magnitude) const { return snap::applyMagnitude(spec, raw->load(), magnitude); }
     };
     enum { inGain, outGain, attack, sustain };
+    void parameterChanged(const juce::String&, float) override; // low_latency: report the new latency
 
-    std::atomic<float>*magnitude, *bypass;
+    std::atomic<float>*magnitude, *bypass, *lowLatency;
+    double sampleRate = 48000;
+    snap::Delay chainPad; // the chain's constant latency; modules join it as they are wired (M7)
     std::array<Scaled, 4> master;
     snap::TransientShaper shaper;
     float peakIn = 0, peakOut = 0, peakGain = 0;
