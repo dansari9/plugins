@@ -12,6 +12,12 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# No fused multiply-add contraction, so float results (parameter round trips, saved values, renders) are the same on
+# every platform: GCC on x86-64-v3 and clang on arm64 contract by default (-24 + 48 * x gives -3.4999995 for -3.5 dB).
+if(NOT MSVC)
+    add_compile_options(-ffp-contract=off)
+endif()
+
 include(FetchContent)
 FetchContent_Declare(
     JUCE
