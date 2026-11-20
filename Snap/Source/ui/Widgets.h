@@ -33,6 +33,7 @@ public:
     Kind kind;
     juce::String label, hint;    // label: a dial's name (drawn by small dials)
     bool centred = false, dim = false;
+    float knob = 44;                      // a dial's arc size: 44, or 72 for master in / out
     int active = 0;                       // the parameter a drag, wheel or typed value moves (range: nearest handle)
     std::function<void(int)> onPick;      // amount with two rings: a click picked ring 0 (inner) or 1 (outer)
     std::function<juce::String()> valueText; // optional replacement for the value under a small dial
@@ -77,6 +78,7 @@ public:
     std::function<void(const juce::ModifierKeys&)> onClick; // right-click: mods.isPopupMenu()
     std::function<void(juce::Graphics&, Key&)> draw;
     std::function<bool()> on; // toggle / radio state, for screen readers
+    std::function<void(int)> onStep; // a choice: the arrow keys and the wheel step it (+1 right / up)
     juce::String hint;
     Role role;
     void paint(juce::Graphics& g) override
@@ -85,7 +87,11 @@ public:
             draw(g, *this);
     }
     void mouseUp(const juce::MouseEvent&) override;
+    void mouseWheelMove(const juce::MouseEvent&, const juce::MouseWheelDetails&) override;
     bool keyPressed(const juce::KeyPress&) override;
     std::unique_ptr<juce::AccessibilityHandler> createAccessibilityHandler() override;
+
+private:
+    float wheel = 0; // smooth wheel travel not yet stepped
 };
 } // namespace snap::ui

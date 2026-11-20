@@ -113,7 +113,7 @@ Control::~Control()
 void Control::resized()
 {
     const auto b = getLocalBounds();
-    field.setBounds(kind == Kind::dial ? b.withTrimmedTop(56) : kind == Kind::amount ? b.withSizeKeepingCentre(80, 20)
+    field.setBounds(kind == Kind::dial ? b.withTrimmedTop(knob > 60 ? 82 : 56) : kind == Kind::amount ? b.withSizeKeepingCentre(80, 20)
                                                                                      : b.withSizeKeepingCentre(jmin(b.getWidth(), 90), 18));
 }
 
@@ -125,12 +125,15 @@ void Control::paint(Graphics& g)
     switch (kind)
     {
         case Kind::dial:
+        {
+            const bool big = knob > 60;
             ui::centred(g, label, 0, 0, w, dimmed(focused ? primary : muted, dim), 11);
-            arc(g, (w - 44) / 2, 17, 44, { norm(), centred, dim });
+            arc(g, (w - knob) / 2, big ? 18.0f : 17.0f, knob, { norm(), centred, dim });
             if (!field.isVisible())
-                ui::centred(g, valueText ? valueText() : format(spec(getComponentID().toRawUTF8()), param().convertFrom0to1(norm())), 0, 58, w,
-                        dimmed(primary, dim), 12, true);
+                ui::centred(g, valueText ? valueText() : format(spec(getComponentID().toRawUTF8()), param().convertFrom0to1(norm())), 0,
+                            big ? 84.0f : 58.0f, w, dimmed(primary, dim), big ? 13.0f : 12.0f, true);
             break;
+        }
         case Kind::amount:
             if (params.size() == 2)
                 arc(g, 0, 0, w, { norm(1), false, dim, norm(0), active == 0 });
@@ -374,9 +377,21 @@ void Key::mouseUp(const MouseEvent& e)
         onClick(e.mods);
 }
 
+void Key::mouseWheelMove(const MouseEvent& e, const MouseWheelDetails& w)
+{
+    if (!onStep)
+        return Component::mouseWheelMove(e, w);
+    wheel += (std::abs(w.deltaY) > 0 ? w.deltaY : -w.deltaX) * (w.isReversed ? -1.0f : 1.0f);
+    if (std::abs(wheel) >= 0.12f) // one notch of a stepped wheel; a few px of a smooth one
+        onStep(wheel > 0 ? 1 : -1), wheel = 0;
+}
+
 bool Key::keyPressed(const KeyPress& k)
 {
-    if (k.getKeyCode() != KeyPress::returnKey || !onClick)
+    const int code = k.getKeyCode();
+    if (onStep && (code == KeyPress::upKey || code == KeyPress::rightKey || code == KeyPress::downKey || code == KeyPress::leftKey))
+        return onStep(code == KeyPress::upKey || code == KeyPress::rightKey ? 1 : -1), true;
+    if (code != KeyPress::returnKey || !onClick)
         return false;
     onClick({});
     return true;

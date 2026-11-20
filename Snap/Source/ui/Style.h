@@ -70,6 +70,8 @@ inline int faderDots(float w) { return (int) std::floor((w - 2) / 4) + 1; }
 
 // A vertical meter, n dots 4 px apart, 6 px wide, lit from the top (downward) or the bottom.
 void vmeter(juce::Graphics&, float x, float y, int n, float norm, bool fromTop, juce::Colour on, bool dim = false);
+// A 9-dot vertical meter around a white centre dot: v > 0 lights upward, v < 0 downward, |v| = 1 lights 4 dots.
+void vbipolar(juce::Graphics&, float x, float y, float v, juce::Colour on, bool dim = false);
 
 // ■ / □ 8 px square at (x, y).
 void square(juce::Graphics&, float x, float y, bool on, juce::Colour onColour = colours::accent, bool dim = false);

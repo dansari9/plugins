@@ -73,6 +73,16 @@ void vmeter(Graphics& g, float x, float y, int n, float norm, bool fromTop, Colo
         dot(g, x + 3, y + 2 + 4.0f * (float) i, 1.1f, (fromTop ? i : n - 1 - i) < lit ? dimmed(on, dim) : dimmed(colours::dim, dim));
 }
 
+void vbipolar(Graphics& g, float x, float y, float v, Colour on, bool dim)
+{
+    const int k = roundToInt(jlimit(0.0f, 1.0f, std::abs(v)) * 4);
+    for (int i = 0; i < 9; ++i)
+    {
+        const bool lit = v > 0 ? i < 4 && i >= 4 - k : i > 4 && i <= 4 + k;
+        dot(g, x + 3, y + 2 + 4.0f * (float) i, 1.1f, dimmed(i == 4 ? colours::primary : lit ? on : colours::dim, dim));
+    }
+}
+
 void square(Graphics& g, float x, float y, bool on, Colour onColour, bool dim)
 {
     if (on)

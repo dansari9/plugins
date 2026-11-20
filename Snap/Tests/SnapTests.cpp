@@ -708,6 +708,38 @@ static void testEditor()
     CHECK(!p.locked((int) snap::Module::press));
     click(ed, "tone shape mid");
     CHECK(p.apvts.getRawParameterValue("tone_shape")->load() == 2);
+
+    // v3 layout: undo / redo follow save in the top bar, magnitude sits by the menu, master in / out are the big dials,
+    // segmented choices step with the arrow keys (clamped) and the `< >` selectors wrap.
+    {
+        using snap::ui::Key;
+        auto *save = find<Key>(ed, "save preset"), *undo = find<Key>(ed, "undo"), *redo = find<Key>(ed, "redo"), *menu = find<Key>(ed, "menu");
+        auto* magnitude = find<snap::ui::Control>(ed, "magnitude");
+        CHECK(save != nullptr && undo != nullptr && redo != nullptr && menu != nullptr && magnitude != nullptr);
+        if (save != nullptr && undo != nullptr && redo != nullptr && menu != nullptr && magnitude != nullptr)
+            CHECK(undo->getY() == save->getY() && redo->getY() == save->getY() && undo->getX() >= save->getRight() && redo->getX() >= undo->getRight()
+                  && magnitude->getX() > undo->getRight() + 400 && menu->getX() - magnitude->getRight() < 64);
+        for (const char* id : { "in_gain", "out_gain" })
+        {
+            auto* big = find<snap::ui::Control>(ed, id);
+            CHECK(big != nullptr && big->knob == 72 && big->getHeight() == 100);
+        }
+        set(p, "press_mode", 1);
+        auto* glue = find<Key>(ed, "press_mode glue");
+        CHECK(glue != nullptr);
+        if (glue != nullptr)
+        {
+            glue->keyPressed(juce::KeyPress(juce::KeyPress::rightKey));
+            CHECK(p.apvts.getRawParameterValue("press_mode")->load() == 2);
+            set(p, "press_mode", 5), glue->keyPressed(juce::KeyPress(juce::KeyPress::rightKey)); // the last choice stays
+            CHECK(p.apvts.getRawParameterValue("press_mode")->load() == 5);
+        }
+        set(p, "press_mode", 0), set(p, "space_type", 0);
+        click(ed, "previous space type");
+        CHECK(p.apvts.getRawParameterValue("space_type")->load() == 19);
+        click(ed, "next space type");
+        CHECK(p.apvts.getRawParameterValue("space_type")->load() == 0);
+    }
     click(ed, "snapshot B"); // empty: stores
     CHECK(p.hasSnapshot(1));
     set(p, "air", 70);
