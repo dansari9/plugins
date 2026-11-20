@@ -122,6 +122,7 @@ void Control::paint(Graphics& g)
     using namespace colours;
     const float w = (float) getWidth();
     const bool focused = hasKeyboardFocus(false);
+    const Lattice lattice(*this);
     switch (kind)
     {
         case Kind::dial:
@@ -144,7 +145,7 @@ void Control::paint(Graphics& g)
         case Kind::range: fader(g, 0, 0, w, FaderKind::range, norm(0), norm(1), accent, dim); break;
     }
     if (focused && kind != Kind::dial)
-        g.setColour(accent.withAlpha(0.5f)), g.drawRect(getLocalBounds(), 1);
+        box(g, getLocalBounds().toFloat(), accent.withAlpha(0.5f));
 }
 
 void Control::edit()

@@ -5,6 +5,7 @@
 // repaints the static layer only when something it shows has changed.
 #include "../PluginProcessor.h"
 #include "../dsp/modules/ShiftConstants.h"
+#include "Braille.h"
 #include "Layout.h"
 #include "PresetBrowser.h"
 #include "Visualizers.h"
@@ -28,6 +29,7 @@ struct Canvas : Component
     std::function<void(Graphics&)> draw;
     void paint(Graphics& g) override
     {
+        const Lattice lattice(*this);
         if (draw)
             draw(g);
     }
@@ -56,6 +58,7 @@ struct Column : Component
     float headerX() const { return module == Module::subHiss || module == Module::push ? 0.0f : 14.0f; }
     void paint(Graphics& g) override
     {
+        const Lattice lattice(*this);
         const float hx = headerX();
         const auto name = String(modules[(size_t) module].name.data());
         if (hx > 0)
@@ -101,11 +104,15 @@ struct Pad : Component
     }
     void paint(Graphics& g) override
     {
-        for (float x = 3; x < 141; x += 6)
-            for (float y = 3; y < 40; y += 6)
-                dot(g, x, y, 0.7f, dimmed(colours::dim, dim));
+        const Lattice lattice(*this);
+        {
+            Braille b(g);
+            for (float x = 3; x < 141; x += 6)
+                for (float y = 3; y < 40; y += 6)
+                    b.dot(x, y, dimmed(colours::dim, dim));
+        }
         vline(g, 69, 0, 40), hline(g, 0, 20, 137);
-        dot(g, 3 + 132 * pan.getValue(), 37 - 32 * width.getValue(), 3, dimmed(primary, dim));
+        led(g, Rectangle<float>(6, 6).withCentre({ 3 + 132 * pan.getValue(), 37 - 32 * width.getValue() }), dimmed(primary, dim));
     }
     void mouseDown(const MouseEvent& e) override
     {
@@ -229,7 +236,7 @@ struct Editor : AudioProcessorEditor, Timer
                       [this, id, label](Graphics& g, Key& self) {
                           toggle(g, 0, 0, on(id), label, dimOf(self));
                           if (self.isMouseOver() && !on(id))
-                              square(g, 0, 4, false, accent, false), g.setColour(primary), g.drawRect(0.0f, 4.0f, 8.0f, 8.0f, 1.0f);
+                              box(g, { 0, 4, 8, 8 }, primary);
                       },
                       [this, id](const ModifierKeys& m) { setParam(id, resetting(m) ? defaultOf(id) : on(id) ? 0.0f : 1.0f); }, Key::Role::toggle);
         k.on = [this, id] { return on(id); };
@@ -246,7 +253,7 @@ struct Editor : AudioProcessorEditor, Timer
                           const auto b = self.getLocalBounds().toFloat();
                           if (on)
                               g.setColour(tag), g.fillRect(b);
-                          g.setColour(dimmed(on ? colours::dim : rule, d)), g.drawRect(b, 1.0f);
+                          box(g, b, dimmed(on ? colours::dim : rule, d));
                           centred(g, label, 0, 3, b.getWidth(), dimmed(on ? activeText : self.isMouseOver() ? primary : muted, d), 11, on);
                       },
                       std::move(click), Key::Role::radio);
@@ -286,7 +293,7 @@ struct Editor : AudioProcessorEditor, Timer
     }
     static void selectorBox(Graphics& g, const String& name, float y, bool d)
     {
-        g.setColour(dimmed(rule, d)), g.drawRect(0.0f, y, CW, cellH, 1.0f);
+        box(g, { 0, y, CW, cellH }, dimmed(rule, d));
         centred(g, name, 0, y + 3, CW, dimmed(primary, d), 12, true);
     }
     // A fader line (Layout.h): name at x 0, optional end labels, the fader between them.
@@ -610,7 +617,7 @@ struct Editor : AudioProcessorEditor, Timer
             const bool d = c.dim;
             const float limit = proc.display.pushLimitDb.load();
             fader(g, faderX, YD + 34, 104, FaderKind::meter, -limit / 12, 0, accent, d);
-            g.setColour(dimmed(limit < -0.1f ? accent : colours::dim, d)), g.fillEllipse(162, YD + 35, 6, 6);
+            led(g, { 162, YD + 35, 6, 6 }, dimmed(limit < -0.1f ? accent : colours::dim, d));
             right(g, format(spec("in_gain"), limit), 168, YD + 32, CW - 168, dimmed(primary, d), 11, true);
             readout(g, d, focusText("push_focus_lo", "push_focus_hi"));
         };
@@ -774,7 +781,7 @@ struct Editor : AudioProcessorEditor, Timer
         centred(g, "cut", 216, Yc - 40, 176, muted, 11);
         text(g, show("cut_lo"), 216, Yc + 12, muted, 11), right(g, show("cut_hi"), 292, Yc + 12, 100, muted, 11);
         centred(g, "shape", groupX[2] + 80, Yc - 40, 100, muted, 11);
-        g.setColour(proc.clipping() && on("clip_on") ? accent : colours::dim), g.fillEllipse(groupX[5] + 50, Yc - 3.5f, 7, 7);
+        led(g, { groupX[5] + 50, Yc - 3.5f, 7, 7 }, proc.clipping() && on("clip_on") ? accent : colours::dim);
         paintMeters(g);
     }
     static constexpr float metersX = 1208; // the meters run flush to the right margin

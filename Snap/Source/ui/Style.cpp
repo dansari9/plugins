@@ -1,4 +1,5 @@
 #include "Style.h"
+#include "Braille.h"
 #include "BinaryData.h"
 
 using namespace juce;
@@ -27,14 +28,17 @@ void arc(Graphics& g, float x, float y, float size, const Arc& a)
     const bool big = size > 60;
     const float dr = big ? 2 : 1.4f, step = big ? 7.5f : 11.25f, r = size / 2 - dr - 0.5f, cx = x + size / 2, cy = y + r + dr + 0.5f;
     const Colour off = a.dim ? rule : colours::dim, on = a.dim ? colours::dim : accent;
+    Braille b(g);
     auto ring = [&](float radius, float value, bool centred, float st) {
         const float v = 270 * jlimit(0.0f, 1.0f, value);
-        for (float t = 0; t <= 270.01f; t += st)
-        {
-            const float angle = degreesToRadians(225 + t);
-            const bool lit = centred ? jmin(135.0f, v) <= t + 0.01f && t <= jmax(135.0f, v) + 0.01f : t <= v + 0.01f;
-            dot(g, cx + radius * std::sin(angle), cy - radius * std::cos(angle), dr, lit ? on : off);
-        }
+        for (bool litPass : { false, true }) // the track, then the lit arc over it
+            for (float t = 0; t <= 270.01f; t += st)
+            {
+                const float angle = degreesToRadians(225 + t);
+                const bool lit = centred ? jmin(135.0f, v) <= t + 0.01f && t <= jmax(135.0f, v) + 0.01f : t <= v + 0.01f;
+                if (lit == litPass)
+                    b.dot(cx + radius * std::sin(angle), cy - radius * std::cos(angle), lit ? on : off);
+            }
     };
     ring(r, a.norm, a.centred, step);
     if (a.inner >= 0)
@@ -43,8 +47,9 @@ void arc(Graphics& g, float x, float y, float size, const Arc& a)
     const float nv = inner ? a.inner : a.norm, angle = degreesToRadians(225 + 270 * jlimit(0.0f, 1.0f, nv));
     const float len = (inner ? r * 0.62f : r) - (big ? 6 : 4.5f);
     const int n = big ? 6 : 4;
+    b.stroke();
     for (int k = 0; k <= n; ++k)
-        dot(g, cx + len * std::sin(angle) * (float) k / (float) n, cy - len * std::cos(angle) * (float) k / (float) n, dr, a.dim ? muted : primary);
+        b.dot(cx + len * std::sin(angle) * (float) k / (float) n, cy - len * std::cos(angle) * (float) k / (float) n, a.dim ? muted : primary, Mode::over);
 }
 
 void fader(Graphics& g, float x, float y, float w, FaderKind kind, float a, float b, Colour on, bool dim)
@@ -54,41 +59,50 @@ void fader(Graphics& g, float x, float y, float w, FaderKind kind, float a, floa
     const int vi = index(a), ci = kind == FaderKind::centred ? roundToInt((float) (n - 1) / 2) : 0;
     const int lo = kind == FaderKind::range ? index(a) : jmin(ci, vi), hi = kind == FaderKind::range ? index(b) : jmax(ci, vi);
     const auto handleAt = [&](int i) { return kind != FaderKind::meter && (i == lo || i == hi) && (kind == FaderKind::range || i == vi); };
-    const Colour lit = dimmed(on, dim), unlit = dimmed(colours::dim, dim), white = dimmed(colours::primary, dim);
-    for (int i = 0; i < n; ++i)
-    {
-        const float px = x + 2 + 4.0f * (float) i;
-        if (handleAt(i))
-            for (int j = 0; j < 4; ++j)
-                dot(g, px, y + 1.5f + 3.0f * (float) j, 1.1f, white);
-        else
-            dot(g, px, y + 6, 1.1f, (kind == FaderKind::meter ? i <= vi && a > 0 : i >= lo && i <= hi) ? lit : unlit);
-    }
+    const auto lit = [&](int i) { return kind == FaderKind::meter ? i <= vi && a > 0 : i >= lo && i <= hi; };
+    Braille dots(g);
+    for (int pass = 0; pass < 3; ++pass, dots.stroke()) // unlit, lit, handles
+        for (int i = 0; i < n; ++i)
+        {
+            const float px = x + 2 + 4.0f * (float) i;
+            if (handleAt(i) && pass == 2)
+                for (int j = 0; j < 4; ++j)
+                    dots.dot(px, y + 1.5f + 3.0f * (float) j, dimmed(colours::primary, dim), Mode::over);
+            else if (!handleAt(i) && pass == (lit(i) ? 1 : 0))
+                dots.dot(px, y + 6, dimmed(pass == 1 ? on : colours::dim, dim));
+        }
 }
 
 void vmeter(Graphics& g, float x, float y, int n, float norm, bool fromTop, Colour on, bool dim)
 {
     const int lit = roundToInt(jlimit(0.0f, 1.0f, norm) * (float) n);
-    for (int i = 0; i < n; ++i)
-        dot(g, x + 3, y + 2 + 4.0f * (float) i, 1.1f, (fromTop ? i : n - 1 - i) < lit ? dimmed(on, dim) : dimmed(colours::dim, dim));
+    Braille b(g);
+    for (int pass = 0; pass < 2; ++pass)
+        for (int i = 0; i < n; ++i)
+            if (((fromTop ? i : n - 1 - i) < lit) == (pass == 1))
+                b.dot(x + 3, y + 2 + 4.0f * (float) i, dimmed(pass == 1 ? on : colours::dim, dim));
 }
 
 void vbipolar(Graphics& g, float x, float y, float v, Colour on, bool dim)
 {
     const int k = roundToInt(jlimit(0.0f, 1.0f, std::abs(v)) * 4);
-    for (int i = 0; i < 9; ++i)
-    {
-        const bool lit = v > 0 ? i < 4 && i >= 4 - k : i > 4 && i <= 4 + k;
-        dot(g, x + 3, y + 2 + 4.0f * (float) i, 1.1f, dimmed(i == 4 ? colours::primary : lit ? on : colours::dim, dim));
-    }
+    Braille b(g);
+    for (int pass = 0; pass < 2; ++pass)
+        for (int i = 0; i < 9; ++i)
+        {
+            const bool lit = i == 4 || (v > 0 ? i < 4 && i >= 4 - k : i > 4 && i <= 4 + k);
+            if (lit == (pass == 1))
+                b.dot(x + 3, y + 2 + 4.0f * (float) i, dimmed(i == 4 ? colours::primary : lit ? on : colours::dim, dim));
+        }
 }
 
 void square(Graphics& g, float x, float y, bool on, Colour onColour, bool dim)
 {
+    Braille b(g);
     if (on)
-        g.setColour(dimmed(onColour, dim)), g.fillRect(x, y, 8.0f, 8.0f);
+        b.fill({ x, y, 8, 8 }, dimmed(onColour, dim));
     else
-        g.setColour(dimmed(colours::muted, dim)), g.drawRect(x, y, 8.0f, 8.0f, 1.0f);
+        b.box({ x, y, 8, 8 }, dimmed(colours::muted, dim));
 }
 
 void toggle(Graphics& g, float x, float y, bool on, const String& label, bool dim)
@@ -96,6 +110,10 @@ void toggle(Graphics& g, float x, float y, bool on, const String& label, bool di
     square(g, x, y + 4, on, colours::accent, dim);
     text(g, label, x + 14, y, dimmed(on ? colours::primary : colours::muted, dim));
 }
+
+void box(Graphics& g, Rectangle<float> r, Colour c) { Braille(g).box(r, c); }
+
+void led(Graphics& g, Rectangle<float> r, Colour c) { Braille(g).fill(r, c, true); }
 
 void moduleGlyph(Graphics& g, Module m, float x, float y, Colour c)
 {
@@ -116,7 +134,7 @@ void moduleGlyph(Graphics& g, Module m, float x, float y, Colour c)
         case Module::space:
             for (int i = 0; i < 3; ++i)
                 for (int j = 0; j < 7; ++j)
-                    dot(g, cx - 3 + 3.0f * (float) i, cy - 7 + 2.4f * (float) j, 0.75f, c);
+                    g.fillEllipse(cx - 3.75f + 3.0f * (float) i, cy - 7.75f + 2.4f * (float) j, 1.5f, 1.5f);
             break;
         case Module::press:
             for (int i = 0; i < 3; ++i)
@@ -146,14 +164,16 @@ void padlock(Graphics& g, float x, float y, Colour c)
     shackle.startNewSubPath(x + 2.5f, y + 5.5f), shackle.lineTo(x + 2.5f, y + 3.8f);
     shackle.addCentredArc(x + 5, y + 3.8f, 2.5f, 2.5f, 0, -MathConstants<float>::halfPi, MathConstants<float>::halfPi);
     shackle.lineTo(x + 7.5f, y + 5.5f);
-    g.setColour(c), g.strokePath(shackle, PathStrokeType(1.2f)), g.fillRoundedRectangle(x + 1, y + 5.5f, 8, 6, 1);
+    Braille b(g);
+    b.path(shackle, c), b.fill({ x + 1, y + 5.5f, 8, 6 }, c);
 }
 
 void handle(Graphics& g, float x, float y, Colour c)
 {
+    Braille b(g);
     for (int i = 0; i < 2; ++i)
         for (int j = 0; j < 3; ++j)
-            dot(g, x + 2 + 4.0f * (float) i, y + 2 + 4.0f * (float) j, 1.1f, c);
+            b.dot(x + 2 + 4.0f * (float) i, y + 2 + 4.0f * (float) j, c);
 }
 
 void arrow(Graphics& g, float x, float y, Colour c)
@@ -174,16 +194,17 @@ void swapArrows(Graphics& g, float x, float y, Colour c)
 
 void menuIcon(Graphics& g, float x, float y, Colour c)
 {
-    g.setColour(c);
+    Braille b(g);
     for (int i = 0; i < 3; ++i)
-        g.fillRect(x, y + 0.4f + 4.0f * (float) i, 14.0f, 1.2f);
+        b.line(x, y + 1 + 4.0f * (float) i, x + 14, y + 1 + 4.0f * (float) i, c);
 }
 
 void dice(Graphics& g, float x, float y, Colour c)
 {
-    g.setColour(c), g.drawRoundedRectangle(x + 0.6f, y + 0.6f, 12.8f, 12.8f, 2, 1.2f);
+    Braille b(g);
+    b.box({ x, y, 14, 14 }, c);
     for (int i = 0; i < 3; ++i)
-        dot(g, x + 4 + 3.0f * (float) i, y + 4 + 3.0f * (float) i, 1.2f, c);
+        b.dot(x + 4 + 3.0f * (float) i, y + 4 + 3.0f * (float) i, c);
 }
 
 void heart(Graphics& g, float x, float y, bool filled)
@@ -194,10 +215,7 @@ void heart(Graphics& g, float x, float y, bool filled)
     p.cubicTo(x + 0.2f, y + 4.6f, x + 1.2f, y + 1.8f, x + 3.4f, y + 1.6f), p.cubicTo(x + 4.6f, y + 1.5f, x + 5.5f, y + 2.3f, x + 6, y + 3.4f);
     p.cubicTo(x + 6.5f, y + 2.3f, x + 7.4f, y + 1.5f, x + 8.6f, y + 1.6f), p.cubicTo(x + 10.8f, y + 1.8f, x + 11.8f, y + 4.6f, x + 10.3f, y + 6.3f);
     p.closeSubPath();
-    if (filled)
-        g.setColour(colours::accent), g.fillPath(p);
-    else
-        g.setColour(colours::muted), g.strokePath(p, PathStrokeType(1.0f));
+    Braille(g).path(p, filled ? colours::accent : colours::muted, filled);
 }
 
 void slope(Graphics& g, Slope s, float x, float y, Colour c)
@@ -214,13 +232,14 @@ void slope(Graphics& g, Slope s, float x, float y, Colour c)
             p.startNewSubPath(x + 1, y + 1), p.lineTo(x + 5, y + 1), p.cubicTo(x + 6, y, x + 8, y, x + 9, y + 3), p.lineTo(x + 11, y + 9);
             break;
     }
-    g.setColour(c), g.strokePath(p, PathStrokeType(1.2f));
+    Braille(g).path(p, c);
 }
 
 void gridDots(Graphics& g, float w, float h)
 {
+    Braille b(g);
     for (float x = 4; x < w; x += 8)
         for (float y = 4; y < h; y += 8)
-            dot(g, x, y, 0.6f, colours::rule);
+            b.dot(x, y, colours::rule);
 }
 } // namespace snap::ui

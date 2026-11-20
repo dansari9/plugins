@@ -1,4 +1,5 @@
 #include "PresetBrowser.h"
+#include "Braille.h"
 #include "../PluginProcessor.h"
 
 using namespace juce;
@@ -259,8 +260,7 @@ struct PresetBrowser::Impl
                 fill(g, box, tag);
             if (row.add && collection.isVisible())
             {
-                g.setColour(rule);
-                g.drawRect(box, 1.0f);
+                ui::box(g, box, rule);
                 continue;
             }
             text(g, row.name, isCollection ? 32 : 18, y, row.add ? accent : (active || box.contains(hover) ? primary : muted),
@@ -373,9 +373,9 @@ void PresetBrowser::paint(Graphics& g)
     const auto& p = *impl;
     const auto rows = p.store.list(p.filter);
     const auto selected = std::ranges::find(rows, p.selectedKey, &Preset::key);
+    const Lattice lattice(*this);
     g.fillAll(bg);
-    g.setColour(rule);
-    g.drawRect(getLocalBounds());
+    ui::box(g, getLocalBounds().toFloat(), rule);
     text(g, "presets", 16, 12, primary, 12, true);
     text(g, String(rows.size()) + u(" presets · ") + (selected != rows.end() ? "1 selected" : "0 selected"), 92, 13, muted, 11);
     text(g, "cancel", 1290, 12, cancelBox.toFloat().contains(p.hover) ? primary : muted);
@@ -393,8 +393,7 @@ void PresetBrowser::paint(Graphics& g)
     for (const auto& chip : p.chips)
         drawChip(g, chip.bounds, chip.label, p.filter.tags.contains(chip.tagName), chip.bounds.contains(p.hover));
 
-    g.setColour(rule);
-    g.drawRect(searchBox);
+    ui::box(g, searchBox.toFloat(), rule);
     if (p.search.isEmpty())
         text(g, "search presets", 608, 56, dim);
     text(g, "modules", 590, 88, muted, 11);

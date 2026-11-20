@@ -1,4 +1,5 @@
 #include "Visualizers.h"
+#include "Braille.h"
 #include "../PluginProcessor.h"
 #include <juce_dsp/juce_dsp.h>
 #include <algorithm>
@@ -226,29 +227,30 @@ void Visualizer::update(const Levels& levels)
 
 void Visualizer::paint(Graphics& g)
 {
+    const Lattice lattice(*this);
     gridDots(g, 217, 104);
     const auto& f = state->frame;
     const auto shade = [&](Colour c) { return dimmed(c, dim); };
-    const auto drawDot = [&](float x, float y, float radius, Colour c) { dot(g, x, y, radius, shade(c)); };
+    Braille b(g);
+    const auto drawDot = [&](float x, float y, Colour c) { b.dot(x, y, shade(c)); };
     switch (module)
     {
         case Module::subHiss:
         {
             vmeter(g, 1, 6, 23, (float) (23 - f.threshold) / 23, false, accent, dim);
             for (float x : { 1.0f, 4.0f, 7.0f })
-                drawDot(x, 8 + 4.0f * (float) f.threshold, 1.1f, primary);
+                drawDot(x, 8 + 4.0f * (float) f.threshold, primary);
             for (size_t i = 0; i < columns; ++i)
             {
                 const auto [dots, active] = f.bands[i];
                 const Colour body = active ? accent : i > 18 ? secondary : muted;
                 for (int k = 0; k < dots; ++k)
-                    drawDot(20 + 4.0f * (float) i, 96 - 4.0f * (float) k, 1.2f, k + 1 == dots ? primary : body);
+                    drawDot(20 + 4.0f * (float) i, 96 - 4.0f * (float) k, k + 1 == dots ? primary : body);
             }
             for (size_t i = 0; i < f.lit.size(); ++i)
             {
                 const float y = 8 + 26.0f * (float) i;
-                g.setColour(shade(rule));
-                g.drawRect(162.0f, y, 50.0f, 20.0f, 1.0f);
+                box(g, { 162, y, 50, 20 }, shade(rule));
                 square(g, 168, y + 6, f.lit[i], accent, dim);
                 g.setColour(shade(f.lit[i] ? primary : muted));
                 g.fillPath(state->spectrum->labels[i]);
@@ -259,7 +261,7 @@ void Visualizer::paint(Graphics& g)
         {
             for (int i = 0; i < 18; ++i)
                 for (float y = 10; y <= 94; y += 4)
-                    drawDot(8 + 12.0f * (float) i, y, 0.9f, colours::dim);
+                    drawDot(8 + 12.0f * (float) i, y, colours::dim);
             const float curve = 1 + 0.45f * std::abs(f.shift);
             for (int i = 0; i < 18; ++i)
             {
@@ -267,24 +269,21 @@ void Visualizer::paint(Graphics& g)
                 const float shifted = f.shift < 0 ? std::pow(t, curve) : 1 - std::pow(1 - t, curve);
                 const float x = 8 + (f.shift == 0 ? 12.0f * (float) i : 204 * shifted);
                 for (float y = 10; y <= 94; y += 4)
-                    drawDot(x, y + f.wobble * std::sin(0.9f * (float) i + y / 14 + f.phase), i == 4 ? 1.3f : 1.2f, i == 4 ? accent : primary);
+                    drawDot(x, y + f.wobble * std::sin(0.9f * (float) i + y / 14 + f.phase), i == 4 ? accent : primary);
             }
             break;
         }
         case Module::space:
         {
             for (float y = 12; y <= 92; y += 4)
-                drawDot(6, y, 1.2f, primary);
+                drawDot(6, y, primary);
             const float scale = f.extent * (1 - f.predelay / 201);
             for (auto [x, y, rank] : cloudDots)
             {
                 if (rank >= f.cloud || y < 6 || y > 98)
                     continue;
                 const Colour colour = x < 30 ? accent : x < 85 ? primary : x < 145 ? secondary : muted;
-                const float radius = x < 30 ? 1.3f : x < 85 ? 1.2f : x < 145 ? 1.1f : 1.0f;
-                const float px = 10 + f.predelay + (x - 10) * scale;
-                dot(g, 4.0f * (float) roundToInt(px / 4) + 2, 4.0f * (float) roundToInt(y / 4), radius,
-                    shade(colour).withAlpha(0.45f + 0.55f * f.cloud));
+                b.dot(10 + f.predelay + (x - 10) * scale, y, shade(colour).withAlpha(0.45f + 0.55f * f.cloud));
             }
             break;
         }
@@ -297,8 +296,7 @@ void Visualizer::paint(Graphics& g)
                 {
                     const int distance = std::abs(i);
                     const bool red = squeeze > 0.22f && distance >= 3;
-                    drawDot(x, 52 + 10.0f * (float) i * (1 - squeeze), red || distance == 0 ? 1.2f : distance <= 2 ? 1.1f : 1.0f,
-                            red ? accent : distance == 0 ? primary : distance <= 2 ? secondary : muted);
+                    drawDot(x, 52 + 10.0f * (float) i * (1 - squeeze), red ? accent : distance == 0 ? primary : distance <= 2 ? secondary : muted);
                 }
             }
             break;
@@ -317,25 +315,21 @@ void Visualizer::paint(Graphics& g)
                 }
                 const int layers = 1 + jmin(4, (int) (5 * f.drive * x / 211));
                 for (int k = layers - 1; k >= 0; --k)
-                    drawDot(x, 52 + 30 * wave + 3.0f * (float) k - 1.5f * (float) (layers - 1), k == 0 ? 1.2f : 1.1f,
-                            k == 0 ? primary : accent);
+                    drawDot(x, 52 + 30 * wave + 3.0f * (float) k - 1.5f * (float) (layers - 1), k == 0 ? primary : accent);
             }
             break;
         case Module::push:
         {
-            const auto loopDot = [&](float angle, float r, float aspect, float radius, Colour c)
-            {
-                drawDot(108 + r * std::cos(angle), 52 + aspect * r * std::sin(angle), radius, c);
-            };
+            const auto loopDot = [&](float angle, float r, float aspect, Colour c) { drawDot(108 + r * std::cos(angle), 52 + aspect * r * std::sin(angle), c); };
             for (int i = 0; i < 56; ++i)
-                loopDot(turn * (float) i / 56, 34, 1, 0.9f, colours::dim);
+                loopDot(turn * (float) i / 56, 34, 1, colours::dim);
             std::uint32_t seed = 5;
             for (int i = 0; i < 80; ++i)
             {
                 const float t = turn * (float) i / 80, angle = t + f.phase;
                 const float r = 34 * (1 + f.push * (0.2f * std::sin(3 * t + 0.6f) + 0.1f * std::sin(5 * t) + 0.04f * randomUnit(seed)));
-                loopDot(angle + 0.3f, r * 0.55f, 0.95f, 1, muted);
-                loopDot(angle, r, 0.95f, r > 39 ? 1.3f : 1.2f, r > 39 ? accent : primary);
+                loopDot(angle + 0.3f, r * 0.55f, 0.95f, muted);
+                loopDot(angle, r, 0.95f, r > 39 ? accent : primary);
             }
             break;
         }

@@ -1,5 +1,6 @@
 #pragma once
 #include "../Parameters.h"
+#include "Braille.h"
 #include "Style.h"
 #include <optional>
 
@@ -83,6 +84,7 @@ public:
     Role role;
     void paint(juce::Graphics& g) override
     {
+        const Lattice lattice(*this);
         if (draw)
             draw(g, *this);
     }

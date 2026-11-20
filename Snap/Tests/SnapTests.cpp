@@ -5,6 +5,7 @@
 //   SnapTests --bench              CPU benchmark
 //   SnapTests --render <dir>       render the synthetic loops through a few settings to WAV files
 #include "PluginProcessor.h"
+#include "ui/Braille.h"
 #include "ui/PresetBrowser.h"
 #include "ui/Widgets.h"
 #include "presets/PresetStore.h"
@@ -614,6 +615,40 @@ static void tick(juce::AudioProcessorEditor& e)
 // (9) The v1 editor: opens and closes repeatedly while audio runs (no audio-thread allocation with the 30 Hz feed
 // running), scales 75-200 % at a fixed aspect, every dial reads and writes its parameter, keys toggle, choose and lock,
 // the browser opens over the columns and cancels back, snapshots, undo and reorder work, and typed values parse.
+// The braille cell writer: U+2800 bit order, dots snapped to the 8 x 16 lattice, merge / under / over between strokes.
+static void testBraille()
+{
+    using namespace snap::ui;
+    CHECK(brailleBit(0, 0) == 0x01 && brailleBit(0, 2) == 0x04 && brailleBit(1, 0) == 0x08 && brailleBit(1, 2) == 0x20);
+    CHECK(brailleBit(0, 3) == 0x40 && brailleBit(1, 3) == 0x80);
+    const juce::Colour red { 0xffff0000 }, white { 0xffffffff };
+    // Paints a red dot top-left, then (a new stroke) a white one top-right of the same cell; returns those two pixels.
+    auto two = [&](Mode mode) {
+        juce::Image image(juce::Image::ARGB, 16, 16, true);
+        {
+            juce::Graphics g(image);
+            Braille b(g);
+            b.dot(1, 1, red), b.stroke(), b.dot(6, 3, white, mode);
+        }
+        return std::pair { image.getPixelAt(2, 2), image.getPixelAt(6, 2) }; // dots at x 2.4 / 5.6, y 2
+    };
+    auto [mergeL, mergeR] = two(Mode::merge);
+    CHECK(mergeL.getRed() > 200 && mergeL.getGreen() > 200 && mergeR.getGreen() > 200); // or'd, one colour per cell
+    auto [overL, overR] = two(Mode::over);
+    CHECK(overL.getAlpha() == 0 && overR.getGreen() > 200);
+    auto [underL, underR] = two(Mode::under);
+    CHECK(underL.getRed() > 200 && underL.getGreen() == 0 && underR.getAlpha() == 0);
+    juce::Image image(juce::Image::ARGB, 24, 40, true);
+    {
+        juce::Graphics g(image);
+        Braille b(g);
+        b.dot(13, 31, white);                         // lands on cell (1, 1), dot (1, 3): x 8 + 5.6, y 16 + 14
+        b.box({ 0, 0, 8, 8 }, red);                   // a dotted outline on the lattice
+    }
+    CHECK(image.getPixelAt(13, 30).getGreen() > 200 && image.getPixelAt(13, 31).getAlpha() > 0);
+    CHECK(image.getPixelAt(2, 2).getRed() > 200 && image.getPixelAt(5, 6).getRed() > 200);
+}
+
 static void testEditor()
 {
     Proc p;
@@ -1042,7 +1077,7 @@ int main(int argc, char** argv)
     if (argc == 2 && juce::String(argv[1]) == "--bench")
         return benchmark();
     if (argc == 2 && juce::String(argv[1]) == "--editor") // the editor tests on their own
-        testEditor();
+        testBraille(), testEditor();
     else
     if (argc == 3 && juce::String(argv[1]) == "--render")
         return render(juce::File::getCurrentWorkingDirectory().getChildFile(argv[2]));
@@ -1066,6 +1101,7 @@ int main(int argc, char** argv)
     testMagnitude();
     testBounded();
     testSound();
+    testBraille();
     testEditor();
     testDsp();
     testPress();

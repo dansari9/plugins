@@ -2,8 +2,8 @@
 #include "../dsp/modules/Modules.h"
 #include <juce_gui_basics/juce_gui_basics.h>
 
-// The v1 look: monochrome plus one red, Geist Mono, dotted controls. Every coordinate in the UI is in the 1440 x 840
-// logical layout of the approved mockup; the editor scales the whole layer. Symbols Geist Mono lacks are vector paths.
+// The ascii look: monochrome plus one red, Geist Mono text, every graphic braille dots (Braille.h). Every coordinate in
+// the UI is in the 1440 x 840 logical layout of the approved mockup; the editor scales the whole layer.
 namespace snap::ui
 {
 namespace colours
@@ -41,7 +41,6 @@ inline void right(juce::Graphics& g, const juce::String& s, float x, float y, fl
     text(g, s, x, y, c, size, bold, w, juce::Justification::right);
 }
 
-inline void dot(juce::Graphics& g, float x, float y, float r, juce::Colour c) { g.setColour(c), g.fillEllipse(x - r, y - r, 2 * r, 2 * r); }
 inline void hline(juce::Graphics& g, float x, float y, float w, juce::Colour c = colours::rule) { g.setColour(c), g.fillRect(x, y, w, 1.0f); }
 inline void vline(juce::Graphics& g, float x, float y, float h, juce::Colour c = colours::rule) { g.setColour(c), g.fillRect(x, y, 1.0f, h); }
 
@@ -73,12 +72,16 @@ void vmeter(juce::Graphics&, float x, float y, int n, float norm, bool fromTop, 
 // A 9-dot vertical meter around a white centre dot: v > 0 lights upward, v < 0 downward, |v| = 1 lights 4 dots.
 void vbipolar(juce::Graphics&, float x, float y, float v, juce::Colour on, bool dim = false);
 
+// A dotted outline, and a round light filled with dots.
+void box(juce::Graphics&, juce::Rectangle<float>, juce::Colour);
+void led(juce::Graphics&, juce::Rectangle<float>, juce::Colour);
+
 // ■ / □ 8 px square at (x, y).
 void square(juce::Graphics&, float x, float y, bool on, juce::Colour onColour = colours::accent, bool dim = false);
 // A toggle: the square at (x, y + 4) and its label at x + 14.
 void toggle(juce::Graphics&, float x, float y, bool on, const juce::String& label, bool dim = false);
 
-// Vector symbols.
+// Symbols. The module glyphs and arrows stand for text characters, so they stay crisp vectors; the rest are braille.
 void moduleGlyph(juce::Graphics&, Module, float x, float y, juce::Colour); // ▪ ↕ ░ ≡ ~ ◆ in a 12 x 16 box at (x, y)
 void padlock(juce::Graphics&, float x, float y, juce::Colour);            // 10 x 12
 void handle(juce::Graphics&, float x, float y, juce::Colour = colours::muted); // ⋮⋮ 8 x 12

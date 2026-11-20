@@ -58,6 +58,7 @@ target_sources(Snap PRIVATE
     Source/ui/Editor.cpp
     Source/ui/Widgets.cpp
     Source/ui/Style.cpp
+    Source/ui/Braille.cpp
     Source/ui/Visualizers.cpp
     Source/ui/PresetBrowser.cpp
     Source/Parameters.cpp
