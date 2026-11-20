@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<SNAP stateVersion="2" order="space,press,shift,drive" name="tails crowd in" tags="Huge,Roomy,Loop,Glue">
+<SNAP stateVersion="2" order="space,press,shift,drive" name="tails crowd in" tags="Huge,Roomy,Loop,Glue" description="fills gaps in loops with hangar reverb and longer tails, with multiband compression and tube drive.">
   <PARAM id="space_amt" value="43"/>
   <PARAM id="space_type" value="7"/>
   <PARAM id="space_decay" value="62"/>

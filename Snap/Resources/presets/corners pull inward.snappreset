@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<SNAP stateVersion="2" order="shift,press,space,drive" name="corners pull inward" tags="Dark,Punchy,Loop,Glue">
+<SNAP stateVersion="2" order="shift,press,space,drive" name="corners pull inward" tags="Dark,Punchy,Loop,Glue" description="deepens drum loops with a pitch drop, glue compression, tape warmth and narrow tunnel reverb.">
   <PARAM id="shift_amt" value="-48"/>
   <PARAM id="shift_balance" value="-0.64"/>
   <PARAM id="shift_fmix" value="66"/>

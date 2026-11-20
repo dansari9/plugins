@@ -19,8 +19,6 @@ class SnapProcessor : public juce::AudioProcessor,
                       private juce::AsyncUpdater
 {
 public:
-    static constexpr int historySize = 512; // ~2.5 s of display history
-
     SnapProcessor();
     ~SnapProcessor() override;
     void prepareToPlay(double sampleRate, int blockSize) override;
@@ -69,12 +67,18 @@ public:
     juce::UndoManager undoManager;
     juce::AudioProcessorValueTreeState apvts;
 
-    // Display feed: written by the audio thread, read by the editor's timer.
-    struct History
+    // Display feed for the editor's 30 Hz visualizers: written by the audio thread with relaxed atomic stores (no locks,
+    // no allocation), read by the message thread.
+    struct Display
     {
-        std::array<std::atomic<float>, historySize> in {}, out {}, gainDb {};
-        std::atomic<int> write { 0 };
-    } history;
+        static constexpr int scopeSize = 2048;
+        std::array<std::atomic<float>, scopeSize> scope {}; // the mono input after In gain, at the base rate
+        std::atomic<int> scopeWrite { 0 };
+        std::atomic<float> inPeak { 0 }, outPeak { 0 };      // linear peaks since the editor last took them
+        std::atomic<float> pressDownDb { 0 }, pressUpDb { 0 }; // press gain readouts (downward <= 0, upward >= 0)
+        std::atomic<float> pushLimitDb { 0 };                // push limiter reduction (<= 0)
+        std::array<std::atomic<int>, 2> hits {};             // sub and hiss detector hits so far
+    } display;
 
 private:
     // Every parameter, read once per block; Magnitude pulls the scaled ones toward neutral.
@@ -95,7 +99,7 @@ private:
     int latencyFor(bool low) const;
     void parameterChanged(const juce::String&, float) override; // low_latency / oversampling: latency or re-prepare
     void valueTreePropertyChanged(juce::ValueTree&, const juce::Identifier&) override; // "order" -> audio thread
-    void handleAsyncUpdate() override; // re-prepare for an oversampling change that arrived off the message thread
+    void handleAsyncUpdate() override; // message thread: report the new latency, or re-prepare for a new oversampling factor
     void reprepare();
     void commit() { apvts.copyState(); } // flushes parameter changes into the tree, so they join the current undo step
 
@@ -119,6 +123,4 @@ private:
     snap::Delay postDelay;
     snap::Master master;
     snap::LoudnessMeter inputMeter;
-    float peakIn = 0, peakOut = 0, peakGain = 0;
-    int decimation = 1, count = 0;
 };

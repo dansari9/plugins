@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<SNAP stateVersion="2" order="drive,press,space,shift" name="breath between syllables" tags="Smooth,Roomy,Vocal">
+<SNAP stateVersion="2" order="drive,press,space,shift" name="breath between syllables" tags="Smooth,Roomy,Vocal" description="smooths vocals with warm compression, soft tube drive and chapel reverb that recedes as you sing.">
   <PARAM id="space_amt" value="19"/>
   <PARAM id="space_type" value="6"/>
   <PARAM id="space_decay" value="48"/>

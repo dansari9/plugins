@@ -155,6 +155,14 @@ bool readState(AudioProcessorValueTreeState& apvts, Locks& locks, Snapshots& sna
     {
         locks = parseLocks(root.count("locks") > 0 ? root["locks"] : "");
         snapshots = {};
+        for (const char* editorProperty : { "preset", "ui_scale" }) // the current preset's key and the editor's size
+            if (root.count(editorProperty) == 0)
+                apvts.state.removeProperty(editorProperty, nullptr);
+            else
+                apvts.state.setProperty(editorProperty, String::fromUTF8(root[editorProperty].data(), (int) root[editorProperty].size())
+                                                            .replace("&quot;", "\"").replace("&apos;", "'").replace("&lt;", "<")
+                                                            .replace("&gt;", ">").replace("&amp;", "&"),
+                                        nullptr);
     }
     if (number(root, "stateVersion").value_or(1) < 2) // 0.1.0 and 0.1.1 always wrote 1; treat a missing version as theirs
     {

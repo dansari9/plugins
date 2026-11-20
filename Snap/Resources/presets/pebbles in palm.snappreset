@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<SNAP stateVersion="2" order="drive,press,space,shift" name="pebbles in palm" tags="Crunchy,Tight,Percussion">
+<SNAP stateVersion="2" order="drive,press,space,shift" name="pebbles in palm" tags="Crunchy,Tight,Percussion" description="gives percussion a metallic crunch with ring modulation, short reverb and a snappier attack.">
   <PARAM id="space_amt" value="16"/>
   <PARAM id="space_type" value="13"/>
   <PARAM id="space_decay" value="17"/>

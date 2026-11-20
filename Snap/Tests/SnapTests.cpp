@@ -1,8 +1,12 @@
 // SnapTests: drives the real processor and editor without a host.
 //   SnapTests                      run every test, exit code 1 on failure
-//   SnapTests --screenshot a.png   render the editor after feeding it drums
+//   SnapTests --screenshot a.png   render the editor after feeding it drums (--screenshot-browser: with the preset browser)
+//   SnapTests --editor             the editor tests alone
+//   SnapTests --bench              CPU benchmark
 //   SnapTests --render <dir>       render the synthetic loops through a few settings to WAV files
 #include "PluginProcessor.h"
+#include "ui/PresetBrowser.h"
+#include "ui/Widgets.h"
 #include "presets/PresetStore.h"
 #include "presets/StateIO.h"
 #include "chain/Latency.h"
@@ -275,7 +279,7 @@ static void testState()
     }
 }
 
-static void testMigratedSound() // a v1 session renders as 0.1.x did: neutral = pass-through, Mix 100 % = same shaping
+static void testMigratedSound() // a v1 session maps onto 0.2: neutral = exact pass-through, Mix scales Attack/Sustain
 {
     auto render = [](const juce::String& xml, std::vector<float>* in = nullptr) {
         Proc p;
@@ -548,18 +552,6 @@ static void testSound() // (6), (7), (8)
     CHECK(energy(render(0, 100), t0, t1) > 2.0 * energy(unity, t0, t1));
     CHECK(energy(render(0, -100), t0, t1) < 0.5 * energy(unity, t0, t1));
 
-    // The display's gain trace shows the shaping actually applied, so none at Magnitude 0.
-    auto traced = [&](float magnitude) {
-        Proc p;
-        set(p, "attack", 100), set(p, "magnitude", magnitude);
-        prepare(p, fs, 256, 2);
-        run(p, fs, 256, 2, 1.0);
-        float m = 0;
-        for (auto& g : p.history.gainDb)
-            m = std::max(m, std::abs(g.load()));
-        return m;
-    };
-    CHECK(traced(100) > 3 && traced(0) == 0);
 
     // (8) No allocation inside processBlock: in every rate / layout / block size run so far, and below while
     // parameters move. The counter itself is checked. The probes must survive the optimiser (GCC 15 elides a
@@ -589,7 +581,40 @@ static void testSound() // (6), (7), (8)
     CHECK(audioAllocations.load() == 0);
 }
 
-static void testEditor() // (9)
+#if JUCE_LINUX
+namespace juce::detail
+{
+bool dispatchNextMessageOnSystemQueue(bool returnIfNoPendingMessages); // JUCE's message loop step (Linux)
+}
+#endif
+
+// The editor's widgets, found by title (the accessible name) or component ID.
+template <typename T> static T* find(juce::Component& root, const juce::String& name)
+{
+    if (auto* t = dynamic_cast<T*>(&root); t != nullptr && (root.getTitle() == name || root.getComponentID() == name))
+        return t;
+    for (auto* child : root.getChildren())
+        if (auto* t = find<T>(*child, name))
+            return t;
+    return nullptr;
+}
+static void click(juce::Component& root, const juce::String& title, juce::ModifierKeys mods = {})
+{
+    auto* k = find<snap::ui::Key>(root, title);
+    CHECK(k != nullptr);
+    if (k != nullptr)
+        k->onClick(mods);
+}
+static void tick(juce::AudioProcessorEditor& e)
+{
+    if (auto* t = dynamic_cast<juce::Timer*>(&e))
+        t->timerCallback();
+}
+
+// (9) The v1 editor: opens and closes repeatedly while audio runs (no audio-thread allocation with the 30 Hz feed
+// running), scales 75-200 % at a fixed aspect, every dial reads and writes its parameter, keys toggle, choose and lock,
+// the browser opens over the columns and cancels back, snapshots, undo and reorder work, and typed values parse.
+static void testEditor()
 {
     Proc p;
     prepare(p, 48000, 128, 2);
@@ -601,33 +626,252 @@ static void testEditor() // (9)
         {
             for (int i = 0; i < 128; ++i)
                 b.setSample(0, i, drum(n * 128 + i, 48000)), b.setSample(1, i, drum(n * 128 + i, 48000));
+            onAudioThread = true;
             p.processBlock(b, midi);
+            onAudioThread = false;
         }
     });
-    for (int n = 0; n < 25; ++n)
+    for (int n = 0; n < 8; ++n)
     {
         std::unique_ptr<juce::AudioProcessorEditor> e(p.createEditor());
-        CHECK(e != nullptr && e->getWidth() == 520);
-        set(p, "attack", (float) (n * 8 - 100));
+        CHECK(e != nullptr && e->getWidth() == 1440 && e->getHeight() == 840);
+        set(p, "attack", (float) (n * 8 - 100)), set(p, "press_amt", (float) n * 10);
+        for (int t = 0; t < 10; ++t)
+            tick(*e), juce::Thread::sleep(3);
         CHECK(e->createComponentSnapshot(e->getLocalBounds()).isValid());
-        if (auto* t = dynamic_cast<juce::Timer*>(e.get()))
-            t->timerCallback();
     }
     stop = true;
     audio.join();
+    CHECK(audioAllocations.exchange(0) == 0);
+
+    std::unique_ptr<juce::AudioProcessorEditor> e(p.createEditor());
+    auto& ed = *e;
+    for (const auto& [w, h] : { std::pair { 1080, 630 }, std::pair { 2880, 1680 } })
+    {
+        ed.setSize(w, h);
+        CHECK(ed.getWidth() == w && ed.getHeight() == h);
+        CHECK(ed.createComponentSnapshot(ed.getLocalBounds()).isValid());
+    }
+    ed.setBoundsConstrained({ 0, 0, 500, 500 }); // the constrainer keeps the limits and the aspect
+    CHECK(ed.getWidth() >= 1080 && std::abs(ed.getWidth() * 840 - ed.getHeight() * 1440) <= 1440);
+    ed.setSize(1440, 840);
+
+    // Every parameter but the session toggles has a widget; dials parse typed text with units.
+    int controls = 0;
+    std::function<void(juce::Component&)> count = [&](juce::Component& c) {
+        controls += dynamic_cast<snap::ui::Control*>(&c) != nullptr;
+        for (auto* child : c.getChildren())
+            count(*child);
+    };
+    count(ed);
+    CHECK(controls >= 50);
+    using snap::ui::parse;
+    CHECK(parse(snap::spec("out_gain"), juce::String::fromUTF8("\xe2\x88\x92" "5.3 dB")) == -5.3f);
+    CHECK(parse(snap::spec("space_predelay"), "0.012 s") == 12.0f);
+    CHECK(parse(snap::spec("cut_hi"), "12k") == 12000.0f && parse(snap::spec("cut_hi"), "12 kHz") == 12000.0f);
+    CHECK(parse(snap::spec("drive_flavor"), "-20%") == -0.2f && parse(snap::spec("drive_flavor"), "0.5") == 0.5f);
+    CHECK(parse(snap::spec("press_mode"), "glue") == 1.0f && !parse(snap::spec("air"), "loud"));
+    CHECK(snap::ui::format(snap::spec("out_gain"), -1.5f) == juce::String::fromUTF8("\xe2\x88\x92" "1.5 dB"));
+    if (auto* air = find<snap::ui::Control>(ed, "air"))
+    {
+        air->edit();
+        auto* field = find<juce::TextEditor>(*air, "");
+        if (field == nullptr)
+            for (auto* child : air->getChildren())
+                field = dynamic_cast<juce::TextEditor*>(child);
+        CHECK(field != nullptr && field->isVisible());
+        if (field != nullptr)
+            field->setText("42%"), air->commit();
+        CHECK(std::abs(p.apvts.getRawParameterValue("air")->load() - 42) < 0.01f);
+        CHECK(p.undo() && p.apvts.getRawParameterValue("air")->load() == 0);
+    }
+    else
+        CHECK(false);
+
+    // Keys: a toggle, a choice word, a lock, the match key, snapshots, undo.
+    click(ed, "clip");
+    CHECK(p.apvts.getRawParameterValue("clip_on")->load() > 0.5f);
+    click(ed, "press_mode glue");
+    CHECK(p.apvts.getRawParameterValue("press_mode")->load() == 1);
+    click(ed, "press_mode glue", juce::ModifierKeys::altModifier); // alt resets
+    CHECK(p.apvts.getRawParameterValue("press_mode")->load() == 0);
+    click(ed, "press lock");
+    CHECK(p.locked((int) snap::Module::press));
+    click(ed, "press lock");
+    CHECK(!p.locked((int) snap::Module::press));
+    click(ed, "tone shape mid");
+    CHECK(p.apvts.getRawParameterValue("tone_shape")->load() == 2);
+    click(ed, "snapshot B"); // empty: stores
+    CHECK(p.hasSnapshot(1));
+    set(p, "air", 70);
+    click(ed, "snapshot B"); // stored: recalls
+    CHECK(p.apvts.getRawParameterValue("air")->load() == 0);
+    click(ed, "undo");
+    CHECK(p.apvts.getRawParameterValue("air")->load() == 70);
+    click(ed, "sub/hiss on");
+    CHECK(p.apvts.getRawParameterValue("subhiss_on")->load() < 0.5f);
+    tick(ed);
+    CHECK(ed.createComponentSnapshot(ed.getLocalBounds()).isValid()); // dimmed column
+
+    // The browser covers only the module columns; Esc closes it and leaves the sound alone.
+    auto* browser = find<snap::ui::PresetBrowser>(ed, "preset browser");
+    CHECK(browser != nullptr && !browser->isVisible());
+    click(ed, "preset browser");
+    CHECK(browser != nullptr && browser->isVisible() && browser->getBounds() == juce::Rectangle<int>(24, 58, 1392, 434));
+    if (browser != nullptr)
+        browser->keyPressed(juce::KeyPress(juce::KeyPress::escapeKey));
+    CHECK(browser != nullptr && !browser->isVisible());
+    CHECK(p.apvts.getRawParameterValue("clip_on")->load() > 0.5f && p.apvts.getRawParameterValue("tone_shape")->load() == 2);
+    click(ed, "next preset");
+    CHECK(p.apvts.state.getProperty("preset").toString().isNotEmpty());
+
+    // Review fixes. Cancel undoes the auditions and live edits since the browser opened, adds no undo step and
+    // restores the name; keyboard browsing auditions; ok keeps it, and undo / redo keep the name with the sound.
+    if (browser != nullptr)
+    {
+        const auto key = p.apvts.state.getProperty("preset").toString();
+        const auto before = std::vector<float> { p.apvts.getRawParameterValue("air")->load(), p.apvts.getRawParameterValue("sub_amt")->load(),
+                                                 p.apvts.getRawParameterValue("press_amt")->load() };
+        click(ed, "preset browser");
+        const int depth = p.undoManager.getUndoDescriptions().size();
+        browser->keyPressed(juce::KeyPress(juce::KeyPress::downKey));
+        browser->keyPressed(juce::KeyPress(juce::KeyPress::downKey));
+        CHECK(p.apvts.state.getProperty("preset").toString() != key);
+        set(p, "air", 55); // a live edit in the amount row / master while the browser is open
+        p.beginUndoStep();
+        browser->keyPressed(juce::KeyPress(juce::KeyPress::escapeKey));
+        CHECK(!browser->isVisible() && p.apvts.state.getProperty("preset").toString() == key);
+        CHECK(p.apvts.getRawParameterValue("air")->load() == before[0] && p.apvts.getRawParameterValue("sub_amt")->load() == before[1]
+              && p.apvts.getRawParameterValue("press_amt")->load() == before[2]);
+        CHECK(p.undoManager.getUndoDescriptions().size() <= depth);
+
+        click(ed, "preset browser");
+        browser->keyPressed(juce::KeyPress(juce::KeyPress::downKey));
+        const auto chosen = p.apvts.state.getProperty("preset").toString();
+        browser->keyPressed(juce::KeyPress(juce::KeyPress::returnKey));
+        CHECK(!browser->isVisible() && chosen != key && p.apvts.state.getProperty("preset").toString() == chosen);
+        CHECK(p.undo() && p.apvts.state.getProperty("preset").toString() == key);
+        CHECK(p.redo() && p.apvts.state.getProperty("preset").toString() == chosen);
+        click(ed, "preset browser"), click(ed, "preset browser"); // the name key closes it like ok
+        CHECK(!browser->isVisible());
+    }
+
+    // Automation from the audio thread with the editor open: no allocation (the editor polls, it never listens).
+    {
+        onAudioThread = true;
+        for (int n = 0; n < 50; ++n)
+            for (const char* id : { "air", "attack", "press_amt", "drive_flavor", "space_pan", "cut_lo", "magnitude", "sub_amt" })
+                p.apvts.getParameter(id)->setValueNotifyingHost((float) ((n * 7) % 11) / 10.0f);
+        onAudioThread = false;
+        CHECK(audioAllocations.exchange(0) == 0);
+        tick(ed);
+    }
+
+    // A latency toggle changed off the message thread is reported from the message thread.
+    {
+        const int normal = p.getLatencySamples();
+        std::thread([&] { p.apvts.getParameter("low_latency")->setValueNotifyingHost(1); }).join();
+        CHECK(p.getLatencySamples() == normal);
+#if JUCE_LINUX
+        while (juce::detail::dispatchNextMessageOnSystemQueue(true)) // the pending async update runs here
+            ;
+        CHECK(p.getLatencySamples() == 64);
+#endif
+        set(p, "low_latency", 0);
+        CHECK(p.getLatencySamples() == normal);
+    }
+
+    // Reorder by order change: the columns follow on the next tick.
+    p.setOrder({ snap::Module::drive, snap::Module::press, snap::Module::space, snap::Module::shift });
+    tick(ed);
+    auto* drive = find<juce::Component>(ed, "drive");
+    CHECK(drive != nullptr && drive->getX() == 24 + 235);
+
+    // A new instance knows it is on the default preset.
+    std::unique_ptr<juce::AudioProcessor> fresh(createPluginFilter());
+    CHECK(static_cast<Proc&>(*fresh).apvts.state.getProperty("preset").toString() == juce::String("factory/") + snap::defaultPresetName);
+
+    // Two stores on one library: interleaved edits both survive.
+    juce::TemporaryFile dir;
+    {
+        snap::PresetStore a(dir.getFile()), b(dir.getFile());
+        a.setFavorite("factory/x", true), b.setFavorite("factory/y", true);
+        a.addCollection("kits"), b.addCollection("loops"), a.addToCollection("loops", "factory/z");
+        snap::PresetStore c(dir.getFile());
+        CHECK(c.isFavorite("factory/x") && c.isFavorite("factory/y") && c.collections().size() == 2 && c.collectionsOf("factory/z").contains("loops"));
+    }
+    dir.getFile().deleteRecursively();
+
+    // Any valid XML spelling loads the same; a preset without a version is a preset, not a 0.1.x session.
+    Proc q;
+    q.setLocked((int) snap::Module::press, true), set(q, "press_amt", 33), set(q, "bypass", 1);
+    CHECK(snap::loadPresetXml(q, "<SNAP name = 'x' order='press,shift,space,drive'><PARAM id = 'air' value = '25'/><PARAM id='press_amt' value='90'/></SNAP>"));
+    CHECK(q.apvts.getRawParameterValue("air")->load() == 25 && q.order()[0] == snap::Module::shift);
+    CHECK(q.apvts.getRawParameterValue("press_amt")->load() == 33 && q.apvts.getRawParameterValue("bypass")->load() > 0.5f); // lock + session toggle kept
+    CHECK(!snap::loadPresetXml(q, "<NOPE/>"));
 }
 
-static int screenshot(const juce::File& file)
+static int screenshot(const juce::File& file, bool browser)
 {
     Proc p;
-    set(p, "attack", 60), set(p, "sustain", -40);
+    for (auto [id, v] : std::initializer_list<std::pair<const char*, float>> {
+             { "sub_amt", 70 }, { "hiss_amt", 40 }, { "sub_pitch", 26 }, { "sub_decay", 320 }, { "sub_duck", 25 }, { "sub_color", 40 },
+             { "sub_acid", 1 }, { "shift_amt", 65 }, { "shift_balance", -0.16f }, { "shift_stretch", 30 }, { "space_amt", 35 },
+             { "space_type", 2 }, { "space_decay", 40 }, { "space_predelay", 12 }, { "space_duck", 30 }, { "press_amt", 60 },
+             { "press_mode", 1 }, { "press_mix", 80 }, { "press_downup", -0.3f }, { "press_bands", 0.6f }, { "drive_amt", 45 },
+             { "drive_mode", 2 }, { "drive_flavor", -0.2f }, { "drive_target", 0.3f }, { "drive_focus_lo", 250 }, { "push_amt", 30 },
+             { "push_on", 0 }, { "push_mult", 1 }, { "push_tone", 0.15f }, { "push_focus_lo", 2500 }, { "cut_lo", 80 },
+             { "cut_hi", 12000 }, { "hc_shape", 1 }, { "tone", 24 }, { "tone_shape", 1 }, { "air", 18 }, { "attack", 30 },
+             { "sustain", -16 }, { "clip_on", 1 }, { "out_gain", -1.5f }, { "shift_focus_lo", 40 }, { "shift_focus_hi", 16000 } })
+        set(p, id, v);
+    p.setOrder({ snap::Module::shift, snap::Module::space, snap::Module::press, snap::Module::drive });
+    p.setLocked((int) snap::Module::press, true);
+    snap::PresetStore store;
+    if (const auto* preset = store.find(juce::String("factory/") + snap::defaultPresetName))
+        p.apvts.state.setProperty("preset", preset->key(), nullptr);
     prepare(p, 48000, 512, 2);
-    run(p, 48000, 512, 2, 2.7);
     std::unique_ptr<juce::AudioProcessorEditor> e(p.createEditor());
-    const auto image = e->createComponentSnapshot(e->getLocalBounds(), true, 2.0f);
+    for (int n = 0; n < 60; ++n) // 2 s of drums with the 30 Hz feed running
+        run(p, 48000, 512, 2, 1.0 / 30), tick(*e);
+    if (browser)
+        click(*e, "preset browser"), tick(*e);
+    const auto image = e->createComponentSnapshot(e->getLocalBounds(), true, 1.0f);
     file.deleteFile();
     juce::FileOutputStream out(file);
     return out.openedOk() && juce::PNGImageFormat().writeImageToStream(image, out) ? 0 : 1;
+}
+
+// CPU benchmark: real-time factor of the default preset (and every module pushed), 48 kHz stereo, 512-sample blocks,
+// normal / oversampled / Low Latency, plus the editor's 30 Hz tick and a full repaint at 100 %.
+static int benchmark()
+{
+    const double fs = 48000, seconds = 20;
+    auto time = [](auto&& f) {
+        const auto t0 = juce::Time::getHighResolutionTicks();
+        f();
+        return juce::Time::highResolutionTicksToSeconds(juce::Time::getHighResolutionTicks() - t0);
+    };
+    for (auto [name, os, low, all] : { std::tuple { "hit hard", 0.0f, 0.0f, false }, std::tuple { "hit hard, oversampling", 1.0f, 0.0f, false },
+                                       std::tuple { "hit hard, low latency", 0.0f, 1.0f, false }, std::tuple { "all six modules", 0.0f, 0.0f, true } })
+    {
+        std::unique_ptr<Proc> p(static_cast<Proc*>(createPluginFilter()));
+        set(*p, "oversampling", os), set(*p, "low_latency", low);
+        if (all)
+            for (auto [id, v] : { std::pair { "sub_amt", 50.0f }, { "hiss_amt", 40.0f }, { "shift_amt", 30.0f }, { "space_amt", 40.0f },
+                                  { "press_amt", 60.0f }, { "drive_amt", 50.0f }, { "push_amt", 50.0f }, { "push_on", 1.0f } })
+                set(*p, id, v);
+        prepare(*p, fs, 512, 2);
+        const double t = time([&] { run(*p, fs, 512, 2, seconds); });
+        std::printf("%-26s %6.2f %% of one core (%.0fx real time)\n", name, 100 * t / seconds, seconds / t);
+    }
+    Proc p;
+    prepare(p, fs, 512, 2);
+    std::unique_ptr<juce::AudioProcessorEditor> e(p.createEditor());
+    run(p, fs, 512, 2, 1);
+    const double ticks = time([&] { for (int i = 0; i < 300; ++i) run(p, fs, 512, 2, 1.0 / 30), tick(*e); }) - time([&] { for (int i = 0; i < 300; ++i) run(p, fs, 512, 2, 1.0 / 30); });
+    const double paint = time([&] { for (int i = 0; i < 20; ++i) e->createComponentSnapshot(e->getLocalBounds(), true, 1.0f); }) / 20;
+    std::printf("editor tick %.3f ms, full repaint %.1f ms (software renderer, 1440 x 840)\n", 1000 * ticks / 300, 1000 * paint);
+    return 0;
 }
 
 // Offline renders for listening between milestones: <loop>-dry.wav plus one file per setting.
@@ -739,8 +983,13 @@ static int render(const juce::File& dir)
 int main(int argc, char** argv)
 {
     const juce::ScopedJuceInitialiser_GUI gui;
-    if (argc == 3 && juce::String(argv[1]) == "--screenshot")
-        return screenshot(juce::File::getCurrentWorkingDirectory().getChildFile(argv[2]));
+    if (argc == 3 && (juce::String(argv[1]) == "--screenshot" || juce::String(argv[1]) == "--screenshot-browser"))
+        return screenshot(juce::File::getCurrentWorkingDirectory().getChildFile(argv[2]), juce::String(argv[1]) == "--screenshot-browser");
+    if (argc == 2 && juce::String(argv[1]) == "--bench")
+        return benchmark();
+    if (argc == 2 && juce::String(argv[1]) == "--editor") // the editor tests on their own
+        testEditor();
+    else
     if (argc == 3 && juce::String(argv[1]) == "--render")
         return render(juce::File::getCurrentWorkingDirectory().getChildFile(argv[2]));
     if (argc == 3 && juce::String(argv[1]) == "--render-space")

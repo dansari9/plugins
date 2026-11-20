@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<SNAP stateVersion="2" order="shift,space,press,drive" name="seams sit flush" tags="Clean,Tight,Drum Bus,Glue">
+<SNAP stateVersion="2" order="shift,space,press,drive" name="seams sit flush" tags="Clean,Tight,Drum Bus,Glue" description="gently glues drum buses with light compression, a hint of room reverb and slightly shorter tails.">
   <PARAM id="space_amt" value="7"/>
   <PARAM id="space_decay" value="34"/>
   <PARAM id="space_width" value="75"/>

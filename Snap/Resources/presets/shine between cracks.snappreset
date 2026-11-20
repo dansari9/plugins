@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<SNAP stateVersion="2" order="drive,press,space,shift" name="shine between cracks" tags="Bright,Hi-Fi,Drum Bus,Loop,Glue">
+<SNAP stateVersion="2" order="drive,press,space,shift" name="shine between cracks" tags="Bright,Hi-Fi,Drum Bus,Loop,Glue" description="brightens drum loops with airy highs, warm compression and a short, bright wash of reverb.">
   <PARAM id="space_amt" value="20"/>
   <PARAM id="space_type" value="12"/>
   <PARAM id="space_decay" value="30"/>

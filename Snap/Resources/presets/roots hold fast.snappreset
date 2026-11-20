@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<SNAP stateVersion="2" order="press,drive,shift,space" name="roots hold fast" tags="Fat,Warm,Instrument">
+<SNAP stateVersion="2" order="press,drive,shift,space" name="roots hold fast" tags="Fat,Warm,Instrument" description="thickens bass instruments with smooth compression, warm tube drive and a softer attack.">
   <PARAM id="press_amt" value="42"/>
   <PARAM id="press_mode" value="4"/>
   <PARAM id="press_downup" value="-0.56"/>

@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<SNAP stateVersion="2" order="shift,press,drive,space" name="hit hard" tags="Punchy,Huge,Aggressive,Drum Bus,General Purpose">
+<SNAP stateVersion="2" order="shift,press,drive,space" name="hit hard" tags="Punchy,Huge,Aggressive,Drum Bus,General Purpose" description="thickens drum buses with sub bass, sizzling hiss and cassette drive while sharpening attacks.">
   <PARAM id="sub_amt" value="35"/>
   <PARAM id="sub_pitch" value="31"/>
   <PARAM id="sub_color" value="35"/>

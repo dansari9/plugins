@@ -422,6 +422,10 @@ void SubHiss::process(juce::AudioBuffer<float>& io, juce::AudioBuffer<float>& po
         const std::array input { preOutput[0][i], channels == 2 ? preOutput[1][i] : preOutput[0][i] };
         const float subHit = sub.detect(input, channels, updateFilters);
         const float hissHit = hiss.detect(input, channels, updateFilters);
+        if (subHit > 0.0f)
+            hitCount[0].fetch_add(1, std::memory_order_relaxed);
+        if (hissHit > 0.0f)
+            hitCount[1].fetch_add(1, std::memory_order_relaxed);
         const std::array dry { dryDelay.next(0, input[0]), channels == 2 ? dryDelay.next(1, input[1]) : 0.0f };
         const float key = std::max(std::abs(dry[0]), std::abs(dry[1]));
         const auto [center, side] = renderSub(subHit);

@@ -79,6 +79,7 @@ public:
     const ChainOrder& order() const { return running; }
     bool transitioning() const { return phase != Phase::idle; }
     int fadeSamples() const { return fadeLength; }
+    const MiddleChain& current() const { return sets[active]; } // audio thread
 
     void process(const ChainOrder& wanted, juce::AudioBuffer<float>& io, const Space::Settings& spaceSettings)
     {

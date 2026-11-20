@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<SNAP stateVersion="2" order="press,drive,shift,space" name="grain rests easy" tags="Clean,Smooth,Instrument,General Purpose">
+<SNAP stateVersion="2" order="press,drive,shift,space" name="grain rests easy" tags="Clean,Smooth,Instrument,General Purpose" description="gently compresses instruments with a touch of tape warmth, airy highs and faint, diffuse reverb.">
   <PARAM id="space_amt" value="8"/>
   <PARAM id="space_type" value="19"/>
   <PARAM id="space_decay" value="21"/>

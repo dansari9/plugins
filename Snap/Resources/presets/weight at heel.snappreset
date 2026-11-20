@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<SNAP stateVersion="2" order="shift,drive,press,space" name="weight at heel" tags="Fat,Tight,Kick">
+<SNAP stateVersion="2" order="shift,drive,press,space" name="weight at heel" tags="Fat,Tight,Kick" description="gives kicks a deeper sub thump and a punchier attack with low-end tube warmth and peak clipping.">
   <PARAM id="sub_amt" value="39"/>
   <PARAM id="sub_sens" value="61"/>
   <PARAM id="sub_det_hi" value="119"/>

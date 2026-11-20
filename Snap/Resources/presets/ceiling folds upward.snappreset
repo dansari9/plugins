@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<SNAP stateVersion="2" order="press,drive,shift,space" name="ceiling folds upward" tags="Roomy,Huge,Transitions,FX">
+<SNAP stateVersion="2" order="press,drive,shift,space" name="ceiling folds upward" tags="Roomy,Huge,Transitions,FX" description="lifts transitions with an upward pitch shift, fluttering hiss and swelling reverse reverb.">
   <PARAM id="hiss_amt" value="28"/>
   <PARAM id="hiss_sens" value="60"/>
   <PARAM id="hiss_det_lo" value="2100"/>

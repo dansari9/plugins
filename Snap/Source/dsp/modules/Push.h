@@ -2,6 +2,7 @@
 #include "ModuleBase.h"
 #include "PushConstants.h"
 #include "../common/TargetFocusMix.h"
+#include <atomic>
 
 namespace snap
 {
@@ -55,7 +56,7 @@ public:
         for (auto& channel : stages)
             for (auto& stage : channel)
             {
-                stage.pre = stage.post = 0;
+                stage.pre = stage.post = 0, stage.limit = 1;
                 stage.reference.reset(), stage.limiter.reset();
             }
         amount.reset(amount.targetValue()), tone.reset(tone.targetValue());
@@ -98,13 +99,19 @@ public:
             }
         }
         tfm.end(io, n);
+        float deepest = 1;
+        for (auto& channel : stages)
+            for (auto& stage : channel)
+                deepest = std::min(deepest, stage.limit);
+        limitMeter.store(amount.targetValue() > 0.0f ? juce::Decibels::gainToDecibels(deepest, -60.0f) : 0.0f, std::memory_order_relaxed);
     }
+    float limitDb() const { return limitMeter.load(std::memory_order_relaxed); } // display: the deepest limiter reduction (<= 0)
 
 private:
     struct Stage
     {
         EnvelopeFollower reference, limiter;
-        float pre = 0, post = 0;
+        float pre = 0, post = 0, limit = 1; // limit: the limiter's last gain, for the display
     };
 
     float runStage(Stage& s, float x, float a, float high, float shelf, float inverse, float drive, float makeup) const
@@ -118,7 +125,8 @@ private:
         const float ref = std::max({ referenceFloor, mag, s.reference.next(mag) });
         float y = ref * std::tanh(drive * (pre / ref)) * makeup;
         const float peak = s.limiter.next(std::abs(y));
-        y *= limiterThreshold / std::max(limiterThreshold, peak);
+        s.limit = limiterThreshold / std::max(limiterThreshold, peak);
+        y *= s.limit;
         if (const float excess = std::abs(y) - clipKnee; excess > 0.0f)
             y = std::copysign(clipKnee + excess / (1.0f + excess / (clipCeiling - clipKnee)), y);
 
@@ -130,6 +138,7 @@ private:
 
     TargetFocusMix tfm;
     Smoother amount, tone;
+    std::atomic<float> limitMeter { 0 };
     std::array<Smoother, pushConstants::stageCounts.size()> weights;
     std::array<std::array<Stage, pushConstants::stageCounts.back()>, 2> stages;
     size_t mult = 0;

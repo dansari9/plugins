@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<SNAP stateVersion="2" order="press,drive,space,shift" name="knuckles on chalk" tags="Tight,Lo-Fi,Percussion">
+<SNAP stateVersion="2" order="press,drive,space,shift" name="knuckles on chalk" tags="Tight,Lo-Fi,Percussion" description="gives percussion a sharper attack, gritty bit crushing and shorter tails under smooth compression.">
   <PARAM id="press_amt" value="34"/>
   <PARAM id="press_mode" value="4"/>
   <PARAM id="press_mix" value="46"/>

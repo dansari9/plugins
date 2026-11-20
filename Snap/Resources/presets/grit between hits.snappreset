@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<SNAP stateVersion="2" order="drive,space,press,shift" name="grit between hits" tags="Dirty,Dark,Drum Bus,Loop,Glue">
+<SNAP stateVersion="2" order="drive,space,press,shift" name="grit between hits" tags="Dirty,Dark,Drum Bus,Loop,Glue" description="slams drum loops with dark cassette drive, short garage reverb and clipped peaks.">
   <PARAM id="space_amt" value="20"/>
   <PARAM id="space_type" value="4"/>
   <PARAM id="space_decay" value="26"/>

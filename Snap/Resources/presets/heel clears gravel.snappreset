@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<SNAP stateVersion="2" order="drive,press,shift,space" name="heel clears gravel" tags="Punchy,Clean,Kick">
+<SNAP stateVersion="2" order="drive,press,shift,space" name="heel clears gravel" tags="Punchy,Clean,Kick" description="gives kicks a short sub thump and a sharper attack, then trims the tail and clips the peaks.">
   <PARAM id="sub_amt" value="21"/>
   <PARAM id="sub_sens" value="65"/>
   <PARAM id="sub_det_hi" value="135"/>

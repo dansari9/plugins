@@ -25,23 +25,26 @@ SnapProcessor::~SnapProcessor()
     apvts.state.removeListener(this);
 }
 
-// Low Latency Mode switches on the audio thread; a change of the oversampling factor needs a re-prepare.
+// Low Latency Mode switches on the audio thread; a change of the oversampling factor needs a re-prepare. Both the new
+// latency report and a re-prepare happen on the message thread (a change from another thread is handed over).
 void SnapProcessor::parameterChanged(const String&, float)
 {
     if (!prepared)
         return;
-    if (factorFor(*lowLatency > 0.5f) == factor)
-        return setLatencySamples(latencyFor(*lowLatency > 0.5f));
     if (MessageManager::existsAndIsCurrentThread())
-        reprepare();
+        handleAsyncUpdate();
     else
         triggerAsyncUpdate();
 }
 
 void SnapProcessor::handleAsyncUpdate()
 {
-    if (prepared && factorFor(*lowLatency > 0.5f) != factor)
+    if (!prepared)
+        return;
+    if (factorFor(*lowLatency > 0.5f) != factor)
         reprepare();
+    else
+        setLatencySamples(latencyFor(*lowLatency > 0.5f));
 }
 
 void SnapProcessor::reprepare()
@@ -177,7 +180,7 @@ void SnapProcessor::setModuleParams()
 // Bypass sends the master to neutral (its own ramps keep the switch click-free) and keeps the reported latency.
 snap::Master::Params SnapProcessor::masterParams() const
 {
-    const bool low = *lowLatency > 0.5f;
+    const bool low = lowLatencyNow; // the mode the rest of the chain runs in, even while a re-prepare is pending
     if (*bypass > 0.5f)
         return { .eqOn = false, .lowLatency = low };
     return { .eqOn = on("eq_on"), .cutLo = value("cut_lo"), .cutHi = value("cut_hi"), .lcShape = (int) value("lc_shape"),
@@ -221,8 +224,6 @@ void SnapProcessor::prepareToPlay(double fs, int)
     inputMeter.prepare(fs, channels);
     inGainDb.prepare(fs), inGainDb.reset(*bypass > 0.5f ? 0.0f : value("in_gain"));
     setLatencySamples(latencyFor(low));
-    peakIn = peakOut = peakGain = 0;
-    decimation = jmax(1, (int) (fs * 2.5 / historySize)), count = 0;
     prepared = true;
 }
 
@@ -259,16 +260,22 @@ void SnapProcessor::processBlock(AudioBuffer<float>& buffer, MidiBuffer&)
     {
         const int len = jmin(subBlock, n - start), hiLen = len * factor;
         float level = 0, outLevel = 0;
+        int w = display.scopeWrite.load(std::memory_order_relaxed);
         for (int i = start; i < start + len; ++i)
         {
             const float db = inGainDb.next(), gain = db == 0 ? 1.0f : Decibels::decibelsToGain(db, -1000.0f);
+            float mono = 0;
             for (int c = 0; c < channels; ++c)
             {
                 const float x = buffer.getSample(c, i);
                 level = jmax(level, std::abs(x));
                 buffer.setSample(c, i, x * gain);
+                mono += x * gain / (float) channels;
             }
+            display.scope[(size_t) w].store(mono, std::memory_order_relaxed);
+            w = (w + 1) % Display::scopeSize;
         }
+        display.scopeWrite.store(w, std::memory_order_release);
         // os up -> pad -> sub/hiss -> the middle four in the stored order -> push -> master (Post bus before Clip) -> os down.
         dsp::AudioBlock<float> base(buffer.getArrayOfWritePointers(), (size_t) channels, (size_t) start, (size_t) len);
         auto up = os.up(base);
@@ -289,17 +296,15 @@ void SnapProcessor::processBlock(AudioBuffer<float>& buffer, MidiBuffer&)
         for (int c = 0; c < channels; ++c)
             outLevel = jmax(outLevel, buffer.getMagnitude(c, start, len));
 
-        const float applied = master.shaperGainDb();
-        peakIn = jmax(peakIn, level), peakOut = jmax(peakOut, outLevel);
-        peakGain = std::abs(applied) > std::abs(peakGain) ? applied : peakGain;
-        if ((count += len) >= decimation)
-        {
-            const int w = history.write.load(std::memory_order_relaxed);
-            history.in[(size_t) w] = peakIn, history.out[(size_t) w] = peakOut, history.gainDb[(size_t) w] = peakGain;
-            history.write.store((w + 1) % historySize, std::memory_order_release);
-            peakIn = peakOut = peakGain = 0, count = 0;
-        }
+        display.inPeak.store(jmax(level, display.inPeak.load(std::memory_order_relaxed)), std::memory_order_relaxed);
+        display.outPeak.store(jmax(outLevel, display.outPeak.load(std::memory_order_relaxed)), std::memory_order_relaxed);
     }
+    const auto& press = middle.current().press;
+    display.pressDownDb.store(press.downwardDb(), std::memory_order_relaxed);
+    display.pressUpDb.store(press.upwardDb(), std::memory_order_relaxed);
+    display.pushLimitDb.store(push.limitDb(), std::memory_order_relaxed);
+    for (int layer = 0; layer < 2; ++layer)
+        display.hits[(size_t) layer].store(subHiss.hits(layer), std::memory_order_relaxed);
 }
 
 // Output is Magnitude-scaled, so the raw value is the needed gain divided by Magnitude. Both meters run continuously and

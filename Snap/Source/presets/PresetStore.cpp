@@ -32,6 +32,7 @@ std::optional<Preset> parsePreset(const String& text, bool factory)
         return std::nullopt;
     preset.factory = factory;
     preset.xml = text;
+    preset.description = xml->getStringAttribute("description");
     preset.tags.addTokens(xml->getStringAttribute("tags"), ",", "");
     preset.tags.trim();
     preset.tags.removeEmptyStrings();
@@ -52,7 +53,6 @@ std::optional<Preset> parsePreset(const String& text, bool factory)
 
 PresetStore::PresetStore(File directory) : root(std::move(directory))
 {
-    readLibrary();
     rescan();
 }
 
@@ -63,6 +63,7 @@ File PresetStore::defaultRoot()
 
 void PresetStore::rescan()
 {
+    readLibrary();
     all.clear();
     for (int i = 0; i < FactoryPresetData::namedResourceListSize; ++i)
         if (auto preset = factoryPreset(FactoryPresetData::namedResourceList[i]))
@@ -115,8 +116,10 @@ std::vector<const Preset*> PresetStore::list(const Filter& filter) const
     return result;
 }
 
+// Every library change re-reads library.xml first, so two open instances never write back each other's stale copy.
 void PresetStore::readLibrary()
 {
+    favorites.clear(), collectionList.clear();
     const auto xml = XmlDocument::parse(root.getChildFile("library.xml"));
     if (xml == nullptr || xml->getTagName() != "LIBRARY")
         return;
@@ -153,6 +156,7 @@ void PresetStore::writeLibrary() const
 
 void PresetStore::setFavorite(const String& key, bool favorite)
 {
+    readLibrary();
     if (favorite == isFavorite(key))
         return;
     if (favorite)
@@ -172,6 +176,7 @@ StringArray PresetStore::collections() const
 
 bool PresetStore::addCollection(const String& name)
 {
+    readLibrary();
     if (name.trim().isEmpty() || std::ranges::find(collectionList, name, &Collection::first) != collectionList.end())
         return false;
     collectionList.emplace_back(name, StringArray {});
@@ -181,6 +186,7 @@ bool PresetStore::addCollection(const String& name)
 
 void PresetStore::removeCollection(const String& name)
 {
+    readLibrary();
     if (const auto it = std::ranges::find(collectionList, name, &Collection::first); it != collectionList.end())
     {
         collectionList.erase(it);
@@ -190,6 +196,7 @@ void PresetStore::removeCollection(const String& name)
 
 void PresetStore::addToCollection(const String& collection, const String& key)
 {
+    readLibrary();
     const auto it = std::ranges::find(collectionList, collection, &Collection::first);
     if (it != collectionList.end() && it->second.addIfNotAlreadyThere(key))
         writeLibrary();
@@ -197,6 +204,7 @@ void PresetStore::addToCollection(const String& collection, const String& key)
 
 void PresetStore::removeFromCollection(const String& collection, const String& key)
 {
+    readLibrary();
     const auto it = std::ranges::find(collectionList, collection, &Collection::first);
     if (it != collectionList.end() && it->second.contains(key))
     {
@@ -253,6 +261,7 @@ bool PresetStore::remove(const String& key)
     const auto* preset = find(key);
     if (preset == nullptr || preset->factory || !preset->file.deleteFile())
         return false;
+    readLibrary();
     favorites.removeString(key);
     for (auto& collection : collectionList)
         collection.second.removeString(key);
@@ -261,8 +270,16 @@ bool PresetStore::remove(const String& key)
     return true;
 }
 
-bool loadPresetXml(SnapProcessor& processor, const String& xml)
+// The file is normalised through JUCE's parser first (any valid XML spelling reads the same), and a preset without a
+// version is a version 2 preset: the version 1 migration is for 0.1.x sessions only.
+bool loadPresetXml(SnapProcessor& processor, const String& text)
 {
+    const auto parsed = XmlDocument::parse(text);
+    if (parsed == nullptr || parsed->getTagName() != "SNAP")
+        return false;
+    if (!parsed->hasAttribute("stateVersion"))
+        parsed->setAttribute("stateVersion", stateVersion);
+    const auto xml = parsed->toString(XmlElement::TextFormat().withoutHeader().singleLine());
     const auto size = xml.getNumBytesAsUTF8(); // the envelope AudioProcessor::copyXmlToBinary writes
     MemoryOutputStream blob;
     blob.writeInt(0x21324356);
@@ -280,6 +297,7 @@ void loadDefaultPreset(SnapProcessor& processor)
             const bool loaded = loadPresetXml(processor, preset->xml);
             jassert(loaded);
             ignoreUnused(loaded);
+            processor.apvts.state.setProperty("preset", preset->key(), nullptr);
             processor.undoManager.clearUndoHistory();
             return;
         }

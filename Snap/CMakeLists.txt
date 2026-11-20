@@ -49,14 +49,19 @@ juce_add_plugin(Snap
 
 target_sources(Snap PRIVATE
     Source/PluginProcessor.cpp
-    Source/PluginEditor.cpp
+    Source/ui/Editor.cpp
+    Source/ui/Widgets.cpp
+    Source/ui/Style.cpp
+    Source/ui/Visualizers.cpp
+    Source/ui/PresetBrowser.cpp
     Source/Parameters.cpp
     Source/presets/StateIO.cpp
     Source/presets/PresetStore.cpp
     Source/dsp/modules/Space.cpp
     Source/dsp/modules/SubHiss.cpp
 )
-juce_add_binary_data(SnapFonts SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/Assets/Fonts/GeistMono-Medium.ttf)
+juce_add_binary_data(SnapFonts SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/Assets/Fonts/GeistMono-Regular.ttf
+    ${CMAKE_CURRENT_SOURCE_DIR}/Assets/Fonts/GeistMono-SemiBold.ttf)
 # The generated impulse responses (space) and noise loops (hiss), embedded; regenerate with Tools/generate_*.py.
 file(GLOB snap_irs CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/Resources/irs/*.wav)
 file(GLOB snap_noise CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/Resources/noise/*.wav)
@@ -104,7 +109,8 @@ target_link_libraries(SnapTests
 # The DSP headers and tests compare floats bit-exactly on purpose (exact bypass paths); the tests also replace the global
 # operator new.
 if(NOT MSVC)
-    set_source_files_properties(Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/dsp/modules/Space.cpp
+    set_source_files_properties(Source/PluginProcessor.cpp Source/ui/Editor.cpp Source/ui/Widgets.cpp Source/ui/Visualizers.cpp
+                                Source/ui/PresetBrowser.cpp Source/dsp/modules/Space.cpp
                                 Source/dsp/modules/SubHiss.cpp Source/presets/PresetStore.cpp PROPERTIES COMPILE_OPTIONS "-Wno-float-equal")
     set_source_files_properties(Tests/SnapTests.cpp PROPERTIES COMPILE_OPTIONS "-Wno-float-equal;-Wno-mismatched-new-delete")
     set_source_files_properties(Tests/DspTests.cpp Tests/PressTests.cpp Tests/DriveTests.cpp Tests/PushTests.cpp Tests/ShiftTests.cpp Tests/MasterTests.cpp

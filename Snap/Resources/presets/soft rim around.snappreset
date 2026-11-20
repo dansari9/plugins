@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<SNAP stateVersion="2" order="drive,press,shift,space" name="soft rim around" tags="Warm,Smooth,Drum Bus,Glue">
+<SNAP stateVersion="2" order="drive,press,shift,space" name="soft rim around" tags="Warm,Smooth,Drum Bus,Glue" description="softens drum bus attacks and rounds out the lows with warm compression and subtle tube drive.">
   <PARAM id="press_amt" value="23"/>
   <PARAM id="press_mode" value="3"/>
   <PARAM id="press_mix" value="62"/>

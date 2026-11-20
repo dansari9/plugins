@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<SNAP stateVersion="2" order="shift,space,press,drive" name="walls swallow sparks" tags="FUN!,Huge,Dirty,FX">
+<SNAP stateVersion="2" order="shift,space,press,drive" name="walls swallow sparks" tags="FUN!,Huge,Dirty,FX" description="turns hits into dark effects with a deep pitch drop, long sub rumble, ring modulation and silo reverb.">
   <PARAM id="sub_amt" value="47"/>
   <PARAM id="hiss_amt" value="35"/>
   <PARAM id="sub_sens" value="61"/>

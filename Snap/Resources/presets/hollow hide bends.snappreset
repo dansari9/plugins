@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<SNAP stateVersion="2" order="shift,drive,space,press" name="hollow hide bends" tags="Fat,Tight,Toms">
+<SNAP stateVersion="2" order="shift,drive,space,press" name="hollow hide bends" tags="Fat,Tight,Toms" description="deepens toms with a downward pitch shift and tube warmth while keeping the room sound short.">
   <PARAM id="shift_amt" value="-49"/>
   <PARAM id="shift_balance" value="-0.34"/>
   <PARAM id="shift_target" value="0.48"/>

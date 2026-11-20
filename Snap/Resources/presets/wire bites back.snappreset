@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<SNAP stateVersion="2" order="shift,drive,press,space" name="wire bites back" tags="Crunchy,Punchy,Snare">
+<SNAP stateVersion="2" order="shift,drive,press,space" name="wire bites back" tags="Crunchy,Punchy,Snare" description="gives snares a sharp crack with cassette grit and a short scraping hiss over a clipped hit.">
   <PARAM id="hiss_amt" value="31"/>
   <PARAM id="hiss_sens" value="62"/>
   <PARAM id="hiss_det_lo" value="2200"/>

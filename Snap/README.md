@@ -23,8 +23,14 @@ amounts 0), snap passes the audio through unchanged, delayed by its constant lat
 
 The middle four modules can be reordered without clicks. Locks, four snapshots (A–D) and undo live in
 the session. Latency is constant whatever is switched on or reordered; Low Latency Mode is exactly 64
-samples. The editor is still an interim one (Attack, Sustain, Magnitude, Output and the gain display);
-the full screen comes later.
+samples.
+
+The editor is one screen (1440 x 840 at 100 %, resizable 75–200 % from the corner or the ≡ menu): the top bar
+(presets, dice, save, Magnitude, menu), six module columns in chain order (drag a middle column's ⋮⋮ grip to
+reorder), the amount row (on/off, the big dial, hover for the lock), the master strip, and the bottom bar (undo /
+redo, the help line, snapshots A–D, bypass). Every dial and fader: drag (Shift finer), Alt/Cmd-click resets,
+double-click types a value with units, the wheel nudges, right-click opens a menu. The preset name opens the
+browser over the module columns; click a row to audition, ok keeps it, cancel goes back.
 
 ## Build
 
@@ -35,11 +41,12 @@ xvfb-run -a Snap/build/SnapTests        # Linux; run it directly on macOS
 ```
 
 On macOS, use `-G Xcode` and build `Snap_AU` and `Snap_VST3`. The bundles are `snap.component` and `snap.vst3`.
-`SnapTests --screenshot editor.png` renders the editor to a PNG.
+`SnapTests --screenshot editor.png` (or `--screenshot-browser`) renders the editor to a PNG; `SnapTests --bench`
+prints a CPU benchmark.
 
 Source layout: `Source/Parameters.*` (the parameter table), `Source/PluginProcessor.*`,
 `Source/presets/StateIO.*` (state and migration), `Source/presets/PresetStore.*` (preset files and browser data),
-`Source/chain/` (module order),
+`Source/chain/` (module order), `Source/ui/` (the editor: Style, Widgets, Visualizers, PresetBrowser, Editor),
 `Source/dsp/common|modules|master/` (DSP and its tunable constants).
 
 ## Install in Logic Pro
@@ -83,7 +90,9 @@ The state is the parameter tree as XML: `<SNAP stateVersion="2" order="shift,spa
 
 **Version 1** (0.1.x: `attack`, `sustain`, `mix`, `output`) is migrated on load: Attack and Sustain are scaled
 by the old Mix (it was the shaper's dry/wet), Output becomes the master Output, and every module is switched
-off, so an old session sounds as it did.
+off. A neutral old session is an exact pass-through; a shaped one lands on the 0.2 shaper's nearest settings
+(the 0.2 transient shaper is a new design, so the shaping is close to, not identical with, 0.1.x). Host automation of
+the retired `mix` and `output` IDs is not carried over.
 
 Loading ignores unknown entries, clamps out-of-range values, resets missing or unreadable values to
 their default, and ignores data that is not one complete snap state. The state is read with a flat,

@@ -5,6 +5,7 @@
 #include "../common/Smoother.h"
 #include "SubHissConstants.h"
 #include <juce_dsp/juce_dsp.h>
+#include <atomic>
 #include <vector>
 
 namespace snap
@@ -54,6 +55,7 @@ public:
     // io becomes delayed dry plus Pre layers. post is overwritten with Post layers in
     // the same timeline. Both buffers must have identical dimensions and separate storage.
     void process(juce::AudioBuffer<float>& io, juce::AudioBuffer<float>& post, const Settings&) noexcept;
+    int hits(int layer) const noexcept { return hitCount[(size_t) layer].load(std::memory_order_relaxed); } // display: 0 sub, 1 hiss
 
 private:
     struct Detector
@@ -121,5 +123,6 @@ private:
     float pitchFall = 0, filterFall = 0, dcAlpha = 0, toneAlpha = 0, highestHz = 0;
     float subDc = 0, hissTiltLow = 0;
     int hissType = 0, filterInterval = 1, untilFilterUpdate = 0;
+    std::array<std::atomic<int>, 2> hitCount {};
 };
 } // namespace snap

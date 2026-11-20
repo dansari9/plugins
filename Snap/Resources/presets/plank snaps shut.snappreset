@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<SNAP stateVersion="2" order="press,drive,space,shift" name="plank snaps shut" tags="Punchy,Tight,Snare">
+<SNAP stateVersion="2" order="press,drive,space,shift" name="plank snaps shut" tags="Punchy,Tight,Snare" description="makes snares crack with heavy compression, gated reverb, a short clattering hiss and peak clipping.">
   <PARAM id="hiss_amt" value="14"/>
   <PARAM id="hiss_sens" value="53"/>
   <PARAM id="hiss_decay" value="73"/>

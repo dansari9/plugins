@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<SNAP stateVersion="2" order="press,shift,drive,space" name="floor underfoot" tags="Fat,Punchy,Drum Bus,Glue">
+<SNAP stateVersion="2" order="press,shift,drive,space" name="floor underfoot" tags="Fat,Punchy,Drum Bus,Glue" description="adds low-end weight to drum buses with bass-focused drive, punchy compression and peak clipping.">
   <PARAM id="press_amt" value="35"/>
   <PARAM id="press_mix" value="64"/>
   <PARAM id="drive_amt" value="24"/>

@@ -122,7 +122,9 @@ jobs:
             --validate Snap/build/Snap_artefacts/Release/VST3/snap.vst3
 
       - name: Package (tar keeps the executable bit)
-        run: tar -C Snap/build/Snap_artefacts/Release -czf snap-linux.tar.gz VST3 Standalone
+        run: |
+          cp Snap/Assets/Fonts/OFL.txt Snap/build/Snap_artefacts/Release/FONT-LICENSE.txt
+          tar -C Snap/build/Snap_artefacts/Release -czf snap-linux.tar.gz VST3 Standalone FONT-LICENSE.txt
 
       - name: Upload VST3 + Standalone
         uses: actions/upload-artifact@v4
@@ -172,7 +174,12 @@ jobs:
           auval -v aufx Snap Dwks
 
       - name: Package (zip keeps bundle permissions)
-        run: cd Snap/build/Snap_artefacts/Release && ditto -c -k --keepParent AU/snap.component "$GITHUB_WORKSPACE/Snap-AU-macos.zip" && ditto -c -k --keepParent VST3/snap.vst3 "$GITHUB_WORKSPACE/Snap-VST3-macos.zip"
+        run: |
+          cd Snap/build/Snap_artefacts/Release
+          ditto -c -k --keepParent AU/snap.component "$GITHUB_WORKSPACE/Snap-AU-macos.zip"
+          ditto -c -k --keepParent VST3/snap.vst3 "$GITHUB_WORKSPACE/Snap-VST3-macos.zip"
+          cp "$GITHUB_WORKSPACE/Snap/Assets/Fonts/OFL.txt" FONT-LICENSE.txt
+          for z in Snap-AU-macos.zip Snap-VST3-macos.zip; do zip -q "$GITHUB_WORKSPACE/$z" FONT-LICENSE.txt; done
 
       - name: Upload AU + VST3
         uses: actions/upload-artifact@v4

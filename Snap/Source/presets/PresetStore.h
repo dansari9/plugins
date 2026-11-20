@@ -6,7 +6,8 @@
 
 class SnapProcessor;
 
-// Presets. A preset file is the flat element the session uses, <SNAP stateVersion="2" order="..." name="..." tags="...">
+// Presets. A preset file is the flat element the session uses, <SNAP stateVersion="2" order="..." name="..." tags="..."
+// description="...">
 // with one <PARAM id value/> per parameter in host units. A PARAM left out takes its default, so the factory files list
 // only what they change; saved presets list every parameter except the session toggles. Locks and snapshots are never
 // part of a preset. Factory presets are embedded and read-only; user presets are <root>/Presets/<name>.snappreset files,
@@ -27,6 +28,7 @@ struct Preset
 {
     juce::String name;
     juce::StringArray tags; // Character and Function tags
+    juce::String description; // optional one-liner for the browser's info pane
     bool factory = false;
     ChainOrder order = defaultChainOrder;
     std::array<bool, 6> uses {}; // per snap::Module: switched on with an amount other than 0 (sub/hiss: either amount)

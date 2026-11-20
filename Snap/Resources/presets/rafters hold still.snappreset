@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<SNAP stateVersion="2" order="space,press,drive,shift" name="rafters hold still" tags="Roomy,Warm,Drum Bus,Glue">
+<SNAP stateVersion="2" order="space,press,drive,shift" name="rafters hold still" tags="Roomy,Warm,Drum Bus,Glue" description="glues drum buses with gentle tape drive and a short attic reverb that ducks under the hits.">
   <PARAM id="space_amt" value="22"/>
   <PARAM id="space_type" value="3"/>
   <PARAM id="space_decay" value="42"/>
