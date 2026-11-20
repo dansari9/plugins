@@ -365,6 +365,7 @@ static void testLatency() // one constant latency; Low Latency Mode reports exac
         }
         set(p, "low_latency", 1);
         CHECK(p.getLatencySamples() == 64 && snap::Shift::latencyFor(fs, true) == 0);
+        CHECK(2 * snap::TargetFocusMix::lookaheadFor(fs, true) + snap::Master::latencyFor(fs, true) <= 64);
         prepare(p, fs, 256, 2);
         CHECK(p.getLatencySamples() == 64);
         set(p, "low_latency", 0);
@@ -380,6 +381,40 @@ static void testLatency() // one constant latency; Low Latency Mode reports exac
             const auto out = run(p, 48000, 100, 2, 0.5, &in);
             CHECK(maxDiff(out, in) == 0 && out.size() + (size_t) p.getLatencySamples() == in.size());
         }
+}
+
+static void testMasterInProcessor() // processor level: exact neutral paths, and one Loudness Match click lands within 1 dB
+{
+    for (auto& [id, v] : std::initializer_list<std::pair<const char*, float>> { { "eq_on", 0 }, { "lc_shape", 1 }, { "hc_shape", 1 }, { "tone_shape", 3 } })
+    {
+        Proc p;
+        set(p, id, v);
+        prepare(p, 48000, 100, 2);
+        std::vector<float> in;
+        CHECK(maxDiff(run(p, 48000, 100, 2, 0.3, &in), in) == 0);
+    }
+    for (float magnitude : { 100.0f, 40.0f })
+    {
+        Proc p;
+        set(p, "magnitude", magnitude), set(p, "in_gain", 9), set(p, "tone", 60), set(p, "air", 70), set(p, "attack", 50), set(p, "clip_on", 1);
+        prepare(p, 48000, 512, 2);
+        const auto loop = loops::make(1, 48000, 12);
+        juce::AudioBuffer<float> block(2, 512);
+        juce::MidiBuffer midi;
+        snap::LoudnessMeter in, out;
+        in.prepare(48000, 2), out.prepare(48000, 2);
+        for (int start = 0; start + 512 <= loop.getNumSamples(); start += 512)
+        {
+            if (start == 6 * 48000 / 512 * 512)
+                p.matchLoudness();
+            for (int c = 0; c < 2; ++c)
+                block.copyFrom(c, 0, loop, c, start, 512);
+            in.process(block, 512);
+            p.processBlock(block, midi);
+            out.process(block, 512);
+        }
+        CHECK(std::abs(out.lufs() - in.lufs()) <= 1.0f && std::abs(get(p, "out_gain")) > 1.0f);
+    }
 }
 
 static void testMagnitude()
@@ -549,6 +584,14 @@ static int render(const juce::File& dir)
         { "default", {} },
         { "punch", { { "attack", 60 }, { "sustain", -40 } } },
         { "punch-magnitude50", { { "attack", 60 }, { "sustain", -40 }, { "magnitude", 50 } } },
+        { "master-cut-steep", { { "cut_lo", 150 }, { "cut_hi", 7000 }, { "lc_shape", 1 }, { "hc_shape", 1 } } },
+        { "master-tilt-bright", { { "tone", 70 } } },
+        { "master-low-bump", { { "tone", 80 }, { "tone_shape", 1 } } },
+        { "master-smile-scoop", { { "tone", -80 }, { "tone_shape", 2 } } },
+        { "master-band-focus", { { "tone", 80 }, { "tone_shape", 3 } } },
+        { "master-air", { { "air", 80 } } },
+        { "master-sustain", { { "attack", -30 }, { "sustain", 70 } } },
+        { "master-clip-hot", { { "in_gain", 12 }, { "clip_on", 1 } } },
     };
     dir.createDirectory();
     auto write = [&](const juce::AudioBuffer<float>& b, const juce::String& name) {
@@ -624,6 +667,7 @@ int main(int argc, char** argv)
     testLatency();
     testState();
     testMigratedSound();
+    testMasterInProcessor();
     testMagnitude();
     testBounded();
     testSound();
@@ -633,6 +677,7 @@ int main(int argc, char** argv)
     testDrive();
     testPush();
     testShift();
+    testMaster();
     std::cout << (failures == 0 ? "All Snap tests passed\n" : "Snap tests FAILED\n");
     return failures == 0 ? 0 : 1;
 }

@@ -76,7 +76,7 @@ target_link_libraries(Snap
 # One test executable that drives the real processor and editor without a host.
 # `SnapTests --screenshot <file.png>` renders the editor instead of running the tests.
 add_executable(SnapTests Tests/SnapTests.cpp Tests/DspTests.cpp Tests/PressTests.cpp Tests/DriveTests.cpp Tests/PushTests.cpp
-    Tests/ShiftTests.cpp)
+    Tests/ShiftTests.cpp Tests/MasterTests.cpp)
 target_include_directories(SnapTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/Source)
 target_link_libraries(SnapTests
     PRIVATE
@@ -89,9 +89,9 @@ target_link_libraries(SnapTests
 # The DSP headers and tests compare floats bit-exactly on purpose (exact bypass paths); the tests also replace the global
 # operator new.
 if(NOT MSVC)
-    set_source_files_properties(Source/PluginProcessor.cpp PROPERTIES COMPILE_OPTIONS "-Wno-float-equal")
+    set_source_files_properties(Source/PluginProcessor.cpp Source/PluginEditor.cpp PROPERTIES COMPILE_OPTIONS "-Wno-float-equal")
     set_source_files_properties(Tests/SnapTests.cpp PROPERTIES COMPILE_OPTIONS "-Wno-float-equal;-Wno-mismatched-new-delete")
-    set_source_files_properties(Tests/DspTests.cpp Tests/PressTests.cpp Tests/DriveTests.cpp Tests/PushTests.cpp Tests/ShiftTests.cpp
+    set_source_files_properties(Tests/DspTests.cpp Tests/PressTests.cpp Tests/DriveTests.cpp Tests/PushTests.cpp Tests/ShiftTests.cpp Tests/MasterTests.cpp
                                 PROPERTIES COMPILE_OPTIONS "-Wno-float-equal")
 endif()
 set_target_properties(SnapTests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")

@@ -1,41 +1,72 @@
 #pragma once
-#include "../common/Constants.h"
-#include <cmath>
+#include "MasterConstants.h"
+#include "../common/Smoother.h"
+#include "../common/TransientMask.h"
+#include <atomic>
+#include <vector>
 
 namespace snap
 {
-// Envelope-difference transient shaper, linked across channels: transient = fast attack over slow attack,
-// tail = slow release over fast release. Both are >= 0 dB amounts that Attack and Sustain (-100..+100 %) scale.
 class TransientShaper
 {
 public:
-    void prepare(double fs)
+    void prepare(double fs, int channels, int maxBlock, bool lowLatency)
     {
-        using namespace constants;
-        fastA = coef(fs, shaperFastAttackMs), fastR = coef(fs, shaperFastReleaseMs), slowA = coef(fs, shaperSlowAttackMs);
-        slowR = coef(fs, shaperSlowReleaseMs), smooth = coef(fs, shaperGainSmoothingMs);
-        fast = slowAttack = slowRelease = gainDb = 0;
+        normalLookahead = lookaheadFor(fs, false);
+        mask.prepare(fs, channels, std::max(normalLookahead, constants::lowLatencyMaskLookahead));
+        setLowLatency(lowLatency);
+        transient.resize(static_cast<size_t>(maxBlock));
+        attack.prepare(fs), sustain.prepare(fs);
+        reset();
     }
 
-    // Takes the linked input level and returns the gain in dB to apply to this sample.
-    float next(float level, float attack, float sustain)
+    void reset()
     {
-        using namespace constants;
-        fast = follow(fast, level, fastA, fastR);
-        slowAttack = follow(slowAttack, level, slowA, fastR);
-        slowRelease = follow(slowRelease, level, fastA, slowR);
-        const float transient = std::fmax(0.0f, db(fast) - db(slowAttack)), tail = std::fmax(0.0f, db(slowRelease) - db(fast));
-        const float target = std::fmin(shaperMaxGainDb, std::fmax(-shaperMaxGainDb, attack * shaperAttackDbPerPercentDb * transient
-                                                                                        + sustain * shaperSustainDbPerPercentDb * tail));
-        return gainDb = target + smooth * (gainDb - target);
+        mask.reset();
+        attack.reset(attack.targetValue()), sustain.reset(sustain.targetValue());
+        gainDb.store(0, std::memory_order_relaxed);
     }
+
+    void setParams(float a, float s) { attack.setTarget(a), sustain.setTarget(s); }
+    void setLowLatency(bool lowLatency) { mask.setLookahead(lowLatency ? constants::lowLatencyMaskLookahead : normalLookahead); }
+    int latency() const { return mask.getLookahead(); }
+    static int lookaheadFor(double fs, bool lowLatency)
+    {
+        return lowLatency ? constants::lowLatencyMaskLookahead
+                          : static_cast<int>(std::lround(fs * constants::maskLookaheadMs / 1000));
+    }
+
+    void process(juce::AudioBuffer<float>& io, int n)
+    {
+        mask.process(io, n, transient.data());
+        float peak = 0;
+        if (attack.value() != 0 || sustain.value() != 0 || attack.isSmoothing() || sustain.isSmoothing())
+        {
+            const auto data = io.getArrayOfWritePointers();
+            for (int i = 0; i < n; ++i)
+            {
+                const float t = transient[static_cast<size_t>(i)];
+                const float db = masterConstants::shaperRangeDb * (attack.next() * t + sustain.next() * (1 - t));
+                if (std::abs(db) > std::abs(peak))
+                    peak = db;
+                if (db != 0)
+                {
+                    const float gain = juce::Decibels::decibelsToGain(db);
+                    for (int c = 0; c < io.getNumChannels(); ++c)
+                        data[c][i] *= gain;
+                }
+            }
+        }
+        gainDb.store(peak, std::memory_order_relaxed);
+    }
+
+    float peakGainDb() const { return gainDb.load(std::memory_order_relaxed); }
 
 private:
-    static float coef(double fs, double ms) { return (float) std::exp(-1000.0 / (ms * fs)); }
-    static float follow(float e, float x, float a, float r) { return x + (x > e ? a : r) * (e - x); }
-    static float db(float g) { return g > 1.0e-6f ? 20.0f * std::log10(g) : -120.0f; }
-
-    float fast = 0, slowAttack = 0, slowRelease = 0, gainDb = 0;
-    float fastA = 0, fastR = 0, slowA = 0, slowR = 0, smooth = 0;
+    TransientMask mask;
+    std::vector<float> transient;
+    Smoother attack, sustain;
+    std::atomic<float> gainDb { 0 };
+    int normalLookahead = 0;
 };
 } // namespace snap

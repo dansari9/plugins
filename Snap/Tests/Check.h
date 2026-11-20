@@ -12,3 +12,4 @@ void testPress(); // PressTests.cpp
 void testDrive(); // DriveTests.cpp
 void testPush();  // PushTests.cpp
 void testShift(); // ShiftTests.cpp
+void testMaster(); // MasterTests.cpp

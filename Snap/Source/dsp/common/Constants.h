@@ -6,13 +6,6 @@ namespace snap::constants
 inline constexpr double smoothingSeconds = 0.02; // continuous-parameter ramp, long enough to avoid zipper noise
 inline constexpr float denormalFloor = 1.0e-15f; // smoothers and followers snap to zero below this
 
-// Master transient shaper (inherited from 0.1.x so migrated sessions sound the same).
-inline constexpr double shaperFastAttackMs = 0.3, shaperFastReleaseMs = 40, shaperSlowAttackMs = 20, shaperSlowReleaseMs = 300;
-inline constexpr double shaperGainSmoothingMs = 1;
-inline constexpr float shaperAttackDbPerPercentDb = 0.006f;  // gain dB per (Attack % x transient dB)
-inline constexpr float shaperSustainDbPerPercentDb = 0.01f;  // gain dB per (Sustain % x tail dB)
-inline constexpr float shaperMaxGainDb = 24.0f;
-
 // Focus band and crossovers.
 inline constexpr float focusMinHz = 20.0f, focusMaxHz = 20000.0f; // an edge at either end drops out of the path exactly
 inline constexpr double crossoverMaxFraction = 0.45;               // highest usable cutoff, as a fraction of the sample rate
