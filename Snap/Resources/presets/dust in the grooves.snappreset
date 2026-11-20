@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<SNAP stateVersion="2" order="shift,drive,press,space" name="dust in the grooves" tags="Lo-Fi,Dirty,Classic,Loop,Drum Bus" description="sampler-era dust for breaks and loops: aliased low-rate grit above the kick, punch compression, a little crackle on the hits and a rolled-off top.">
+  <PARAM id="hiss_amt" value="10"/>
+  <PARAM id="hiss_sens" value="45"/>
+  <PARAM id="hiss_decay" value="400"/>
+  <PARAM id="hiss_duck" value="30"/>
+  <PARAM id="hiss_type" value="4"/>
+  <PARAM id="space_amt" value="8"/>
+  <PARAM id="space_type" value="2"/>
+  <PARAM id="space_decay" value="30"/>
+  <PARAM id="press_amt" value="35"/>
+  <PARAM id="drive_amt" value="40"/>
+  <PARAM id="drive_mode" value="4"/>
+  <PARAM id="drive_flavor" value="-0.5"/>
+  <PARAM id="drive_mix" value="65"/>
+  <PARAM id="drive_focus_lo" value="120"/>
+  <PARAM id="out_gain" value="0"/>
+  <PARAM id="cut_lo" value="35"/>
+  <PARAM id="cut_hi" value="12500"/>
+  <PARAM id="tone" value="10"/>
+  <PARAM id="tone_shape" value="1"/>
+  <PARAM id="attack" value="12"/>
+  <PARAM id="clip_on" value="1"/>
+</SNAP>

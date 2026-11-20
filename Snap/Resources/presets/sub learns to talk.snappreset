@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<SNAP stateVersion="2" order="shift,press,drive,space" name="sub learns to talk" tags="Dirty,Fat,Kick,Instrument" description="makes long sub kicks and bass lines speak on small speakers: parallel desk drive for harmonics, glue, density above the fundamental and clipped peaks.">
+  <PARAM id="press_amt" value="25"/>
+  <PARAM id="press_mode" value="1"/>
+  <PARAM id="drive_amt" value="45"/>
+  <PARAM id="drive_flavor" value="-0.35"/>
+  <PARAM id="drive_mix" value="60"/>
+  <PARAM id="push_amt" value="30"/>
+  <PARAM id="push_mult" value="1"/>
+  <PARAM id="push_tone" value="0.3"/>
+  <PARAM id="push_focus_lo" value="150"/>
+  <PARAM id="out_gain" value="-1"/>
+  <PARAM id="cut_lo" value="25"/>
+  <PARAM id="tone" value="12"/>
+  <PARAM id="tone_shape" value="1"/>
+  <PARAM id="clip_on" value="1"/>
+</SNAP>

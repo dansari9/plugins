@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<SNAP stateVersion="2" order="shift,press,space,drive" name="wood and skin" tags="Clean,Warm,Hi-Fi,Drum Bus" description="natural polish for acoustic kits: soft partly-multiband compression so the kick never ducks the cymbals, a small booth, open tape and a little air.">
+  <PARAM id="space_amt" value="12"/>
+  <PARAM id="space_type" value="1"/>
+  <PARAM id="space_decay" value="40"/>
+  <PARAM id="space_width" value="80"/>
+  <PARAM id="press_amt" value="22"/>
+  <PARAM id="press_mode" value="3"/>
+  <PARAM id="press_bands" value="0.4"/>
+  <PARAM id="drive_amt" value="12"/>
+  <PARAM id="drive_mode" value="2"/>
+  <PARAM id="drive_flavor" value="0.5"/>
+  <PARAM id="out_gain" value="-0.5"/>
+  <PARAM id="tone" value="8"/>
+  <PARAM id="tone_shape" value="3"/>
+  <PARAM id="air" value="15"/>
+  <PARAM id="attack" value="6"/>
+  <PARAM id="sustain" value="6"/>
+</SNAP>

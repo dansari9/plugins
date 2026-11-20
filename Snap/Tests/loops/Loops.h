@@ -23,6 +23,10 @@ inline float kick(double t) // pitch-dropping sine with a click
 inline float snare(double t, juce::uint32 i) { return (float) (0.5 * noise(i) * std::exp(-t / 0.09) + 0.4 * std::sin(2 * juce::MathConstants<double>::pi * 190 * t) * std::exp(-t / 0.05)); }
 inline float hat(double t, juce::uint32 i) { return (float) (0.2 * (noise(i) - noise(i - 1)) * std::exp(-t / 0.02)); }
 
+// The loop a preset is meant for, from its Function tags: kick presets on the kick loop, loop presets on the break,
+// everything else on the kit.
+inline int forTags(const juce::StringArray& tags) { return tags.contains("Kick") ? 0 : tags.contains("Loop") ? 1 : 2; }
+
 // Renders `seconds` of loop `which` (index into names) at `fs`.
 inline juce::AudioBuffer<float> make(int which, double fs, double seconds)
 {

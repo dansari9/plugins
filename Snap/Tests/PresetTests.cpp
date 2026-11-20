@@ -20,6 +20,12 @@ const auto defaultKey = String("factory/") + defaultPresetName;
 const auto userName = String::fromUTF8("Cr\xc3\xa8me & <Tap>");
 const auto userKey = "user/" + userName;
 const StringArray userTags { "Punchy", "Kick" };
+// The second factory set, level-matched on the loop each is meant for (loops::forTags).
+const StringArray levelMatched { "ground keeps humming", "sub learns to talk", "point on the thump", "storm under concrete",
+                                 "crack from the rim", "hall door slams shut", "wires under the skin", "tin goes soft",
+                                 "sparks scatter sideways", "first coat of polish", "fist in velvet", "dust in the grooves",
+                                 "breaks run hot", "floor breathes with you", "plaster shakes loose", "wood and skin",
+                                 "left on the dashboard", "blown into confetti", "bottom falls out", "teeth in the low end" };
 
 struct TempRoot
 {
@@ -110,7 +116,7 @@ void testFactorySet(const PresetStore& store)
     Filter filter;
     filter.source = Source::factory;
     const auto factory = store.list(filter);
-    CHECK(factory.size() == 30);
+    CHECK(factory.size() == 50);
     CHECK(store.find(defaultKey) != nullptr);
     StringArray names;
     int drums = 0, kicks = 0, snares = 0, instruments = 0;
@@ -184,6 +190,145 @@ void testFactoryAudio(const PresetStore& store)
             if (failures != before)
                 std::cerr << "Preset " << preset.name << ", peak " << wet.getMagnitude(0, wet.getNumSamples()) << ", residual " << residual << '\n';
         }
+}
+
+float raw(SnapProcessor& processor, const char* id)
+{
+    return processor.apvts.getRawParameterValue(id)->load();
+}
+
+// Exact, except that the log-scaled frequencies pass through log and pow on every normalised conversion, so they come
+// back within float rounding.
+bool same(const ParamSpec& spec, float actual, float expected)
+{
+    return spec.unit == Unit::hertz ? std::abs(actual - expected) <= 1.0e-6f * expected : actual == expected;
+}
+
+// Every factory file loads exactly: its values after range snapping, the defaults for everything it leaves out, its order.
+void testFactoryLoad(const PresetStore& store)
+{
+    for (const auto& preset : store.presets())
+        if (preset.factory)
+        {
+            const int before = failures;
+            SnapProcessor processor;
+            CHECK(loadPresetXml(processor, preset.xml));
+            const auto xml = XmlDocument::parse(preset.xml);
+            CHECK(xml != nullptr);
+            if (xml == nullptr)
+                continue;
+            CHECK(parseChainOrder(xml->getStringAttribute("order").toStdString()) == processor.order());
+            for (const auto* child : xml->getChildWithTagNameIterator("PARAM"))
+                CHECK(processor.apvts.getParameter(child->getStringAttribute("id")) != nullptr);
+            for (const auto& spec : parameterTable())
+            {
+                auto* param = processor.apvts.getParameter(spec.id);
+                float expected = param->convertFrom0to1(param->getDefaultValue());
+                int matches = 0;
+                for (const auto* child : xml->getChildWithTagNameIterator("PARAM"))
+                    if (child->getStringAttribute("id") == spec.id)
+                    {
+                        ++matches;
+                        expected = param->convertFrom0to1(param->convertTo0to1(static_cast<float>(child->getDoubleAttribute("value"))));
+                    }
+                CHECK(matches <= 1 && same(spec, raw(processor, spec.id), expected));
+            }
+            if (failures != before)
+                std::cerr << "Preset " << preset.name << '\n';
+        }
+}
+
+// A session saved on a factory preset restores exactly, and saving it as a user preset round-trips.
+void testFactoryRestore(const PresetStore& factory, const File& root)
+{
+    PresetStore store(root);
+    for (const auto& preset : factory.presets())
+        if (preset.factory)
+        {
+            const int before = failures;
+            SnapProcessor original, restored;
+            CHECK(loadPresetXml(original, preset.xml));
+            MemoryBlock state;
+            original.getStateInformation(state);
+            restored.setStateInformation(state.getData(), static_cast<int>(state.getSize()));
+            CHECK(restored.order() == original.order());
+            for (const auto& spec : parameterTable())
+                CHECK(same(spec, raw(restored, spec.id), raw(original, spec.id)));
+            const auto* saved = store.save(restored, preset.name, preset.tags);
+            CHECK(saved != nullptr);
+            if (saved != nullptr)
+            {
+                CHECK(saved->order == original.order() && saved->tags == preset.tags);
+                checkPresetXml(*saved, &restored);
+            }
+            if (failures != before)
+                std::cerr << "Preset " << preset.name << '\n';
+        }
+}
+
+float loudness(const AudioBuffer<float>& audio) // K-weighted, over the last loudnessWindowSeconds
+{
+    LoudnessMeter meter;
+    meter.prepare(sampleRate, 2);
+    meter.process(audio, audio.getNumSamples());
+    return meter.lufs();
+}
+
+// The level-matched set on its own loop: finite, peaks held by the clipper, loudness close to dry (looser for FX and
+// transitions).
+void testLevelMatch(const PresetStore& store)
+{
+    for (const auto& name : levelMatched)
+    {
+        const auto* preset = store.find("factory/" + name);
+        CHECK(preset != nullptr);
+        if (preset == nullptr)
+            continue;
+        const int before = failures;
+        const auto dry = loops::make(loops::forTags(preset->tags), sampleRate, 4);
+        SnapProcessor processor;
+        CHECK(loadPresetXml(processor, preset->xml));
+        const auto wet = render(processor, dry);
+        bool finite = true;
+        for (int channel = 0; channel < 2; ++channel)
+            finite &= std::ranges::all_of(std::span(wet.getReadPointer(channel), static_cast<size_t>(wet.getNumSamples())),
+                                          [](float value) { return std::isfinite(value); });
+        const float peak = wet.getMagnitude(0, wet.getNumSamples()), delta = loudness(wet) - loudness(dry);
+        const bool loose = preset->tags.contains("Transitions") || preset->tags.contains("FX");
+        CHECK(finite && peak <= (raw(processor, "clip_on") > 0.5f ? 1.0f : 4.0f));
+        CHECK(std::abs(delta) <= (loose ? 5.0f : 2.0f));
+        if (failures != before)
+            std::cerr << "Preset " << name << ", peak " << peak << ", loudness " << delta << " dB vs dry\n";
+    }
+}
+
+// The level-matched set in the browser: listed as factory, under each of its Function tags, found by name, described.
+void testLevelMatchedBrowser(const PresetStore& store)
+{
+    const auto lists = [&](const Filter& filter, const Preset* preset) {
+        const auto listed = store.list(filter);
+        return std::ranges::find(listed, preset) != listed.end();
+    };
+    for (const auto& name : levelMatched)
+    {
+        const auto* preset = store.find("factory/" + name);
+        Filter filter;
+        filter.source = Source::factory;
+        CHECK(preset != nullptr && lists(filter, preset));
+        if (preset == nullptr)
+            continue;
+        CHECK(preset->description.isNotEmpty());
+        for (const auto& tag : preset->tags)
+            if (std::ranges::any_of(functionTags, [&](const char* candidate) { return tag == candidate; }))
+            {
+                filter = {};
+                filter.tags = { tag };
+                CHECK(lists(filter, preset));
+            }
+        filter = {};
+        filter.search = name;
+        CHECK(lists(filter, preset));
+    }
 }
 
 void testSave(const File& root)
@@ -416,6 +561,13 @@ void testPresets()
     testParse();
     testFactorySet(factory);
     testFactoryAudio(factory);
+    testFactoryLoad(factory);
+    testLevelMatch(factory);
+    testLevelMatchedBrowser(factory);
+    {
+        const TempRoot restoreRoot;
+        testFactoryRestore(factory, restoreRoot.file);
+    }
     testSave(root.file);
     if (const auto* preset = factory.find(defaultKey))
     {

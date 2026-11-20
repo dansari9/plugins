@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<SNAP stateVersion="2" order="shift,space,press,drive" name="hall door slams shut" tags="Huge,Roomy,Classic,Snare,Toms" description="the big gated snare: a bright gated room that stops dead, crushed so the room jumps forward, with warm tube drive. great on toms too.">
+  <PARAM id="space_amt" value="50"/>
+  <PARAM id="space_type" value="16"/>
+  <PARAM id="space_decay" value="60"/>
+  <PARAM id="space_predelay" value="6"/>
+  <PARAM id="space_focus_lo" value="200"/>
+  <PARAM id="space_focus_hi" value="9000"/>
+  <PARAM id="press_amt" value="50"/>
+  <PARAM id="press_mode" value="2"/>
+  <PARAM id="press_mix" value="55"/>
+  <PARAM id="drive_amt" value="15"/>
+  <PARAM id="drive_mode" value="3"/>
+  <PARAM id="drive_flavor" value="0.2"/>
+  <PARAM id="out_gain" value="2.5"/>
+  <PARAM id="cut_lo" value="80"/>
+  <PARAM id="tone" value="12"/>
+  <PARAM id="tone_shape" value="3"/>
+  <PARAM id="attack" value="15"/>
+</SNAP>

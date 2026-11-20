@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<SNAP stateVersion="2" order="shift,press,drive,space" name="ground keeps humming" tags="Fat,Huge,Kick" description="turns short kicks into long tuned sub kicks: a pitched sub tail under each hit, warm low drive and clipped peaks. set sub pitch to the song&#x27;s key.">
+  <PARAM id="sub_amt" value="50"/>
+  <PARAM id="sub_sens" value="60"/>
+  <PARAM id="sub_det_hi" value="130"/>
+  <PARAM id="sub_pitch" value="29"/>
+  <PARAM id="sub_decay" value="850"/>
+  <PARAM id="sub_duck" value="20"/>
+  <PARAM id="sub_color" value="35"/>
+  <PARAM id="press_amt" value="22"/>
+  <PARAM id="press_mix" value="70"/>
+  <PARAM id="drive_amt" value="20"/>
+  <PARAM id="drive_mode" value="3"/>
+  <PARAM id="drive_flavor" value="-0.5"/>
+  <PARAM id="drive_focus_hi" value="500"/>
+  <PARAM id="out_gain" value="-1"/>
+  <PARAM id="cut_lo" value="25"/>
+  <PARAM id="attack" value="15"/>
+  <PARAM id="clip_on" value="1"/>
+</SNAP>

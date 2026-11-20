@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<SNAP stateVersion="2" order="shift,press,drive,space" name="crack from the rim" tags="Punchy,Bright,Snare" description="makes snares and claps crack: a short sizzle layer on each hit, punch compression, cassette spark on the attack only, a little booth and clipped peaks.">
+  <PARAM id="hiss_amt" value="28"/>
+  <PARAM id="hiss_sens" value="55"/>
+  <PARAM id="hiss_det_lo" value="1200"/>
+  <PARAM id="hiss_det_hi" value="7000"/>
+  <PARAM id="hiss_decay" value="110"/>
+  <PARAM id="hiss_type" value="3"/>
+  <PARAM id="hiss_tone" value="25"/>
+  <PARAM id="hiss_env" value="55"/>
+  <PARAM id="hiss_res" value="20"/>
+  <PARAM id="space_amt" value="12"/>
+  <PARAM id="space_type" value="1"/>
+  <PARAM id="space_decay" value="35"/>
+  <PARAM id="press_amt" value="40"/>
+  <PARAM id="press_mix" value="75"/>
+  <PARAM id="drive_amt" value="22"/>
+  <PARAM id="drive_mode" value="1"/>
+  <PARAM id="drive_flavor" value="0.5"/>
+  <PARAM id="drive_target" value="-0.5"/>
+  <PARAM id="out_gain" value="0"/>
+  <PARAM id="cut_lo" value="120"/>
+  <PARAM id="air" value="25"/>
+  <PARAM id="attack" value="30"/>
+  <PARAM id="sustain" value="-8"/>
+  <PARAM id="clip_on" value="1"/>
+</SNAP>

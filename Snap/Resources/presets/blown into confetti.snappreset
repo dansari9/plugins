@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<SNAP stateVersion="2" order="shift,drive,press,space" name="blown into confetti" tags="Aggressive,Dirty,Crunchy,FUN!,Drum Bus" description="blown-out, clipped drums with a clean sub: hard desk bite above the low end, multiband up-and-down squash in parallel, four stages of density and the clipper on.">
+  <PARAM id="press_amt" value="45"/>
+  <PARAM id="press_mode" value="5"/>
+  <PARAM id="press_downup" value="0.3"/>
+  <PARAM id="press_mix" value="35"/>
+  <PARAM id="press_bands" value="1"/>
+  <PARAM id="drive_amt" value="60"/>
+  <PARAM id="drive_flavor" value="0.6"/>
+  <PARAM id="drive_mix" value="80"/>
+  <PARAM id="drive_focus_lo" value="220"/>
+  <PARAM id="push_amt" value="45"/>
+  <PARAM id="push_mult" value="2"/>
+  <PARAM id="push_tone" value="0.2"/>
+  <PARAM id="out_gain" value="-0.5"/>
+  <PARAM id="air" value="20"/>
+  <PARAM id="clip_on" value="1"/>
+</SNAP>

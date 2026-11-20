@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<SNAP stateVersion="2" order="shift,drive,press,space" name="tin goes soft" tags="Smooth,Lo-Fi,Hi-Hat,Cymbals" description="tames brittle hats and cymbals: tape rounds off the attacks, an optical squeeze evens them out and the top end rolls off gently.">
+  <PARAM id="press_amt" value="20"/>
+  <PARAM id="press_mode" value="4"/>
+  <PARAM id="drive_amt" value="30"/>
+  <PARAM id="drive_mode" value="2"/>
+  <PARAM id="drive_flavor" value="-0.7"/>
+  <PARAM id="drive_target" value="-0.5"/>
+  <PARAM id="out_gain" value="10.5"/>
+  <PARAM id="cut_lo" value="350"/>
+  <PARAM id="cut_hi" value="11000"/>
+  <PARAM id="tone" value="-12"/>
+  <PARAM id="attack" value="-20"/>
+</SNAP>

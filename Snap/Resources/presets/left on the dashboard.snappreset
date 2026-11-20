@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<SNAP stateVersion="2" order="shift,drive,press,space" name="left on the dashboard" tags="Lo-Fi,Warm,Smooth,Loop" description="warped-tape softness for chill loops: dark tape, a slow optical squeeze, a hush that fills the gaps between hits, a smeared room and a rolled-off top.">
+  <PARAM id="hiss_amt" value="16"/>
+  <PARAM id="hiss_sens" value="40"/>
+  <PARAM id="hiss_decay" value="700"/>
+  <PARAM id="hiss_duck" value="50"/>
+  <PARAM id="hiss_type" value="1"/>
+  <PARAM id="hiss_tone" value="-20"/>
+  <PARAM id="hiss_env" value="10"/>
+  <PARAM id="space_amt" value="12"/>
+  <PARAM id="space_type" value="15"/>
+  <PARAM id="space_decay" value="40"/>
+  <PARAM id="space_duck" value="30"/>
+  <PARAM id="press_amt" value="30"/>
+  <PARAM id="press_mode" value="4"/>
+  <PARAM id="drive_amt" value="35"/>
+  <PARAM id="drive_mode" value="2"/>
+  <PARAM id="drive_flavor" value="-0.75"/>
+  <PARAM id="out_gain" value="2"/>
+  <PARAM id="cut_lo" value="60"/>
+  <PARAM id="cut_hi" value="9000"/>
+  <PARAM id="tone" value="-15"/>
+  <PARAM id="attack" value="-10"/>
+</SNAP>

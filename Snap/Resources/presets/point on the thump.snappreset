@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<SNAP stateVersion="2" order="shift,press,drive,space" name="point on the thump" tags="Punchy,Tight,Kick" description="gives kicks a sharper click and a rounder thump: punch compression, a treble-only exciter on the attack, deeper lows with cleaner low-mids, and a shorter tail.">
+  <PARAM id="press_amt" value="35"/>
+  <PARAM id="press_mix" value="80"/>
+  <PARAM id="push_amt" value="25"/>
+  <PARAM id="push_tone" value="0.5"/>
+  <PARAM id="push_target" value="-0.7"/>
+  <PARAM id="push_focus_lo" value="2500"/>
+  <PARAM id="out_gain" value="-1.5"/>
+  <PARAM id="cut_lo" value="30"/>
+  <PARAM id="tone" value="18"/>
+  <PARAM id="tone_shape" value="1"/>
+  <PARAM id="attack" value="28"/>
+  <PARAM id="sustain" value="-15"/>
+  <PARAM id="clip_on" value="1"/>
+</SNAP>

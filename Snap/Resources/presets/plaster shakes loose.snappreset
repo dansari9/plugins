@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<SNAP stateVersion="2" order="shift,space,press,drive" name="plaster shakes loose" tags="Huge,Roomy,Aggressive,Drum Bus" description="a big crushed room for live kits: garage ambience compressed hard and blended in, tube edge and lifted sustain, like a kit tracked in a loud room.">
+  <PARAM id="space_amt" value="30"/>
+  <PARAM id="space_type" value="4"/>
+  <PARAM id="space_decay" value="45"/>
+  <PARAM id="space_focus_lo" value="200"/>
+  <PARAM id="space_focus_hi" value="8000"/>
+  <PARAM id="press_amt" value="65"/>
+  <PARAM id="press_mode" value="2"/>
+  <PARAM id="press_mix" value="45"/>
+  <PARAM id="drive_amt" value="20"/>
+  <PARAM id="drive_mode" value="3"/>
+  <PARAM id="drive_flavor" value="0.3"/>
+  <PARAM id="out_gain" value="-0.5"/>
+  <PARAM id="tone" value="10"/>
+  <PARAM id="tone_shape" value="1"/>
+  <PARAM id="air" value="12"/>
+  <PARAM id="attack" value="12"/>
+  <PARAM id="sustain" value="15"/>
+  <PARAM id="clip_on" value="1"/>
+</SNAP>

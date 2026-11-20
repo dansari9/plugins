@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<SNAP stateVersion="2" order="shift,press,drive,space" name="fist in velvet" tags="Punchy,Fat,Aggressive,Drum Bus,Glue" description="parallel smash in one knob: drums crushed hard and blended under the dry hits, so body, ghost notes and room come up while the attacks stay intact.">
+  <PARAM id="press_amt" value="80"/>
+  <PARAM id="press_mode" value="2"/>
+  <PARAM id="press_mix" value="35"/>
+  <PARAM id="drive_amt" value="18"/>
+  <PARAM id="drive_mode" value="1"/>
+  <PARAM id="drive_flavor" value="-0.5"/>
+  <PARAM id="out_gain" value="0.5"/>
+  <PARAM id="tone" value="8"/>
+  <PARAM id="tone_shape" value="1"/>
+  <PARAM id="attack" value="10"/>
+  <PARAM id="sustain" value="8"/>
+  <PARAM id="clip_on" value="1"/>
+</SNAP>

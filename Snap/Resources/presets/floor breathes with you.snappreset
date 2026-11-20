@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<SNAP stateVersion="2" order="shift,space,press,drive" name="floor breathes with you" tags="Warm,Punchy,Drum Bus,Loop,Glue" description="makes four-on-the-floor grooves breathe: a ducked attic room feeds single-band glue so the kick gently pumps the hats and claps, with tape warmth and slightly scooped mids.">
+  <PARAM id="space_amt" value="18"/>
+  <PARAM id="space_type" value="3"/>
+  <PARAM id="space_decay" value="40"/>
+  <PARAM id="space_duck" value="40"/>
+  <PARAM id="space_focus_lo" value="250"/>
+  <PARAM id="space_focus_hi" value="9000"/>
+  <PARAM id="press_amt" value="55"/>
+  <PARAM id="press_mode" value="1"/>
+  <PARAM id="press_mix" value="80"/>
+  <PARAM id="drive_amt" value="15"/>
+  <PARAM id="drive_mode" value="2"/>
+  <PARAM id="drive_flavor" value="0.4"/>
+  <PARAM id="out_gain" value="-1.5"/>
+  <PARAM id="tone" value="-12"/>
+  <PARAM id="tone_shape" value="2"/>
+  <PARAM id="attack" value="8"/>
+</SNAP>

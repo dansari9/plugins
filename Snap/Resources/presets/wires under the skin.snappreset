@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<SNAP stateVersion="2" order="shift,press,drive,space" name="wires under the skin" tags="Warm,Classic,Snare" description="adds the rattle of snare wires a bottom mic would catch, with soft compression and tube warmth in the body. for snares that sound like one flat layer.">
+  <PARAM id="hiss_amt" value="32"/>
+  <PARAM id="hiss_det_lo" value="180"/>
+  <PARAM id="hiss_det_hi" value="2500"/>
+  <PARAM id="hiss_decay" value="170"/>
+  <PARAM id="hiss_type" value="5"/>
+  <PARAM id="hiss_tone" value="10"/>
+  <PARAM id="hiss_env" value="25"/>
+  <PARAM id="press_amt" value="28"/>
+  <PARAM id="press_mode" value="3"/>
+  <PARAM id="drive_amt" value="18"/>
+  <PARAM id="drive_mode" value="3"/>
+  <PARAM id="drive_flavor" value="-0.4"/>
+  <PARAM id="drive_focus_lo" value="150"/>
+  <PARAM id="drive_focus_hi" value="1200"/>
+  <PARAM id="out_gain" value="-1.5"/>
+  <PARAM id="air" value="10"/>
+  <PARAM id="attack" value="12"/>
+  <PARAM id="sustain" value="10"/>
+</SNAP>

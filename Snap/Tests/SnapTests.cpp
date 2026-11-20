@@ -913,6 +913,14 @@ static int benchmark()
     return 0;
 }
 
+static float loudness(const juce::AudioBuffer<float>& b) // K-weighted, over the last loudnessWindowSeconds
+{
+    snap::LoudnessMeter meter;
+    meter.prepare(48000, 2);
+    meter.process(b, b.getNumSamples());
+    return meter.lufs();
+}
+
 // Offline renders for listening between milestones: <loop>-dry.wav plus one file per setting.
 static int render(const juce::File& dir)
 {
@@ -971,6 +979,7 @@ static int render(const juce::File& dir)
                 p.processBlock(block, midi);
             }
             ok = ok && write(wet, juce::String(loops::names[which]) + "-" + name);
+            return wet;
         };
         for (auto& [name, values] : settings)
             chain(name, values);
@@ -981,11 +990,17 @@ static int render(const juce::File& dir)
         auto oversampled = all;
         oversampled.emplace_back("oversampling", 1);
         chain("chain-all-oversampled", oversampled);
-        // M8: the bypassed chain, and the factory presets (every one on the kit loop, the default on every loop).
+        // M8: the bypassed chain, and the factory presets: every one on the kit loop and on its own loop (with its peak and
+        // loudness against dry there), the default on every loop.
         chain("bypass", { { "bypass", 1 }, { "sub_amt", 60 }, { "press_amt", 80 }, { "drive_amt", 80 } });
         for (auto& preset : presets.presets())
-            if (preset.factory && (which == 2 || preset.name == snap::defaultPresetName))
-                chain("preset-" + preset.name.replaceCharacter(' ', '-'), {}, {}, {}, &preset);
+            if (const bool own = loops::forTags(preset.tags) == which; preset.factory && (which == 2 || own || preset.name == snap::defaultPresetName))
+            {
+                const auto wet = chain("preset-" + preset.name.replaceCharacter(' ', '-'), {}, {}, {}, &preset);
+                if (own)
+                    std::printf("preset %-24s %-5s peak %6.2f dBFS, loudness %+5.2f dB vs dry\n", preset.name.toRawUTF8(), loops::names[which],
+                                juce::Decibels::gainToDecibels(wet.getMagnitude(0, wet.getNumSamples())), loudness(wet) - loudness(dry));
+            }
         // The modules on their own, outside the chain: one file per setting.
         auto module = [&](auto m, typename decltype(m)::Params params, const char* name) {
             m.setParams(params);

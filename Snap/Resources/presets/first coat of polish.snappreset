@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<SNAP stateVersion="2" order="shift,press,drive,space" name="first coat of polish" tags="Clean,Smooth,Drum Bus,Glue,General Purpose" description="a safe first move on any drum bus: light glue, a touch of desk warmth, a little density and air. sounds almost the same, just finished.">
+  <PARAM id="press_amt" value="25"/>
+  <PARAM id="press_mode" value="1"/>
+  <PARAM id="drive_amt" value="15"/>
+  <PARAM id="drive_flavor" value="-0.2"/>
+  <PARAM id="push_amt" value="12"/>
+  <PARAM id="push_tone" value="0.2"/>
+  <PARAM id="out_gain" value="-1"/>
+  <PARAM id="air" value="15"/>
+  <PARAM id="attack" value="8"/>
+</SNAP>
