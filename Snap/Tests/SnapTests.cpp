@@ -347,7 +347,7 @@ static void testIdentity() // (4)
     CHECK(near(get(p, "space_focus_lo"), 150) && near(get(p, "space_focus_hi"), 12000) && get(p, "subhiss_on") == 1 && get(p, "clip_on") == 0);
     CHECK(p.apvts.getParameter("hiss_type")->getNumSteps() == 18 && p.apvts.getParameter("space_type")->getNumSteps() == 20);
     CHECK(p.apvts.getParameter("tone_shape")->getText(1.0f, 32) == "band focus" && p.apvts.getParameter("cut_lo")->getText(1.0f, 32) == "2.00 kHz");
-    CHECK(p.getTailLengthSeconds() == 0 && !p.acceptsMidi() && !p.producesMidi() && p.getNumPrograms() == 1);
+    CHECK(p.getTailLengthSeconds() > 5 && p.getTailLengthSeconds() < 20 && !p.acceptsMidi() && !p.producesMidi() && p.getNumPrograms() == 1);
 }
 
 static void testLatency() // one constant latency; Low Latency Mode reports exactly 64 samples
@@ -365,7 +365,7 @@ static void testLatency() // one constant latency; Low Latency Mode reports exac
         }
         set(p, "low_latency", 1);
         CHECK(p.getLatencySamples() == 64 && snap::Shift::latencyFor(fs, true) == 0);
-        CHECK(2 * snap::TargetFocusMix::lookaheadFor(fs, true) + snap::Master::latencyFor(fs, true) <= 64);
+        CHECK(snap::SubHiss::latencyFor(fs, true) + 2 * snap::TargetFocusMix::lookaheadFor(fs, true) + snap::Master::latencyFor(fs, true) <= 64);
         prepare(p, fs, 256, 2);
         CHECK(p.getLatencySamples() == 64);
         set(p, "low_latency", 0);
@@ -415,6 +415,56 @@ static void testMasterInProcessor() // processor level: exact neutral paths, and
         }
         CHECK(std::abs(out.lufs() - in.lufs()) <= 1.0f && std::abs(get(p, "out_gain")) > 1.0f);
     }
+}
+
+// Every module and the sub/hiss Post bus in the processor: switches, Magnitude 0 and bypass give back the dry signal, Post
+// meets the chain in time, and the full chain stays finite and allocation-free while modes and rates change.
+static void testFullChain()
+{
+    const std::pair<const char*, float> pushed[] = { { "sub_amt", 70 }, { "hiss_amt", 60 }, { "shift_amt", 40 }, { "space_amt", 50 },
+                                                     { "press_amt", 60 }, { "drive_amt", 60 }, { "push_amt", 60 },
+                                                     { "sub_sens", 90 }, { "hiss_sens", 90 }, { "space_type", 11 } };
+    auto make = [&](std::initializer_list<std::pair<const char*, float>> extra, bool low = false) {
+        auto p = std::make_unique<Proc>();
+        for (auto& [id, v] : pushed)
+            set(*p, id, v);
+        for (auto& [id, v] : extra)
+            set(*p, id, v);
+        set(*p, "low_latency", low);
+        prepare(*p, 48000, 256, 2);
+        return p;
+    };
+    for (bool low : { false, true })
+    {
+        std::vector<float> in;
+        auto off = make({ { "subhiss_on", 0 }, { "shift_on", 0 }, { "space_on", 0 }, { "press_on", 0 }, { "drive_on", 0 }, { "push_on", 0 } }, low);
+        CHECK(maxDiff(run(*off, 48000, 256, 2, 1.0, &in), in) <= 1.0e-6f); // all modules off: <= -120 dB
+        CHECK(maxDiff(run(*make({ { "bypass", 1 } }, low), 48000, 256, 2, 1.0), in) <= 1.0e-6f);
+        CHECK(maxDiff(run(*make({ { "magnitude", 0 } }, low), 48000, 256, 2, 1.0), in) <= 1.0e-3f);
+
+        // Post vs Pre with only sub/hiss on: the layers land on the same samples either way.
+        auto solo = [&](float post) {
+            auto p = make({ { "shift_on", 0 }, { "space_on", 0 }, { "press_on", 0 }, { "drive_on", 0 }, { "push_on", 0 }, { "sub_post", post },
+                            { "hiss_post", post } }, low);
+            return run(*p, 48000, 256, 2, 1.0);
+        };
+        const auto pre = solo(0);
+        CHECK(maxDiff(pre, in) > 0.01f && maxDiff(solo(1), pre) <= 1.0e-5f);
+    }
+    for (double fs : { 44100.0, 96000.0 })
+        for (int block : { 1, 64, 511 })
+        {
+            auto p = make({ { "sub_post", 1 }, { "clip_on", 1 }, { "air", 50 } });
+            prepare(*p, fs, block, 2);
+            bool ok = true;
+            for (int k = 0; k < 3; ++k)
+            {
+                set(*p, "low_latency", k == 1), set(*p, "space_type", (float) (k * 7)), set(*p, "drive_mode", (float) k);
+                for (float y : run(*p, fs, block, 2, 0.4))
+                    ok = ok && std::isfinite(y) && std::abs(y) <= 8.0f;
+            }
+            CHECK(ok && audioAllocations.exchange(0) == 0);
+        }
 }
 
 static void testMagnitude()
@@ -592,6 +642,12 @@ static int render(const juce::File& dir)
         { "master-air", { { "air", 80 } } },
         { "master-sustain", { { "attack", -30 }, { "sustain", 70 } } },
         { "master-clip-hot", { { "in_gain", 12 }, { "clip_on", 1 } } },
+        { "chain-sub-hiss-post", { { "sub_amt", 45 }, { "hiss_amt", 40 }, { "hiss_post", 1 }, { "push_amt", 50 } } },
+        { "chain-space-press", { { "space_amt", 40 }, { "space_type", 6 }, { "press_amt", 60 } } },
+        { "chain-all", { { "sub_amt", 40 }, { "hiss_amt", 30 }, { "shift_amt", -20 }, { "space_amt", 30 }, { "press_amt", 50 },
+                         { "drive_amt", 40 }, { "push_amt", 40 }, { "attack", 30 }, { "clip_on", 1 } } },
+        { "chain-all-magnitude50", { { "sub_amt", 40 }, { "hiss_amt", 30 }, { "shift_amt", -20 }, { "space_amt", 30 }, { "press_amt", 50 },
+                                     { "drive_amt", 40 }, { "push_amt", 40 }, { "attack", 30 }, { "clip_on", 1 }, { "magnitude", 50 } } },
     };
     dir.createDirectory();
     auto write = [&](const juce::AudioBuffer<float>& b, const juce::String& name) {
@@ -622,7 +678,7 @@ static int render(const juce::File& dir)
             }
             ok = ok && write(wet, juce::String(loops::names[which]) + "-" + name);
         }
-        // The modules on their own (the chain is wired later): one file per setting.
+        // The modules on their own, outside the chain: one file per setting.
         auto module = [&](auto m, typename decltype(m)::Params params, const char* name) {
             m.setParams(params);
             m.prepare(48000, 2, 512, false);
@@ -662,12 +718,17 @@ int main(int argc, char** argv)
         return screenshot(juce::File::getCurrentWorkingDirectory().getChildFile(argv[2]));
     if (argc == 3 && juce::String(argv[1]) == "--render")
         return render(juce::File::getCurrentWorkingDirectory().getChildFile(argv[2]));
+    if (argc == 3 && juce::String(argv[1]) == "--render-space")
+        return renderSpace(juce::File::getCurrentWorkingDirectory().getChildFile(argv[2]));
+    if (argc == 3 && juce::String(argv[1]) == "--render-subhiss")
+        return renderSubHiss(juce::File::getCurrentWorkingDirectory().getChildFile(argv[2]));
     testIdentity();
     testChainOrder();
     testLatency();
     testState();
     testMigratedSound();
     testMasterInProcessor();
+    testFullChain();
     testMagnitude();
     testBounded();
     testSound();
@@ -678,6 +739,8 @@ int main(int argc, char** argv)
     testPush();
     testShift();
     testMaster();
+    testSpace();
+    testSubHiss();
     std::cout << (failures == 0 ? "All Snap tests passed\n" : "Snap tests FAILED\n");
     return failures == 0 ? 0 : 1;
 }

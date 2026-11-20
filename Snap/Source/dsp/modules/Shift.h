@@ -39,14 +39,17 @@ public:
     }
 
     static int latencyFor(double fs, bool lowLatency) { return lowLatency ? 0 : 1 << fftOrder(fs); }
-    int latency() const override { return size; }
+    int latency() const override { return disabled ? 0 : size; }
+    void setLowLatency(bool low) override
+    {
+        if (low != disabled)
+            disabled = low, reset();
+    }
 
     void prepare(double fs, int channels, int maxBlock, bool lowLatency) override
     {
         using namespace shiftConstants;
-        size = latencyFor(fs, lowLatency);
-        if (size == 0)
-            return;
+        size = latencyFor(fs, false), disabled = lowLatency;
 
         channelCount = static_cast<size_t>(channels), hop = size / overlap, half = size / 2;
         const auto lookahead = static_cast<int>(std::lround(fs * constants::maskLookaheadMs * 0.001));
@@ -112,7 +115,7 @@ public:
 
     void process(juce::AudioBuffer<float>& io, int n) override
     {
-        if (size == 0)
+        if (disabled)
             return;
         const juce::ScopedNoDenormals noDenormals;
         for (size_t c = 0; c < channelCount; ++c)
@@ -358,5 +361,6 @@ private:
     float binsPerHz = 0, attackRecovery = 0;
     size_t channelCount = 0;
     int size = 0, half = 0, hop = 0, cursor = 0, untilFrame = 0;
+    bool disabled = false; // Low Latency Mode: shift is off and adds no latency
 };
 } // namespace snap

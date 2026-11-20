@@ -18,7 +18,7 @@ Buffer render(const Buffer& in, Push::Params p, int block = 64, bool lowLatency 
     Push push;
     push.setParams(p);
     push.prepare(rate, in.getNumChannels(), block, lowLatency);
-    CHECK(push.latency() == (lowLatency ? 16 : static_cast<int>(std::lround(rate * 0.003))));
+    CHECK(push.latency() == (lowLatency ? snap::constants::lowLatencyMaskLookahead : static_cast<int>(std::lround(rate * 0.003))));
     Buffer out(in);
     for (int start = 0; start < out.getNumSamples(); start += block)
     {
@@ -77,7 +77,7 @@ void testDelayAndMix()
             p.mult = mult;
             for (bool lowLatency : { false, true })
                 for (int block : { 1, 64, 4096 })
-                    checkDelayed(render(in, p, block, lowLatency), lowLatency ? 16 : delay);
+                    checkDelayed(render(in, p, block, lowLatency), lowLatency ? snap::constants::lowLatencyMaskLookahead : delay);
 
             p.amount = 1, p.mix = 0;
             const auto dry = render(in, p);

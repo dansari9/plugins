@@ -15,8 +15,9 @@ public:
     TargetFocusMix() { mix.reset(1); }
     void prepare(double fs, int channels, int maxBlock, bool lowLatency)
     {
-        const int lookahead = lookaheadFor(fs, lowLatency);
-        mask.prepare(fs, channels, lookahead), mask.setLookahead(lookahead);
+        sampleRate = fs;
+        mask.prepare(fs, channels, std::max(lookaheadFor(fs, false), lookaheadFor(fs, true)));
+        mask.setLookahead(lookaheadFor(fs, lowLatency));
         focus.prepare(fs, channels, maxBlock, 0); // starts at the last edges set, without a glide
         mix.prepare(fs), target.prepare(fs);
         transient.assign((size_t) maxBlock, 0), weight.assign((size_t) maxBlock, 0);
@@ -24,6 +25,7 @@ public:
     }
     void reset() { mask.reset(), focus.reset(), mix.reset(mix.targetValue()), target.reset(target.targetValue()); }
     int latency() const { return mask.getLookahead(); }
+    void setLowLatency(bool low) { mask.setLookahead(lookaheadFor(sampleRate, low)), reset(); } // audio thread, no allocation
     static int lookaheadFor(double fs, bool lowLatency)
     {
         return lowLatency ? constants::lowLatencyMaskLookahead : (int) std::lround(fs * constants::maskLookaheadMs * 0.001);
@@ -56,5 +58,6 @@ private:
     }();
     Smoother mix, target;
     std::vector<float> transient, weight;
+    double sampleRate = 48000;
 };
 } // namespace snap

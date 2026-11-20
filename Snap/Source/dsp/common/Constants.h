@@ -17,7 +17,9 @@ inline constexpr float maskRangeDb = 12.0f;      // fast-over-slow difference (a
 inline constexpr double maskSmoothingMs = 1.0;   // light smoothing on the mask itself
 inline constexpr double maskLookaheadMs = 3.0;   // normal mode
 inline constexpr int lowLatencySamples = 64;     // total plug-in latency in Low Latency Mode
-inline constexpr int lowLatencyMaskLookahead = 16; // mask/detector lookahead inside that budget, in samples
+// Mask/detector lookahead inside that budget, in samples. Four stages use it (sub/hiss, drive, push, master shaper) plus the
+// master clip's 6, so 4 x 12 + 6 = 54 of the 64.
+inline constexpr int lowLatencyMaskLookahead = 12;
 
 // Hit detector (sub/hiss triggers).
 inline constexpr double hitAttackMs = 0.1, hitReleaseMs = 30, hitRetriggerMs = 40;

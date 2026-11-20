@@ -61,6 +61,7 @@ public:
     }
 
     int latency() const { return shaper.latency() + clip.latency(); }
+    int postBusLatency() const { return shaper.latency(); } // what the signal gains between process() input and the post-bus sum
     static int latencyFor(double fs, bool lowLatency)
     {
         return TransientShaper::lookaheadFor(fs, lowLatency) + Clipper::latencyFor(lowLatency);

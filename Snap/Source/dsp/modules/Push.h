@@ -64,6 +64,7 @@ public:
     }
 
     int latency() const override { return tfm.latency(); }
+    void setLowLatency(bool low) override { tfm.setLowLatency(low); }
 
     void process(juce::AudioBuffer<float>& io, int n) override
     {

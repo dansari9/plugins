@@ -1,5 +1,6 @@
 #pragma once
 #include <iostream>
+namespace juce { class File; }
 
 // Shared by the test files: failure count, CHECK, and the audio-thread allocation probe (defined in SnapTests.cpp).
 inline int failures = 0;
@@ -13,3 +14,7 @@ void testDrive(); // DriveTests.cpp
 void testPush();  // PushTests.cpp
 void testShift(); // ShiftTests.cpp
 void testMaster(); // MasterTests.cpp
+void testSpace();  // SpaceTests.cpp
+void testSubHiss(); // SubHissTests.cpp
+int renderSpace(const juce::File&);   // SpaceTests.cpp: --render-space <dir>
+int renderSubHiss(const juce::File&); // SubHissTests.cpp: --render-subhiss <dir>

@@ -12,7 +12,8 @@ public:
     virtual ~ModuleBase() = default;
     virtual void prepare(double fs, int channels, int maxBlock, bool lowLatency) = 0;
     virtual void reset() = 0;
-    virtual int latency() const = 0; // samples, fixed between prepare() calls
+    virtual int latency() const = 0; // samples, fixed between prepare() / setLowLatency() calls
+    virtual void setLowLatency(bool) {} // audio thread: switch Low Latency Mode without allocating (prepare() covers both)
     virtual void process(juce::AudioBuffer<float>& io, int n) = 0; // in place, n <= maxBlock
 };
 } // namespace snap
