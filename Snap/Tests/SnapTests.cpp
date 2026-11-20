@@ -5,6 +5,7 @@
 #include "PluginProcessor.h"
 #include "presets/StateIO.h"
 #include "loops/Loops.h"
+#include "Check.h"
 #include <juce_audio_formats/juce_audio_formats.h>
 #include <cstdlib>
 #include <iostream>
@@ -17,6 +18,8 @@
 static thread_local bool onAudioThread = false;
 static std::atomic<int> audioAllocations { 0 };
 static void countAllocation() { audioAllocations += onAudioThread ? 1 : 0; }
+void setAudioThread(bool on) { onAudioThread = on; }
+int takeAudioAllocations() { return audioAllocations.exchange(0); }
 #if defined(__GLIBC__) && !defined(__SANITIZE_ADDRESS__)
 #define SNAP_COUNTS_MALLOC 1
 extern "C" void* __libc_malloc(size_t);
@@ -46,9 +49,6 @@ void operator delete(void* p, std::size_t) noexcept { std::free(p); }
 void operator delete(void* p, std::align_val_t) noexcept { std::free(p); }
 void operator delete(void* p, std::size_t, std::align_val_t) noexcept { std::free(p); }
 static void escape(void* p) { asm volatile("" : : "r"(p) : "memory"); } // p and its memory become observable
-
-static int failures = 0;
-#define CHECK(c) ((c) ? (void) 0 : (void) (++failures, std::cerr << "FAIL " << __LINE__ << ": " #c "\n"))
 
 using Proc = SnapProcessor;
 
@@ -560,6 +560,7 @@ int main(int argc, char** argv)
     testBounded();
     testSound();
     testEditor();
+    testDsp();
     std::cout << (failures == 0 ? "All Snap tests passed\n" : "Snap tests FAILED\n");
     return failures == 0 ? 0 : 1;
 }
