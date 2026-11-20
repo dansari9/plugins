@@ -5,6 +5,9 @@
 #include "PluginProcessor.h"
 #include "presets/StateIO.h"
 #include "loops/Loops.h"
+#include "dsp/modules/Drive.h"
+#include "dsp/modules/Press.h"
+#include "dsp/modules/Push.h"
 #include "Check.h"
 #include <juce_audio_formats/juce_audio_formats.h>
 #include <cstdlib>
@@ -541,6 +544,29 @@ static int render(const juce::File& dir)
             }
             ok = ok && write(wet, juce::String(loops::names[which]) + "-" + name);
         }
+        // The modules on their own (the chain is wired later): one file per setting.
+        auto module = [&](auto m, typename decltype(m)::Params params, const char* name) {
+            m.setParams(params);
+            m.prepare(48000, 2, 512, false);
+            auto wet = dry;
+            for (int start = 0; start < wet.getNumSamples(); start += 512)
+            {
+                juce::AudioBuffer<float> block(wet.getArrayOfWritePointers(), 2, start, std::min(512, wet.getNumSamples() - start));
+                m.process(block, block.getNumSamples());
+            }
+            ok = ok && write(wet, juce::String(loops::names[which]) + "-" + name);
+        };
+        module(snap::Press {}, { .amount = 0.7f, .mode = 0 }, "press-tight");
+        module(snap::Press {}, { .amount = 1, .mode = 2, .mix = 0.4f }, "press-crush-parallel");
+        module(snap::Press {}, { .amount = 0.6f, .mode = 5, .downUp = 0, .bands = 1 }, "press-stack-multiband");
+        module(snap::Press {}, { .amount = 0.8f, .mode = 4, .downUp = 1 }, "press-lull-up");
+        for (int mode = 0; mode < 6; ++mode)
+            module(snap::Drive {}, { .amount = 0.6f, .mode = mode, .flavor = mode % 2 ? 0.5f : -0.5f },
+                   (juce::String("drive-") + snap::spec("drive_mode").choices[(size_t) mode]).toRawUTF8());
+        module(snap::Drive {}, { .amount = 0.8f, .focusLo = 2000, .mode = 0 }, "drive-crunch-focus-high");
+        module(snap::Push {}, { .amount = 0.6f }, "push-x1");
+        module(snap::Push {}, { .amount = 0.8f, .mult = 2, .tone = 0.5f }, "push-x4-bright");
+        module(snap::Push {}, { .amount = 1, .target = -1 }, "push-transients");
     }
     return ok ? 0 : 1;
 }
@@ -561,6 +587,9 @@ int main(int argc, char** argv)
     testSound();
     testEditor();
     testDsp();
+    testPress();
+    testDrive();
+    testPush();
     std::cout << (failures == 0 ? "All Snap tests passed\n" : "Snap tests FAILED\n");
     return failures == 0 ? 0 : 1;
 }

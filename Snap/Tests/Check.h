@@ -7,4 +7,7 @@ inline int failures = 0;
 void setAudioThread(bool);   // allocations on this thread count while set
 int takeAudioAllocations(); // returns the count and resets it
 
-void testDsp(); // DspTests.cpp
+void testDsp();   // DspTests.cpp
+void testPress(); // PressTests.cpp
+void testDrive(); // DriveTests.cpp
+void testPush();  // PushTests.cpp

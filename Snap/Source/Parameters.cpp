@@ -10,8 +10,8 @@ constexpr const char* hissTypes[] = { "fizz",    "hush",  "drizzle", "sizzle", "
                                       "clatter", "jangle", "scrape", "breath", "buzz",   "flutter", "sand",   "chime", "swarm" };
 constexpr const char* spaceTypes[] = { "nook",   "booth",  "den",    "attic", "garage", "cellar", "chapel", "hangar", "tunnel", "stairwell",
                                        "silo",   "canyon", "sheet",  "coil",  "bloom",  "smear",  "gate",   "rewind", "shimmer", "fog" };
-constexpr const char* pressModes[] = { "tight", "glue", "pump", "silk", "crush", "stack" };
-constexpr const char* driveModes[] = { "crunch", "glow", "fold", "fuzz", "wobble", "crumble" };
+constexpr const char* pressModes[] = { "tight", "glue", "crush", "silk", "lull", "stack" };
+constexpr const char* driveModes[] = { "crunch", "pocket", "reel", "glow", "crumble", "wobble" };
 constexpr const char* pushMults[] = { "x1", "x2", "x4" };
 constexpr const char* lowCutShapes[] = { "gentle", "steep" };
 constexpr const char* highCutShapes[] = { "soft", "steep" };
