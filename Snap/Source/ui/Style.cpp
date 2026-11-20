@@ -9,7 +9,8 @@ Font mono(float size, bool bold)
 {
     static const Typeface::Ptr faces[] { Typeface::createSystemTypefaceFor(BinaryData::GeistMonoRegular_ttf, BinaryData::GeistMonoRegular_ttfSize),
                                          Typeface::createSystemTypefaceFor(BinaryData::GeistMonoSemiBold_ttf, BinaryData::GeistMonoSemiBold_ttfSize) };
-    return Font(FontOptions(faces[bold ? 1 : 0]).withPointHeight(size));
+    // Every glyph the UI draws is in the bundled faces, so system font fallback (fontconfig on Linux) is never needed.
+    return Font(FontOptions(faces[bold ? 1 : 0]).withPointHeight(size).withFallbackEnabled(false));
 }
 
 // Geist Mono's ascent + descent is 1.3 em, so a box that tall, centred, puts the baseline where the mockup's text has it.

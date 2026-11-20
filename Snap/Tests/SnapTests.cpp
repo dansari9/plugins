@@ -672,6 +672,13 @@ static void testEditor()
     CHECK(parse(snap::spec("drive_flavor"), "-20%") == -0.2f && parse(snap::spec("drive_flavor"), "0.5") == 0.5f);
     CHECK(parse(snap::spec("press_mode"), "glue") == 1.0f && !parse(snap::spec("air"), "loud"));
     CHECK(snap::ui::format(snap::spec("out_gain"), -1.5f) == juce::String::fromUTF8("\xe2\x88\x92" "1.5 dB"));
+    for (bool bold : { false, true }) // the bundled faces draw every UI glyph themselves: no system fallback
+    {
+        const auto font = snap::ui::mono(12, bold);
+        CHECK(!font.getFallbackEnabled());
+        for (auto c : juce::String::fromUTF8("-\xc2\xb7\xe2\x88\x92")) // hyphen, middle dot, minus
+            CHECK(font.getTypefacePtr()->getNominalGlyphForCodepoint(c).has_value());
+    }
     if (auto* air = find<snap::ui::Control>(ed, "air"))
     {
         air->edit();

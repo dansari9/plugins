@@ -248,7 +248,7 @@ struct Editor : AudioProcessorEditor, Timer
     }
     String focusText(const char* lo, const char* hi) const
     {
-        return raw(lo) <= 20.5f && raw(hi) >= 19999 ? String("full range") : show(lo) + u(" \xe2\x80\x93 ") + show(hi);
+        return raw(lo) <= 20.5f && raw(hi) >= 19999 ? String("full range") : show(lo) + " - " + show(hi);
     }
 
     // ---- presets ----------------------------------------------------------------------------------------------
@@ -453,7 +453,7 @@ struct Editor : AudioProcessorEditor, Timer
                 text(g, show("hiss_type"), 117, 152, dimmed(primary, d), 12, true), text(g, "res", 160, R2 + 52, dimmed(muted, d), 11);
             text(g, "sens", 0, 366, dimmed(muted, d), 11), text(g, "detect", 0, 388, dimmed(muted, d), 11);
             const char* lo = subOrHiss("sub_det_lo", "hiss_det_lo");
-            right(g, show(lo) + u(" \xe2\x80\x93 ") + show(subOrHiss("sub_det_hi", "hiss_det_hi")), 56, 404, 161, dimmed(muted, d), 11);
+            right(g, show(lo) + " - " + show(subOrHiss("sub_det_hi", "hiss_det_hi")), 56, 404, 161, dimmed(muted, d), 11);
         };
         setTab(0);
     }
@@ -741,7 +741,7 @@ struct Editor : AudioProcessorEditor, Timer
         right(g, lufs(lufsOut), 1372, y + 36, 44, primary, 11);
         text(g, "diff", 1180, y + 58, muted, 11);
         const bool both = lufsIn > LoudnessMeter::silence && lufsOut > LoudnessMeter::silence;
-        right(g, both ? format(spec("in_gain"), lufsOut - lufsIn) : u("\xe2\x80\x93"), 1316, y + 56, 100, primary, 12, true);
+        right(g, both ? format(spec("in_gain"), lufsOut - lufsIn) : String("-"), 1316, y + 56, 100, primary, 12, true);
     }
 
     // ---- bottom bar -----------------------------------------------------------------------------------------------
