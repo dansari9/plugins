@@ -119,7 +119,7 @@ jobs:
           curl -sL -o pluginval.zip https://github.com/Tracktion/pluginval/releases/latest/download/pluginval_Linux.zip
           unzip -q pluginval.zip
           xvfb-run -a ./pluginval --strictness-level 10 --validate-in-process \
-            --validate Snap/build/Snap_artefacts/Release/VST3/Snap.vst3
+            --validate Snap/build/Snap_artefacts/Release/VST3/snap.vst3
 
       - name: Package (tar keeps the executable bit)
         run: tar -C Snap/build/Snap_artefacts/Release -czf snap-linux.tar.gz VST3 Standalone
@@ -146,10 +146,10 @@ jobs:
 
       - name: Ad-hoc sign and verify AU and VST3
         run: |
-          codesign --force --sign - --timestamp=none Snap/build/Snap_artefacts/Release/AU/Snap.component
-          codesign --verify --deep --strict --verbose=2 Snap/build/Snap_artefacts/Release/AU/Snap.component
-          codesign --force --sign - --timestamp=none Snap/build/Snap_artefacts/Release/VST3/Snap.vst3
-          codesign --verify --deep --strict --verbose=2 Snap/build/Snap_artefacts/Release/VST3/Snap.vst3
+          codesign --force --sign - --timestamp=none Snap/build/Snap_artefacts/Release/AU/snap.component
+          codesign --verify --deep --strict --verbose=2 Snap/build/Snap_artefacts/Release/AU/snap.component
+          codesign --force --sign - --timestamp=none Snap/build/Snap_artefacts/Release/VST3/snap.vst3
+          codesign --verify --deep --strict --verbose=2 Snap/build/Snap_artefacts/Release/VST3/snap.vst3
 
       - name: Unit tests
         run: |
@@ -159,20 +159,20 @@ jobs:
 
       - name: Universal binary check
         run: |
-          lipo -archs Snap/build/Snap_artefacts/Release/AU/Snap.component/Contents/MacOS/Snap | tee /dev/stderr | grep -q "x86_64 arm64"
-          lipo -archs Snap/build/Snap_artefacts/Release/VST3/Snap.vst3/Contents/MacOS/Snap | grep -q "x86_64 arm64"
+          lipo -archs Snap/build/Snap_artefacts/Release/AU/snap.component/Contents/MacOS/snap | tee /dev/stderr | grep -q "x86_64 arm64"
+          lipo -archs Snap/build/Snap_artefacts/Release/VST3/snap.vst3/Contents/MacOS/snap | grep -q "x86_64 arm64"
 
       - name: auval
         run: |
           mkdir -p ~/Library/Audio/Plug-Ins/Components
-          cp -R Snap/build/Snap_artefacts/Release/AU/Snap.component ~/Library/Audio/Plug-Ins/Components/
+          cp -R Snap/build/Snap_artefacts/Release/AU/snap.component ~/Library/Audio/Plug-Ins/Components/
           killall -9 AudioComponentRegistrar 2>/dev/null || true
           sleep 3
           auval -a | grep -i Dwks || true
           auval -v aufx Snap Dwks
 
       - name: Package (zip keeps bundle permissions)
-        run: cd Snap/build/Snap_artefacts/Release && ditto -c -k --keepParent AU/Snap.component "$GITHUB_WORKSPACE/Snap-AU-macos.zip" && ditto -c -k --keepParent VST3/Snap.vst3 "$GITHUB_WORKSPACE/Snap-VST3-macos.zip"
+        run: cd Snap/build/Snap_artefacts/Release && ditto -c -k --keepParent AU/snap.component "$GITHUB_WORKSPACE/Snap-AU-macos.zip" && ditto -c -k --keepParent VST3/snap.vst3 "$GITHUB_WORKSPACE/Snap-VST3-macos.zip"
 
       - name: Upload AU + VST3
         uses: actions/upload-artifact@v4

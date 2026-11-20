@@ -6,9 +6,9 @@ if(APPLE)
 endif()
 
 # Bump on every build that is handed out: Logic caches Audio Units by version.
-project(Snap VERSION 0.1.1 LANGUAGES C CXX)
+project(Snap VERSION 0.2.0 LANGUAGES C CXX)
 
-set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
@@ -27,16 +27,16 @@ endif()
 
 # FROZEN IDENTIFIERS - never change them, or hosts lose the plug-in and saved sessions:
 # AU aufx / PLUGIN_CODE Snap / PLUGIN_MANUFACTURER_CODE Dwks / BUNDLE_ID com.dripworks.snap.
-# COMPANY_NAME is display-only (Logic menu group, VST3 vendor) and may change; the codes above may not.
+# COMPANY_NAME and the lowercase PLUGIN_NAME / PRODUCT_NAME are display-only; the codes above may not change.
 juce_add_plugin(Snap
     COMPANY_NAME "daveydidit"
     COMPANY_COPYRIGHT "daveydidit"
     BUNDLE_ID com.dripworks.snap
     PLUGIN_MANUFACTURER_CODE Dwks
     PLUGIN_CODE Snap
-    PLUGIN_NAME "Snap"
-    PRODUCT_NAME "Snap"
-    DESCRIPTION "Drum transient shaper"
+    PLUGIN_NAME "snap"
+    PRODUCT_NAME "snap"
+    DESCRIPTION "Drum multi-FX"
     IS_SYNTH FALSE
     NEEDS_MIDI_INPUT FALSE
     NEEDS_MIDI_OUTPUT FALSE
@@ -44,10 +44,15 @@ juce_add_plugin(Snap
     EDITOR_WANTS_KEYBOARD_FOCUS FALSE
     FORMATS ${SNAP_FORMATS}
     AU_MAIN_TYPE kAudioUnitType_Effect
-    VST3_CATEGORIES Fx Dynamics
+    VST3_CATEGORIES Fx Dynamics Distortion Reverb
 )
 
-target_sources(Snap PRIVATE Source/Snap.cpp)
+target_sources(Snap PRIVATE
+    Source/PluginProcessor.cpp
+    Source/PluginEditor.cpp
+    Source/Parameters.cpp
+    Source/presets/StateIO.cpp
+)
 juce_add_binary_data(SnapFonts SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/Assets/Fonts/GeistMono-Medium.ttf)
 
 target_compile_definitions(Snap
