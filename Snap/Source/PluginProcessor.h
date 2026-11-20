@@ -1,21 +1,22 @@
 #pragma once
 #include "Parameters.h"
-#include "chain/ChainOrder.h"
+#include "chain/ReorderCrossfader.h"
 #include "dsp/common/Delay.h"
 #include "dsp/common/LoudnessMeter.h"
+#include "dsp/common/Oversampler.h"
 #include "dsp/common/Smoother.h"
 #include "dsp/master/Master.h"
-#include "dsp/modules/Drive.h"
-#include "dsp/modules/Press.h"
 #include "dsp/modules/Push.h"
-#include "dsp/modules/Shift.h"
-#include "dsp/modules/Space.h"
 #include "dsp/modules/SubHiss.h"
+#include "presets/StateIO.h"
 #include <array>
 #include <unordered_map>
 
 // snap: drum multi-FX by daveydidit. Parameter table in Parameters.cpp, session state in presets/StateIO.
-class SnapProcessor : public juce::AudioProcessor, private juce::AudioProcessorValueTreeState::Listener
+class SnapProcessor : public juce::AudioProcessor,
+                      private juce::AudioProcessorValueTreeState::Listener,
+                      private juce::ValueTree::Listener,
+                      private juce::AsyncUpdater
 {
 public:
     static constexpr int historySize = 512; // ~2.5 s of display history
@@ -49,8 +50,24 @@ public:
     void matchLoudness(); // message thread: sets Output so the output is as loud as the input
     bool clipping() const { return master.clipping(); }
 
+    // Session controls, message thread. Order, locks and snapshots are session state (saved with the host session), not
+    // parameters. Order changes, preset loads and snapshot recalls are undo steps.
+    snap::ChainOrder order() const;
+    void setOrder(const snap::ChainOrder&);
+    bool locked(int group) const { return locks[(size_t) group]; } // group: snap::Module index or snap::masterLock
+    void setLocked(int group, bool on) { locks[(size_t) group] = on; }
+    void storeSnapshot(int slot);
+    bool recallSnapshot(int slot); // false if the slot is empty
+    bool hasSnapshot(int slot) const { return snapshots[(size_t) slot].has_value(); }
+    bool loadPreset(const void* data, int size); // a state blob; keeps locks, locked groups and the session toggles
+    void beginUndoStep() { commit(), undoManager.beginNewTransaction(); } // the editor calls this at the start of each gesture
+    bool undo();
+    bool redo();
+    bool reordering() const { return middle.transitioning(); } // audio thread state, for tests and the display
+    int reorderFadeSamples() const { return middle.fadeSamples(); }
+
+    juce::UndoManager undoManager;
     juce::AudioProcessorValueTreeState apvts;
-    snap::ChainOrder chainOrder = snap::defaultChainOrder; // message thread; the chain runs the default order until M7
 
     // Display feed: written by the audio thread, read by the editor's timer.
     struct History
@@ -74,20 +91,29 @@ private:
     void setModuleParams();
     snap::Master::Params masterParams() const;
     void setLowLatency(bool);
-    void parameterChanged(const juce::String&, float) override; // low_latency: report the new latency
+    int factorFor(bool low) const { return *oversampling > 0.5f && !low ? 1 << snap::constants::oversamplingStages : 1; }
+    int latencyFor(bool low) const;
+    void parameterChanged(const juce::String&, float) override; // low_latency / oversampling: latency or re-prepare
+    void valueTreePropertyChanged(juce::ValueTree&, const juce::Identifier&) override; // "order" -> audio thread
+    void handleAsyncUpdate() override; // re-prepare for an oversampling change that arrived off the message thread
+    void reprepare();
+    void commit() { apvts.copyState(); } // flushes parameter changes into the tree, so they join the current undo step
 
     static constexpr int subBlock = 64; // the chain runs in short slices so the display trace stays fine-grained
-    std::atomic<float>*magnitude, *bypass, *lowLatency;
+    std::atomic<float>*magnitude, *bypass, *lowLatency, *oversampling;
     std::unordered_map<std::string_view, Control> controls;
+    snap::Locks locks {};
+    snap::Snapshots snapshots;
+    std::atomic<int> requestedOrder { snap::pack(snap::defaultChainOrder) };
     double sampleRate = 48000;
+    bool prepared = false;
     bool lowLatencyNow = false; // the mode the chain currently runs in (audio thread)
-    snap::Delay chainPad;       // whatever the constant latency has left over after the stages (Low Latency Mode)
+    int factor = 1;             // oversampling factor the chain was prepared for
+    snap::Oversampler os;
+    snap::Delay chainPad; // whatever the constant latency has left over after the stages
     snap::Smoother inGainDb;
     snap::SubHiss subHiss;
-    snap::Shift shift;
-    snap::Space space;
-    snap::Press press;
-    snap::Drive drive;
+    snap::ReorderCrossfader middle; // shift, space, press, drive in the stored order
     snap::Push push;
     juce::AudioBuffer<float> postBus; // sub/hiss Post layers, delayed to meet the chain just before Clip
     snap::Delay postDelay;

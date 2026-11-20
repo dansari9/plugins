@@ -77,6 +77,10 @@ public:
     }
 
     int latency() const override { return 0; }
+
+    // Takes over another instance's level detectors (the slow level reference takes seconds to settle from zero), so a
+    // freshly reset copy that starts in another chain position compresses like the one it replaces.
+    void seedDetectors(const Press& other) { detectors = other.detectors; }
     float downwardDb() const { return downMeter.load(std::memory_order_relaxed); }
     float upwardDb() const { return upMeter.load(std::memory_order_relaxed); }
 

@@ -32,6 +32,14 @@ inline constexpr double duckAttackMs = 1.0, duckReleaseMs = 150;
 inline constexpr float duckFloorDb = -48.0f;  // key level where ducking starts; full key (0 dBFS) gives the full depth
 inline constexpr float duckDepthDb = 30.0f;   // reduction at Duck 100 % and a full-scale key
 
+// Middle-module reorder: the new order runs silently beside the old one for its latency plus a warm-up (filters,
+// envelopes and the STFT settle), then the two crossfade.
+inline constexpr double reorderWarmupMs = 30.0;
+inline constexpr double reorderFadeMs = 25.0;
+
+// Oversampling toggle: 2^stages around the whole chain (normal mode only; Low Latency Mode ignores it).
+inline constexpr int oversamplingStages = 1;
+
 // Loudness Match.
 inline constexpr double loudnessWindowSeconds = 3.0; // BS.1770 short-term
 inline constexpr double loudnessHopSeconds = 0.1;

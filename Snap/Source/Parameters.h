@@ -27,6 +27,12 @@ std::span<const ParamSpec> parameterTable();
 const ParamSpec& spec(std::string_view id); // jasserts and returns the first entry for an unknown ID
 juce::AudioProcessorValueTreeState::ParameterLayout createLayout();
 
+// Locks: one per module (indexed like snap::Module) plus the master. A locked group keeps its values across preset changes.
+inline constexpr int masterLock = 6, lockCount = 7;
+int lockGroup(std::string_view id); // the lock covering a parameter, or -1 (Magnitude and the session toggles)
+// Bypass, Low Latency and Oversampling belong to the session: presets and snapshots leave them alone.
+inline bool isSessionToggle(std::string_view id) { return id == "bypass" || id == "low_latency" || id == "oversampling"; }
+
 // Magnitude (0..1) pulls a value toward its neutral one; log-scaled parameters move in the log domain.
 inline float applyMagnitude(const ParamSpec& s, float value, float magnitude)
 {

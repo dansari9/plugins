@@ -135,6 +135,17 @@ const ParamSpec& spec(std::string_view id)
     return table[0];
 }
 
+int lockGroup(std::string_view id)
+{
+    if (id == "magnitude" || isSessionToggle(id))
+        return -1;
+    for (auto [prefix, group] : { std::pair { "sub", 0 }, { "hiss", 0 }, { "shift_", 1 }, { "space_", 2 }, { "press_", 3 }, { "drive_", 4 },
+                                  { "push_", 5 } })
+        if (id.starts_with(prefix))
+            return group;
+    return masterLock;
+}
+
 AudioProcessorValueTreeState::ParameterLayout createLayout()
 {
     AudioProcessorValueTreeState::ParameterLayout layout;

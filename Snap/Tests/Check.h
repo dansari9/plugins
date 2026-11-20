@@ -16,5 +16,6 @@ void testShift(); // ShiftTests.cpp
 void testMaster(); // MasterTests.cpp
 void testSpace();  // SpaceTests.cpp
 void testSubHiss(); // SubHissTests.cpp
+void testChain();   // ChainTests.cpp: M7 reorder, Magnitude, locks, snapshots, undo, oversampling
 int renderSpace(const juce::File&);   // SpaceTests.cpp: --render-space <dir>
 int renderSubHiss(const juce::File&); // SubHissTests.cpp: --render-subhiss <dir>

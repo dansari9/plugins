@@ -166,7 +166,9 @@ static void testState()
         Proc a, b, c;
         for (auto* param : a.getParameters())
             param->setValueNotifyingHost(r.nextFloat());
-        std::swap(a.chainOrder[(size_t) r.nextInt(4)], a.chainOrder[(size_t) r.nextInt(4)]);
+        auto order = a.order();
+        std::swap(order[(size_t) r.nextInt(4)], order[(size_t) r.nextInt(4)]);
+        a.setOrder(order);
         CHECK(!defaults(a));
         juce::MemoryBlock m, m2, m3;
         a.getStateInformation(m);
@@ -174,7 +176,7 @@ static void testState()
         b.getStateInformation(m2);
         load(c, m2);
         c.getStateInformation(m3);
-        CHECK(m2 == m3 && b.chainOrder == a.chainOrder); // log-mapped values may move by one ulp once, then stay put
+        CHECK(m2 == m3 && b.order() == a.order()); // log-mapped values may move by one ulp once, then stay put
         for (auto& s : snap::parameterTable())
             CHECK(near(get(b, s.id), get(a, s.id)));
         CHECK(juce::AudioProcessor::getXmlFromBinary(m.getData(), (int) m.getSize())->getIntAttribute("stateVersion") == 2);
@@ -185,9 +187,9 @@ static void testState()
     Proc v1;
     const auto fixture = blob(R"(<SNAP stateVersion="1"><PARAM id="attack" value="60.0"/><PARAM id="sustain" value="-40.0"/>)"
                               R"(<PARAM id="mix" value="75.0"/><PARAM id="output" value="-3.5"/></SNAP>)");
-    set(v1, "drive_amt", 50), set(v1, "magnitude", 20), v1.chainOrder = { snap::Module::drive, snap::Module::press, snap::Module::space, snap::Module::shift };
+    set(v1, "drive_amt", 50), set(v1, "magnitude", 20), v1.setOrder({ snap::Module::drive, snap::Module::press, snap::Module::space, snap::Module::shift });
     load(v1, fixture);
-    CHECK(get(v1, "attack") == 45.0f && get(v1, "sustain") == -30.0f && get(v1, "out_gain") == -3.5f && v1.chainOrder == snap::defaultChainOrder);
+    CHECK(get(v1, "attack") == 45.0f && get(v1, "sustain") == -30.0f && get(v1, "out_gain") == -3.5f && v1.order() == snap::defaultChainOrder);
     set(v1, "attack", 0), set(v1, "sustain", 0), set(v1, "out_gain", 0);
     CHECK(defaults(v1, true));
     load(v1, fixture);
@@ -216,7 +218,7 @@ static void testState()
                  R"(<PARAM id="out_gain" value="abc"/><PARAM id="in_gain" value="nan"/><PARAM id="wobble" value="3"/><PARAM id="mix" value="0"/>)"
                  R"(<PARAM id="hiss_type" value="17.4"/><PARAM id="cut_lo" value="1"/><EXTRA/></SNAP>)"));
     CHECK(get(w, "attack") == 100.0f && get(w, "out_gain") == 0.0f && get(w, "in_gain") == 0.0f && get(w, "drive_on") == 1.0f);
-    CHECK(get(w, "hiss_type") == 17.0f && get(w, "cut_lo") == 20.0f && w.chainOrder == snap::defaultChainOrder);
+    CHECK(get(w, "hiss_type") == 17.0f && get(w, "cut_lo") == 20.0f && w.order() == snap::defaultChainOrder);
 
     // Hostile or incomplete blobs (deep nesting, DTD entities, truncated character references) leave the state alone.
     load(v1, blob("<SNAP>" + juce::String::repeatedString("<a>", 1000000)));
@@ -663,21 +665,35 @@ static int render(const juce::File& dir)
     {
         const auto dry = loops::make(which, 48000, 8);
         ok = ok && write(dry, juce::String(loops::names[which]) + "-dry");
-        for (auto& [name, values] : settings)
-        {
+        // A setting, optionally in another middle order from the start and/or reordered half way (the M7 crossfade).
+        auto chain = [&](const char* name, const std::vector<std::pair<const char*, float>>& values, std::optional<snap::ChainOrder> from = {},
+                         std::optional<snap::ChainOrder> midway = {}) {
             Proc p;
             for (auto& [id, v] : values)
                 set(p, id, v);
+            if (from)
+                p.setOrder(*from);
             prepare(p, 48000, 512, 2);
             auto wet = dry;
             juce::MidiBuffer midi;
             for (int start = 0; start < wet.getNumSamples(); start += 512)
             {
+                if (midway && start == 4 * 48000 / 512 * 512)
+                    p.setOrder(*midway);
                 juce::AudioBuffer<float> block(wet.getArrayOfWritePointers(), 2, start, std::min(512, wet.getNumSamples() - start));
                 p.processBlock(block, midi);
             }
             ok = ok && write(wet, juce::String(loops::names[which]) + "-" + name);
-        }
+        };
+        for (auto& [name, values] : settings)
+            chain(name, values);
+        using enum snap::Module;
+        const auto& all = settings[13].second; // chain-all
+        chain("chain-all-reordered", all, snap::ChainOrder { drive, press, space, shift });
+        chain("chain-all-reorder-midway", all, {}, snap::ChainOrder { drive, press, space, shift });
+        auto oversampled = all;
+        oversampled.emplace_back("oversampling", 1);
+        chain("chain-all-oversampled", oversampled);
         // The modules on their own, outside the chain: one file per setting.
         auto module = [&](auto m, typename decltype(m)::Params params, const char* name) {
             m.setParams(params);
@@ -722,6 +738,10 @@ int main(int argc, char** argv)
         return renderSpace(juce::File::getCurrentWorkingDirectory().getChildFile(argv[2]));
     if (argc == 3 && juce::String(argv[1]) == "--render-subhiss")
         return renderSubHiss(juce::File::getCurrentWorkingDirectory().getChildFile(argv[2]));
+    if (argc == 2 && juce::String(argv[1]) == "--chain") // the M7 chain tests on their own
+        testChain();
+    else
+    {
     testIdentity();
     testChainOrder();
     testLatency();
@@ -741,6 +761,8 @@ int main(int argc, char** argv)
     testMaster();
     testSpace();
     testSubHiss();
+    testChain();
+    }
     std::cout << (failures == 0 ? "All Snap tests passed\n" : "Snap tests FAILED\n");
     return failures == 0 ? 0 : 1;
 }

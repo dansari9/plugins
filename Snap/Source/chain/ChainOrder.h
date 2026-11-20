@@ -36,4 +36,35 @@ inline std::optional<ChainOrder> parseChainOrder(std::string_view text)
     }
     return order;
 }
+
+// Packs an order into one int (3 bits per slot) so the message thread can hand it to the audio thread atomically.
+inline int pack(const ChainOrder& order)
+{
+    int bits = 0;
+    for (size_t i = 0; i < order.size(); ++i)
+        bits |= (int) order[i] << (3 * i);
+    return bits;
+}
+inline ChainOrder unpack(int bits)
+{
+    ChainOrder order {};
+    for (size_t i = 0; i < order.size(); ++i)
+        order[i] = (Module) ((bits >> (3 * i)) & 7);
+    return order;
+}
+
+// A preset's order with locked modules kept in their current slots; the others fill the free slots in the preset's order.
+inline ChainOrder pinLocked(const ChainOrder& current, const ChainOrder& incoming, const std::array<bool, 6>& locked)
+{
+    ChainOrder out = current;
+    auto next = incoming.begin();
+    for (auto& slot : out)
+        if (!locked[(size_t) slot])
+        {
+            while (locked[(size_t) *next])
+                ++next;
+            slot = *next++;
+        }
+    return out;
+}
 } // namespace snap

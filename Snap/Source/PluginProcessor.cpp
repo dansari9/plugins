@@ -1,22 +1,120 @@
 #include "PluginProcessor.h"
 #include "chain/Latency.h"
-#include "presets/StateIO.h"
 
 using namespace juce;
 
 SnapProcessor::SnapProcessor()
     : AudioProcessor(BusesProperties().withInput("Input", AudioChannelSet::stereo()).withOutput("Output", AudioChannelSet::stereo())),
-      apvts(*this, nullptr, "SNAP", snap::createLayout()), magnitude(apvts.getRawParameterValue("magnitude")),
-      bypass(apvts.getRawParameterValue("bypass")), lowLatency(apvts.getRawParameterValue("low_latency"))
+      apvts(*this, &undoManager, "SNAP", snap::createLayout()), magnitude(apvts.getRawParameterValue("magnitude")),
+      bypass(apvts.getRawParameterValue("bypass")), lowLatency(apvts.getRawParameterValue("low_latency")),
+      oversampling(apvts.getRawParameterValue("oversampling"))
 {
     for (auto& s : snap::parameterTable())
         controls.emplace(s.id, Control { &s, apvts.getRawParameterValue(s.id) });
+    apvts.state.setProperty("order", String(snap::toString(snap::defaultChainOrder)), nullptr);
+    apvts.state.addListener(this);
     apvts.addParameterListener("low_latency", this);
+    apvts.addParameterListener("oversampling", this);
 }
 
-SnapProcessor::~SnapProcessor() { apvts.removeParameterListener("low_latency", this); }
+SnapProcessor::~SnapProcessor()
+{
+    apvts.removeParameterListener("oversampling", this);
+    apvts.removeParameterListener("low_latency", this);
+    apvts.state.removeListener(this);
+}
 
-void SnapProcessor::parameterChanged(const String&, float v) { setLatencySamples(snap::chainLatency(sampleRate, v > 0.5f)); }
+// Low Latency Mode switches on the audio thread; a change of the oversampling factor needs a re-prepare.
+void SnapProcessor::parameterChanged(const String&, float)
+{
+    if (!prepared)
+        return;
+    if (factorFor(*lowLatency > 0.5f) == factor)
+        return setLatencySamples(latencyFor(*lowLatency > 0.5f));
+    if (MessageManager::existsAndIsCurrentThread())
+        reprepare();
+    else
+        triggerAsyncUpdate();
+}
+
+void SnapProcessor::handleAsyncUpdate()
+{
+    if (prepared && factorFor(*lowLatency > 0.5f) != factor)
+        reprepare();
+}
+
+void SnapProcessor::reprepare()
+{
+    suspendProcessing(true); // waits for a running block; the wrappers output silence until resumed
+    prepareToPlay(getSampleRate() > 0 ? getSampleRate() : sampleRate, jmax(1, getBlockSize()));
+    suspendProcessing(false);
+}
+
+void SnapProcessor::valueTreePropertyChanged(ValueTree& tree, const Identifier& property)
+{
+    if (tree == apvts.state && property == Identifier("order"))
+        requestedOrder.store(snap::pack(order()), std::memory_order_release);
+}
+
+snap::ChainOrder SnapProcessor::order() const
+{
+    return snap::parseChainOrder(apvts.state.getProperty("order").toString().toStdString()).value_or(snap::defaultChainOrder);
+}
+
+void SnapProcessor::setOrder(const snap::ChainOrder& o)
+{
+    beginUndoStep();
+    apvts.state.setProperty("order", String(snap::toString(o)), &undoManager);
+}
+
+void SnapProcessor::storeSnapshot(int slot)
+{
+    snap::Snapshot s { {}, order() };
+    for (auto& spec : snap::parameterTable())
+        s.values.push_back(apvts.getParameter(spec.id)->getValue());
+    snapshots[(size_t) slot] = std::move(s);
+}
+
+bool SnapProcessor::recallSnapshot(int slot)
+{
+    const auto& s = snapshots[(size_t) slot];
+    if (!s)
+        return false;
+    beginUndoStep();
+    for (size_t i = 0; i < snap::parameterTable().size(); ++i)
+        if (const auto* id = snap::parameterTable()[i].id; !snap::isSessionToggle(id))
+            apvts.getParameter(id)->setValueNotifyingHost(s->values[i]);
+    commit();
+    apvts.state.setProperty("order", String(snap::toString(s->order)), &undoManager);
+    return true;
+}
+
+bool SnapProcessor::loadPreset(const void* data, int size)
+{
+    beginUndoStep();
+    const bool ok = snap::readState(apvts, locks, snapshots, data, size, snap::Load::preset);
+    commit();
+    return ok;
+}
+
+bool SnapProcessor::undo()
+{
+    commit(); // pending parameter changes belong to the step being undone
+    return undoManager.undo();
+}
+
+bool SnapProcessor::redo()
+{
+    commit();
+    return undoManager.redo();
+}
+
+int SnapProcessor::latencyFor(bool low) const
+{
+    if (low)
+        return snap::constants::lowLatencySamples;
+    return (snap::chainLatency(sampleRate * factor, false) + factor - 1) / factor + os.latency();
+}
 
 bool SnapProcessor::isBusesLayoutSupported(const BusesLayout& l) const
 {
@@ -58,6 +156,8 @@ snap::Space::Settings SnapProcessor::spaceSettings() const
 
 void SnapProcessor::setModuleParams()
 {
+    for (auto& [shift, space, press, drive] : middle.sets)
+    {
     shift.setParams({ .amount = active("shift_on") * value("shift_amt") * 0.01f, .balance = value("shift_balance"),
                       .invert = on("shift_invert"), .stereo = value("shift_stereo") * 0.01f,
                       .stretch = value("shift_stretch") * 0.01f, .formantMix = value("shift_fmix") * 0.01f,
@@ -67,6 +167,7 @@ void SnapProcessor::setModuleParams()
     drive.setParams({ .amount = active("drive_on") * value("drive_amt") * 0.01f, .mix = value("drive_mix") * 0.01f,
                       .target = value("drive_target"), .focusLo = value("drive_focus_lo"), .focusHi = value("drive_focus_hi"),
                       .mode = (int) value("drive_mode"), .flavor = value("drive_flavor") });
+    }
     push.setParams({ .amount = active("push_on") * value("push_amt") * 0.01f, .mix = value("push_mix") * 0.01f,
                      .target = value("push_target"), .focusLo = value("push_focus_lo"), .focusHi = value("push_focus_hi"),
                      .mult = (int) value("push_mult"), .tone = value("push_tone") });
@@ -89,33 +190,39 @@ void SnapProcessor::setLowLatency(bool low)
 {
     lowLatencyNow = low;
     subHiss.setLowLatency(low);
-    for (snap::ModuleBase* m : std::array<snap::ModuleBase*, 4> { &shift, &press, &drive, &push })
-        m->setLowLatency(low);
+    middle.setLowLatency(low);
+    push.setLowLatency(low);
     chainPad.reset(), postDelay.reset();
 }
 
+// The chain runs at fs * factor between the oversampler's up and down; the reported latency rounds its share up to whole
+// base-rate samples (chainPad fills the difference).
 void SnapProcessor::prepareToPlay(double fs, int)
 {
     fs = fs > 0 && fs < 1.0e7 ? fs : 48000.0; // a nonsense rate (NaN, inf, <= 0) must not reach the int casts below
     sampleRate = fs;
     const int channels = jlimit(1, 2, getTotalNumInputChannels());
     const bool low = lowLatencyNow = *lowLatency > 0.5f;
+    factor = factorFor(low);
+    os.prepare(channels, subBlock, factor > 1 ? snap::constants::oversamplingStages : 0, false);
+    const double hi = fs * factor;
+    const int hiBlock = subBlock * factor;
     master.setParams(masterParams());
-    master.prepare(fs, channels, subBlock);
+    master.prepare(hi, channels, hiBlock);
     setModuleParams(); // before prepare(), so the modules start at their values without a ramp
-    const dsp::ProcessSpec spec { fs, (uint32) subBlock, (uint32) channels };
+    const dsp::ProcessSpec spec { hi, (uint32) hiBlock, (uint32) channels };
     subHiss.prepare(spec, subHissSettings(), low);
-    space.prepare(spec, spaceSettings());
-    for (snap::ModuleBase* m : std::array<snap::ModuleBase*, 4> { &shift, &press, &drive, &push })
-        m->prepare(fs, channels, subBlock, low);
-    postBus.setSize(channels, subBlock);
-    postDelay.prepare(channels, snap::chainLatency(fs, false));
-    chainPad.prepare(channels, snap::chainLatency(fs, true));
+    middle.prepare(hi, channels, hiBlock, low, spaceSettings(), snap::unpack(requestedOrder.load()));
+    push.prepare(hi, channels, hiBlock, low);
+    postBus.setSize(channels, hiBlock);
+    postDelay.prepare(channels, snap::chainLatency(hi, false));
+    chainPad.prepare(channels, snap::chainLatency(hi, false) + factor);
     inputMeter.prepare(fs, channels);
     inGainDb.prepare(fs), inGainDb.reset(*bypass > 0.5f ? 0.0f : value("in_gain"));
-    setLatencySamples(snap::chainLatency(fs, low));
+    setLatencySamples(latencyFor(low));
     peakIn = peakOut = peakGain = 0;
     decimation = jmax(1, (int) (fs * 2.5 / historySize)), count = 0;
+    prepared = true;
 }
 
 void SnapProcessor::processBlock(AudioBuffer<float>& buffer, MidiBuffer&)
@@ -134,20 +241,22 @@ void SnapProcessor::processBlock(AudioBuffer<float>& buffer, MidiBuffer&)
             *x = std::isfinite(*x) ? jlimit(-1000.0f, 1000.0f, *x) : 0.0f;
     inputMeter.process(buffer, n);
 
-    if (const bool low = *lowLatency > 0.5f; low != lowLatencyNow)
+    if (const bool low = *lowLatency > 0.5f; low != lowLatencyNow && factorFor(low) == factor) // else a re-prepare is coming
         setLowLatency(low);
     master.setParams(masterParams());
     setModuleParams();
     const auto subHissNow = subHissSettings();
     const auto spaceNow = spaceSettings();
-    // The stages after sub/hiss up to the post-bus sum, and whatever the constant latency has left over.
-    const int afterSubHiss = shift.latency() + space.getLatencySamples() + press.latency() + drive.latency() + push.latency();
+    const auto wanted = snap::unpack(requestedOrder.load(std::memory_order_acquire));
+    // The stages after sub/hiss up to the post-bus sum, and whatever the constant latency has left over (at the chain rate).
+    const int afterSubHiss = middle.latency() + push.latency();
+    const int stages = subHiss.getLatencySamples() + afterSubHiss + master.latency();
     postDelay.setDelay(afterSubHiss + master.postBusLatency());
-    chainPad.setDelay(snap::chainLatency(sampleRate, lowLatencyNow) - subHiss.getLatencySamples() - afterSubHiss - master.latency());
+    chainPad.setDelay((latencyFor(lowLatencyNow) - os.latency()) * factor - stages);
     inGainDb.setTarget(*bypass > 0.5f ? 0.0f : value("in_gain"));
     for (int start = 0; start < n; start += subBlock)
     {
-        const int len = jmin(subBlock, n - start);
+        const int len = jmin(subBlock, n - start), hiLen = len * factor;
         float level = 0, outLevel = 0;
         for (int i = start; i < start + len; ++i)
         {
@@ -156,24 +265,28 @@ void SnapProcessor::processBlock(AudioBuffer<float>& buffer, MidiBuffer&)
             {
                 const float x = buffer.getSample(c, i);
                 level = jmax(level, std::abs(x));
-                buffer.setSample(c, i, chainPad.next(c, x * gain));
+                buffer.setSample(c, i, x * gain);
             }
         }
-        // sub/hiss -> shift -> space -> press -> drive -> push (default order until M7) -> master, Post bus before Clip.
-        AudioBuffer<float> slice(buffer.getArrayOfWritePointers(), channels, start, len);
-        AudioBuffer<float> post(postBus.getArrayOfWritePointers(), channels, 0, len);
+        // os up -> pad -> sub/hiss -> the middle four in the stored order -> push -> master (Post bus before Clip) -> os down.
+        dsp::AudioBlock<float> base(buffer.getArrayOfWritePointers(), (size_t) channels, (size_t) start, (size_t) len);
+        auto up = os.up(base);
+        std::array<float*, 2> hi { up.getChannelPointer(0), up.getChannelPointer((size_t) channels - 1) };
+        AudioBuffer<float> slice(hi.data(), channels, hiLen);
+        for (int c = 0; c < channels; ++c)
+            for (float* x = hi[(size_t) c]; x != hi[(size_t) c] + hiLen; ++x)
+                *x = chainPad.next(c, *x);
+        AudioBuffer<float> post(postBus.getArrayOfWritePointers(), channels, 0, hiLen);
         subHiss.process(slice, post, subHissNow);
-        shift.process(slice, len);
-        space.process(slice, spaceNow);
-        press.process(slice, len);
-        drive.process(slice, len);
-        push.process(slice, len);
+        middle.process(wanted, slice, spaceNow);
+        push.process(slice, hiLen);
         for (int c = 0; c < channels; ++c)
-            for (float* x = post.getWritePointer(c); x != post.getWritePointer(c) + len; ++x)
+            for (float* x = post.getWritePointer(c); x != post.getWritePointer(c) + hiLen; ++x)
                 *x = postDelay.next(c, *x);
-        master.process(slice, len, post.getArrayOfReadPointers());
+        master.process(slice, hiLen, post.getArrayOfReadPointers());
+        os.down(base);
         for (int c = 0; c < channels; ++c)
-            outLevel = jmax(outLevel, slice.getMagnitude(c, 0, len));
+            outLevel = jmax(outLevel, buffer.getMagnitude(c, start, len));
 
         const float applied = master.shaperGainDb();
         peakIn = jmax(peakIn, level), peakOut = jmax(peakOut, outLevel);
@@ -199,7 +312,13 @@ void SnapProcessor::matchLoudness()
     out->setValueNotifyingHost(out->convertTo0to1(jlimit(-24.0f, 24.0f, (in - pre) / m)));
 }
 
-void SnapProcessor::getStateInformation(MemoryBlock& dest) { snap::writeState(apvts, chainOrder, dest); }
-void SnapProcessor::setStateInformation(const void* data, int size) { snap::readState(apvts, chainOrder, data, size); }
+void SnapProcessor::getStateInformation(MemoryBlock& dest) { snap::writeState(apvts, locks, snapshots, dest); }
+
+// A host restore replaces everything and starts a fresh undo history.
+void SnapProcessor::setStateInformation(const void* data, int size)
+{
+    if (snap::readState(apvts, locks, snapshots, data, size, snap::Load::session))
+        commit(), undoManager.clearUndoHistory();
+}
 
 AudioProcessor* JUCE_CALLTYPE createPluginFilter() { return new SnapProcessor(); }

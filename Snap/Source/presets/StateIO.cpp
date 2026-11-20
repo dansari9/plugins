@@ -1,5 +1,4 @@
 #include "StateIO.h"
-#include "../Parameters.h"
 #include <map>
 #include <sstream>
 
@@ -15,8 +14,8 @@ using Entries = std::map<std::string_view, std::string_view, std::less<>>;
 // non-recursive scan instead of JUCE's XML parser (which recurses per level, expands DTD entities and over-reads
 // truncated character references). JUCE's writer escapes '<', '>' and '"' inside values, so every state it writes
 // splits cleanly into tags and attributes. Collects the root attributes and the top-level PARAMs (the first entry
-// per ID wins); returns false unless the text is one complete <SNAP> element without "<!".
-bool scan(std::string_view xml, Entries& root, Entries& params)
+// per ID wins) and the SNAPSHOT elements' attributes; returns false unless the text is one complete <SNAP> element without "<!".
+bool scan(std::string_view xml, Entries& root, Entries& params, std::vector<Entries>& snapshots)
 {
     const std::string_view space(" \t\r\n");
     int depth = 0;
@@ -53,6 +52,8 @@ bool scan(std::string_view xml, Entries& root, Entries& params)
             root = attributes;
         else if (depth == 1 && name == "PARAM" && attributes.count("id") > 0)
             params.emplace(attributes["id"], attributes.count("value") > 0 ? attributes["value"] : "?");
+        else if (depth == 1 && name == "SNAPSHOT")
+            snapshots.push_back(attributes);
         depth += empty ? 0 : 1;
         if (depth == 0)
             return true;
@@ -96,28 +97,84 @@ void migrateVersion1(AudioProcessorValueTreeState& apvts, const Entries& params)
 }
 } // namespace
 
-void writeState(AudioProcessorValueTreeState& apvts, const ChainOrder& order, MemoryBlock& dest)
+std::string toString(const Locks& locks)
+{
+    std::string s;
+    for (size_t g = 0; g < locks.size(); ++g)
+        if (locks[g])
+            s += (s.empty() ? "" : ",") + std::string(g == masterLock ? "master" : modules[g].name);
+    return s;
+}
+
+Locks parseLocks(std::string_view text)
+{
+    Locks locks {};
+    for (size_t g = 0; g < locks.size(); ++g)
+    {
+        const std::string_view name = g == masterLock ? "master" : modules[g].name;
+        for (auto rest = text; !rest.empty();)
+        {
+            const auto comma = rest.find(',');
+            locks[g] = locks[g] || rest.substr(0, comma) == name;
+            rest.remove_prefix(comma == std::string_view::npos ? rest.size() : comma + 1);
+        }
+    }
+    return locks;
+}
+
+void writeState(AudioProcessorValueTreeState& apvts, const Locks& locks, const Snapshots& snapshots, MemoryBlock& dest)
 {
     auto state = apvts.copyState();
-    state.setProperty("stateVersion", stateVersion, nullptr).setProperty("order", String(toString(order)), nullptr);
+    state.setProperty("stateVersion", stateVersion, nullptr).setProperty("locks", String(toString(locks)), nullptr);
+    for (size_t slot = 0; slot < snapshots.size(); ++slot)
+        if (const auto& snapshot = snapshots[slot])
+        {
+            ValueTree child("SNAPSHOT");
+            child.setProperty("slot", (int) slot, nullptr).setProperty("order", String(toString(snapshot->order)), nullptr);
+            for (size_t i = 0; i < parameterTable().size(); ++i)
+                child.setProperty(parameterTable()[i].id, String(snapshot->values[i], 9), nullptr);
+            state.appendChild(child, nullptr);
+        }
     if (auto xml = state.createXml())
         AudioProcessor::copyXmlToBinary(*xml, dest);
 }
 
-void readState(AudioProcessorValueTreeState& apvts, ChainOrder& order, const void* data, int size)
+bool readState(AudioProcessorValueTreeState& apvts, Locks& locks, Snapshots& snapshots, const void* data, int size, Load mode)
 {
     const auto* bytes = static_cast<const char*>(data);
     if (bytes == nullptr || size < 8 || ByteOrder::littleEndianInt(bytes) != 0x21324356 || ByteOrder::littleEndianInt(bytes + 4) > (uint32) size - 8)
-        return;
+        return false;
     Entries root, params;
-    if (!scan({ bytes + 8, ByteOrder::littleEndianInt(bytes + 4) }, root, params))
-        return;
-    order = defaultChainOrder;
+    std::vector<Entries> stored;
+    if (!scan({ bytes + 8, ByteOrder::littleEndianInt(bytes + 4) }, root, params, stored))
+        return false;
+    const bool preset = mode == Load::preset;
+    const auto current = parseChainOrder(apvts.state.getProperty("order").toString().toStdString()).value_or(defaultChainOrder);
+    const auto setOrder = [&](const ChainOrder& o) { apvts.state.setProperty("order", String(toString(o)), preset ? apvts.undoManager : nullptr); };
+    if (!preset)
+    {
+        locks = parseLocks(root.count("locks") > 0 ? root["locks"] : "");
+        snapshots = {};
+    }
     if (number(root, "stateVersion").value_or(1) < 2) // 0.1.0 and 0.1.1 always wrote 1; treat a missing version as theirs
-        return migrateVersion1(apvts, params);
+    {
+        migrateVersion1(apvts, params);
+        setOrder(defaultChainOrder);
+        return true;
+    }
     for (auto& s : parameterTable())
-        set(apvts, s.id, number(params, s.id));
-    if (const auto it = root.find("order"); it != root.end())
-        order = parseChainOrder(it->second).value_or(defaultChainOrder);
+        if (!preset || (!isSessionToggle(s.id) && (lockGroup(s.id) < 0 || !locks[(size_t) lockGroup(s.id)])))
+            set(apvts, s.id, number(params, s.id));
+    const auto order = parseChainOrder(root.count("order") > 0 ? root["order"] : "").value_or(defaultChainOrder);
+    setOrder(preset ? pinLocked(current, order, { locks[0], locks[1], locks[2], locks[3], locks[4], locks[5] }) : order);
+    for (auto& entries : preset ? std::vector<Entries> {} : stored)
+        if (const auto slot = number(entries, "slot"); slot && *slot >= 0 && *slot < (double) snapshots.size())
+        {
+            Snapshot snapshot { {}, parseChainOrder(entries.count("order") > 0 ? entries["order"] : "").value_or(defaultChainOrder) };
+            for (auto& s : parameterTable())
+                snapshot.values.push_back((float) jlimit(0.0, 1.0, number(entries, s.id).value_or(apvts.getParameter(s.id)->getDefaultValue())));
+            snapshots[(size_t) *slot] = std::move(snapshot);
+        }
+    return true;
 }
 } // namespace snap
