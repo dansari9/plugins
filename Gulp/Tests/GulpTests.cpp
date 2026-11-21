@@ -11,6 +11,7 @@
 #include <limits>
 #include <iostream>
 #include <new>
+#include <set>
 #include <thread>
 
 // Real-time check: count heap allocations made on a thread flagged as "audio" (as crumb).
@@ -181,7 +182,7 @@ static void testIdentity()
     CHECK(JucePlugin_ManufacturerCode == 0x44776b73); // 'Dwks'
     CHECK(juce::String(JUCE_STRINGIFY(JucePlugin_AUMainType)) == "'aumf'");
     CHECK(juce::String(JUCE_STRINGIFY(JucePlugin_CFBundleIdentifier)) == "com.dripworks.gulp");
-    CHECK(juce::String(JucePlugin_Name) == "gulp" && juce::String(JucePlugin_Manufacturer) == "daveydidit" && juce::String(JucePlugin_VersionString) == "0.2.1");
+    CHECK(juce::String(JucePlugin_Name) == "gulp" && juce::String(JucePlugin_Manufacturer) == "daveydidit" && juce::String(JucePlugin_VersionString) == "0.3.0");
     static_assert(JUCE_VST3_CAN_REPLACE_VST2 == 0 && JUCE_FORCE_USE_LEGACY_PARAM_IDS == 0, "frozen host-facing IDs");
     CHECK(!JucePlugin_IsSynth && JucePlugin_WantsMidiInput && !JucePlugin_ProducesMidiOutput);
     // Golden: id -> range and default (floats), item list and default (choices), default (switches).
@@ -1402,6 +1403,31 @@ static juce::Image snapshot(int percent, const Settings& extra = {})
     e->setSize(1024 * percent / 100, 576 * percent / 100);
     return e->createComponentSnapshot(e->getLocalBounds(), true, 2.0f);
 }
+// The riso skin: no pixel keeps 0.2.1's red or white. Accents take their region's ink (the curve list pink, the mode row
+// tang, the bottom row from tang, the right column pink / tang / sun, the curve's far end sun), white text is cream, the
+// graph's page shows the braille field and the page elsewhere stays dark (or its grain).
+static void testInks()
+{
+    const auto image = snapshot(100); // 2x pixels
+    const juce::Image::BitmapData d(image, juce::Image::BitmapData::readOnly);
+    const auto colours = [&](juce::Rectangle<int> area) { // in 1x pixels
+        std::set<juce::uint32> seen;
+        for (int y = 2 * area.getY(); y < 2 * area.getBottom(); ++y)
+            for (int x = 2 * area.getX(); x < 2 * area.getRight(); ++x) seen.insert(d.getPixelColour(x, y).getARGB());
+        return seen;
+    };
+    const auto has = [&](juce::Rectangle<int> area, juce::uint32 argb) { return colours(area).count(argb) > 0; };
+    const juce::uint32 pink = 0xffff4f9a, tang = 0xffff6a2f, sun = 0xffffc83d, cream = 0xffefe6d2, page = 0xff0d0d0d, grain = 0xff121212;
+    const auto all = colours({ 0, 0, 1024, 576 });
+    CHECK(all.count(0xffff3d1f) == 0 && all.count(0xffececec) == 0 && all.count(grain) == 1);
+    CHECK(has(cellArea(2, 5, 19, 1), pink) && has(cellArea(2, 1, 4, 1), cream));
+    CHECK(has(cellArea(25, 22, 70, 2), tang) && !has(cellArea(25, 22, 70, 2), pink) && has(cellArea(25, 27, 4, 2), tang));
+    CHECK(has(cellArea(105, 4, 8, 4), pink) && has(cellArea(105, 13, 8, 4), tang) && has(cellArea(105, 22, 8, 4), sun) && has(cellArea(85, 5, 10, 1), sun));
+    const auto field = [](juce::uint32 ink) { return juce::Colour(page).interpolatedWith(juce::Colour(ink), 0.55f).getARGB(); };
+    CHECK(has(cellArea(26, 6, 68, 12), field(0xffa98bff)) && has(cellArea(26, 6, 68, 12), field(0xff5b7cff)));
+    const auto bare = colours(cellArea(2, 31, 19, 1));
+    CHECK(std::all_of(bare.begin(), bare.end(), [&](juce::uint32 c) { return c == page || c == grain; }));
+}
 static int screenshot(const juce::File& file, const juce::StringArray& changes)
 {
     Settings extra;
@@ -1449,10 +1475,10 @@ static const Golden sounds[] = {
     { 0, 6, "03605e6dfe815adbeedede492bfc2cfe1c00a676c6571bcc58ebd23c2e0c87a3" },
     { 0, 7, "f3ef30e486df5dfa2c033e2e2bb9cc182a3cf82a373247bb2527928ee56863f7" },
 };
-struct Shot { int percent; const char* hash; };
-static const Shot shots[] = { { 100, "831c28b9a53187353072e91db702b814d906eafac14565e133f8286b539bf509" },
-                              { 50, "7d4c1816a369e1f7919661a31bb1cf0f235e0123e406387362ccaa7b1a30ee11" },
-                              { 200, "36b186d872ead8104eceb3d04f9aee417d273041df957a06fc8f2a81f0808e97" } };
+struct Shot { int percent; const char* hash; }; // the editor's pixels: new with 0.3.0's riso skin
+static const Shot shots[] = { { 100, "789481660d15e9aae0cfff7192f0ffd74e14ae1eedc659e997cb8d269ad413c0" },
+                              { 50, "1f9cf24358d58203e88b3c5593e4e9c225a9f359a32d316dc6c63f14ef6ac671" },
+                              { 200, "326ae3029583b764cf0e2fd360b15242eacea752e034da7c6a164ce7c5f6340d" } };
 static void testGoldens()
 {
     CHECK(render(0, 0) == render(0, 0) && pixels(snapshot(100)) == pixels(snapshot(100)));
@@ -1530,6 +1556,7 @@ int main(int argc, char** argv)
     testTelemetry();
     testInteraction();
     testDisplayNames();
+    testInks();
     std::cout << (failures == 0 ? "All Gulp tests passed\n" : "Gulp tests FAILED\n");
     return failures == 0 ? 0 : 1;
 }

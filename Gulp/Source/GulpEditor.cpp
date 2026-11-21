@@ -5,6 +5,8 @@
 // changed, the grid is rebuilt; only cells that changed are redrawn into a device-pixel image and repainted, so an idle
 // editor costs nothing. Controls are invisible Sliders and Buttons on their hit cells in a 1024 x 576 layer scaled with
 // the window: drag, double-click = default and click the value to type, exactly as crumb. The slope's ◆ drags sideways.
+// The cells are drawn in grey, white and red as before; the riso "pump" skin (ascii3/family.py, gulp(ascii=True)) then
+// re-inks every pixel they drew from plates built once per image size, so nothing moves.
 #include "BinaryData.h"
 #include "Gulp.h"
 #include <cstring>
@@ -20,6 +22,7 @@ constexpr int invertX = 56, midiX = AX + 5, audioX = AX + 10; // invert centred 
 constexpr int curveY[] { 5, 7, 9, 12, 14, 16, 19, 21, 23, 26, 28, 30 }; // groups of three fill the column
 constexpr float cw = (float) W / C, ch = (float) H / R;
 const Colour page { 0xff0d0d0d }, white { 0xffececec }, grey { 0xff7a7a7a }, rule { 0xff2c2c2c }, dark { 0xff454545 }, red { 0xffff3d1f }, kick { 0xff5a5a5a }, tag { 0xff1c1c1c };
+const Colour cobalt { 0xff5b7cff }, lilac { 0xffa98bff }, sun { 0xffffc83d }, tang { 0xffff6a2f }, pink { 0xffff4f9a }, cream { 0xffefe6d2 }; // riso inks
 String u(const char* s) { return String::fromUTF8(s); }
 String minus(const String& s) { return s.replace("-", u("−")); }
 Rectangle<int> cells(int x, int y, int w, int h) // edges rounded, so neighbours share an edge and never overlap
@@ -114,9 +117,9 @@ struct Look : LookAndFeel_V4
     Label* createSliderTextBox(Slider& s) override
     {
         auto* l = LookAndFeel_V4::createSliderTextBox(s);
-        l->setColour(Label::backgroundWhenEditingColourId, page), l->setColour(Label::textWhenEditingColourId, white);
-        l->setColour(Label::outlineWhenEditingColourId, {}), l->setColour(TextEditor::highlightColourId, red.withAlpha(0.4f));
-        l->setColour(TextEditor::highlightedTextColourId, white), l->setColour(CaretComponent::caretColourId, red);
+        l->setColour(Label::backgroundWhenEditingColourId, page), l->setColour(Label::textWhenEditingColourId, cream);
+        l->setColour(Label::outlineWhenEditingColourId, {}), l->setColour(TextEditor::highlightColourId, pink.withAlpha(0.4f));
+        l->setColour(TextEditor::highlightedTextColourId, cream), l->setColour(CaretComponent::caretColourId, pink);
         return l;
     }
     Slider::SliderLayout getSliderLayout(Slider& s) override // the slope's value box follows its label on the curve
@@ -148,9 +151,56 @@ struct Key : Button
     void paintButton(Graphics&, bool, bool) override {}
 };
 
-struct KnobSpec { const char *id, *name; int x, y; bool centred; };
-const KnobSpec knobSpecs[] = { { "shift", "nudge", 61, B + 1, true }, { "thresh", "thresh", 74, B + 1, false }, { "soothe", "soothe", 87, B + 1, false },
-                               { "depth", "depth", RX + 7, 4, false }, { "split", "split", RX + 7, 13, false }, { "output", "output", RX + 7, 22, false } };
+struct KnobSpec { const char *id, *name; int x, y; bool centred; Colour glow; };
+const KnobSpec knobSpecs[] = { { "shift", "nudge", 61, B + 1, true, pink }, { "thresh", "thresh", 74, B + 1, false, lilac }, { "soothe", "soothe", 87, B + 1, false, sun },
+                               { "depth", "depth", RX + 7, 4, false, pink }, { "split", "split", RX + 7, 13, false, tang }, { "output", "output", RX + 7, 22, false, sun } };
+
+// Riso plates, one byte per image pixel: the accent's ink (bits 0-1), the plot's shadow ink (bit 2), in the plot (bit 3)
+// and the paper (bits 4-7): the page, its grain, the braille field's two inks, a dim glow per knob.
+const Colour accents[] { pink, tang, sun }, shadows[] { cobalt.interpolatedWith(cream, 0.2f), lilac.interpolatedWith(cream, 0.2f) };
+const auto papers = [] {
+    std::array<Colour, 4 + std::size(knobSpecs)> p { page, Colour(0xff121212), page.interpolatedWith(lilac, 0.55f), page.interpolatedWith(cobalt, 0.55f) };
+    for (size_t k = 0; k < std::size(knobSpecs); ++k) p[4 + k] = page.interpolatedWith(knobSpecs[k].glow, 0.12f);
+    return p;
+}();
+// family.py's recolor: the red accent takes its plate's ink, bright neutrals cream, the plot's neutrals their cool shadow
+// (a fifth cream), the bare page its paper. Anything else (antialiased edges of red) stays.
+Colour reink(Colour c, uint8 plate)
+{
+    const int r = c.getRed(), g = c.getGreen(), b = c.getBlue();
+    const float lum = (float) (r + g + b) / 3, t = jlimit(0.0f, 1.0f, (lum - 13) / 223);
+    if (std::abs(r - 13) + std::abs(g - 13) + std::abs(b - 13) < 4) return papers[plate >> 4];
+    if (r - g > 40 && r - b > 30) return page.interpolatedWith(accents[plate & 3], (float) (r - 13) / 242);
+    if (jmax(r, g, b) - jmin(r, g, b) >= 12) return c;
+    if ((plate & 8) != 0 && lum > 20 && lum < 200) return page.interpolatedWith(shadows[plate >> 2 & 1], t);
+    return lum > 150 ? page.interpolatedWith(cream, t) : c;
+}
+// family.py's fbm: octaves of a seeded random lattice (3 * 2^o rows) smoothly stretched over h x w, normalised to 0..1.
+std::vector<float> fbm(int h, int w, int octaves, int64 seed)
+{
+    std::vector<float> out((size_t) (h * w));
+    Random random(seed);
+    for (int o = 0; o < octaves; ++o)
+    {
+        const int rows = (3 << o) + 1, cols = (3 << o) * w / h + 2;
+        std::vector<float> lattice((size_t) (rows * cols));
+        for (auto& v : lattice) v = random.nextFloat();
+        const auto at = [&](int j, int i) { return lattice[(size_t) (j * cols + i)]; };
+        for (int y = 0; y < h; ++y)
+            for (int x = 0; x < w; ++x)
+            {
+                const float fy = ((float) y + 0.5f) * (float) rows / (float) h - 0.5f, fx = ((float) x + 0.5f) * (float) cols / (float) w - 0.5f;
+                const int j = jlimit(0, rows - 2, (int) std::floor(fy)), i = jlimit(0, cols - 2, (int) std::floor(fx));
+                const auto smooth = [](float t) { t = jlimit(0.0f, 1.0f, t); return t * t * (3 - 2 * t); };
+                const float ty = smooth(fy - (float) j), tx = smooth(fx - (float) i);
+                out[(size_t) (y * w + x)] += jmap(ty, jmap(tx, at(j, i), at(j, i + 1)), jmap(tx, at(j + 1, i), at(j + 1, i + 1))) / (float) (1 << o);
+            }
+    }
+    const auto [lo, hi] = std::minmax_element(out.begin(), out.end());
+    const float low = *lo, range = *hi - *lo + 1e-9f;
+    for (auto& v : out) v = (v - low) / range;
+    return out;
+}
 
 // The slope: only the ◆ and its value label are targets. A sideways drag moves the handle with the cursor, in
 // design pixels from where it was grabbed, so the handle's own moves never feed back into the drag.
@@ -186,7 +236,8 @@ struct Editor : AudioProcessorEditor, Timer
     Grid shown;
     std::vector<float> drawnFrom; // what the shown grid was built from: the same again means idle
     String drawnName;
-    Image image; // the shown grid in device pixels
+    Image image; // the shown grid in device pixels, re-inked
+    std::vector<uint8> plates; // per pixel of the image: see reink()
     Font fonts[2] { mono(1, false), mono(1, true) };
 
     explicit Editor(GulpProcessor& p) : AudioProcessorEditor(p), proc(p)
@@ -492,7 +543,7 @@ struct Editor : AudioProcessorEditor, Timer
                 if (i < C && g.at[j][i] != shown.at[j][i])
                 {
                     shown.at[j][i] = g.at[j][i], first = first < 0 ? i : first, last = i;
-                    if (context) drawCell(*context, i, j);
+                    if (context) drawCell(*context, i, j), reinkArea(pixelsOf(i, j));
                 }
                 else if (first >= 0 && (i == C || i - last > 8))
                 {
@@ -508,22 +559,88 @@ struct Editor : AudioProcessorEditor, Timer
         const int iw = jmax(1, roundToInt((float) getWidth() * scale)), ih = jmax(1, roundToInt((float) getHeight() * scale));
         if (image.getWidth() != iw || image.getHeight() != ih)
         {
-            image = Image(Image::RGB, iw, ih, false);
+            image = Image(Image::RGB, iw, ih, false, SoftwareImageType()); // software: re-inked in place on every platform
             fonts[0] = mono((float) iw / C / 0.6f, false), fonts[1] = mono((float) iw / C / 0.6f, true);
+            makePlates();
             Graphics ig(image);
             for (int j = 0; j < R; ++j)
                 for (int i = 0; i < C; ++i)
                     drawCell(ig, i, j);
+            reinkArea(image.getBounds());
         }
         g.drawImageTransformed(image, AffineTransform::scale((float) getWidth() / (float) iw, (float) getHeight() / (float) ih));
+    }
+    // family.py's gulp() plates for this image size, in its pixels (the editor at 2x, 2048 x 1152): accents pink, the
+    // plot's curve heating pink -> tang -> sun across the beat, the band row tang, the bottom row tang -> pink -> sun, the
+    // right column pink / tang / sun; the plot's shadow lilac (top) -> cobalt; the paper's braille field (8 x 16 cells, 2 x 4
+    // dots by a slow noise) behind the plot and a halftone glow behind each knob. Inks between neighbours are Bayer-dithered.
+    void makePlates()
+    {
+        static const auto noise = fbm(144, 256, 5, 21), field = fbm(17, 78, 4, 918); // 918: the seed closest to the preview's field
+        constexpr int bayer[4][4] { { 0, 8, 2, 10 }, { 12, 4, 14, 6 }, { 3, 11, 1, 9 }, { 15, 7, 13, 5 } };
+        constexpr int dots[8][2] { { 5, 4 }, { 11, 4 }, { 5, 12 }, { 11, 12 }, { 5, 20 }, { 11, 20 }, { 5, 28 }, { 11, 28 } }, order[8] { 0, 4, 6, 2, 5, 1, 3, 7 }, bottom[3] { 1, 0, 2 };
+        const auto ramp = [](float u, int stops, int at) { // an ink index; at = the Bayer rank, 0..15
+            const float v = jlimit(0.0f, 1.0f, u) * (float) (stops - 1);
+            const int k = jmin((int) v, stops - 1);
+            return jmin(stops - 1, k + (jlimit(0.0f, 1.0f, (v - (float) k - 0.3f) / 0.4f) > (float) at / 16 ? 1 : 0));
+        };
+        Point<int> glows[std::size(knobSpecs)];
+        for (size_t k = 0; k < std::size(knobSpecs); ++k) glows[k] = cells(knobSpecs[k].x, knobSpecs[k].y - 1, 8, 5).getCentre() * 2; // dial and name
+        const int iw = image.getWidth(), ih = image.getHeight();
+        plates.resize((size_t) (iw * ih));
+        for (int y = 0; y < ih; ++y)
+            for (int x = 0; x < iw; ++x)
+            {
+                const float X = (float) x * 2048 / (float) iw, Y = (float) y * 1152 / (float) ih;
+                const int bx = (int) X, by = (int) Y, rank = bayer[by / 2 % 4][bx / 2 % 4];
+                const float n = noise[(size_t) (by * 144 / 1152 * 256 + bx * 256 / 2048)] - 0.5f;
+                const bool plot = X > 410 && X < 1650 && Y > 150 && Y < 680;
+                int accent = 0, paper = 0;
+                if (plot) accent = ramp((X - 420) / 1220 + n * 0.1f, 3, rank);
+                else if (Y >= 700 && Y < 800 && X > 410 && X < 1650) accent = 1;
+                else if (Y >= 820 && X > 380 && X < 1650) accent = bottom[ramp((X - 400) / 1250, 3, rank)];
+                else if (X >= 1680) accent = Y < 380 ? 0 : Y < 680 ? 1 : 2;
+                if (const float fx = X - 424, fy = Y - 170; fx >= 0 && fy >= 0 && fx < 1216 && fy < 494)
+                {
+                    const int c = (int) fx / 16, r = (int) fy / 32;
+                    const float v = jlimit(0.0f, 1.0f, (field[(size_t) (r * 78 + c)] * 0.85f + 0.15f * (float) (r * 32) / 494 - 0.35f) * 1.6f);
+                    for (int k = 0; k < 8; ++k)
+                        if (const int dx = c * 16 + dots[k][0], dy = r * 32 + dots[k][1]; v * 8 > (float) order[k] + 0.5f && dx + 2 < 1216 && dy + 2 < 494
+                                                                                          && std::abs(fx - (float) dx) <= 1 && std::abs(fy - (float) dy) <= 1)
+                            paper = 2 + ramp((float) dy / 493, 2, bayer[dy / 2 % 4][dx / 2 % 4]);
+                }
+                for (size_t k = 0; k < std::size(knobSpecs); ++k)
+                    if (const float gx = X - (float) glows[k].x + 85, gy = Y - (float) glows[k].y + 85; gx >= 0 && gy >= 0 && gx < 170 && gy < 170)
+                    {
+                        const float level = std::pow(jmax(0.0f, 1 - std::hypot(gx - 85, gy - 85) / 85), 1.6f), cs = std::cos(0.5236f), sn = std::sin(0.5236f);
+                        const auto wrap = [](float t) { return t - 6 * std::floor(t / 6) - 3; }; // a 6 px halftone screen at 30 degrees
+                        if (std::hypot(wrap(gx * cs + gy * sn), wrap(gy * cs - gx * sn)) / (6 / 1.414f) < std::sqrt(level) * 0.95f) paper = 4 + (int) k;
+                    }
+                if (rank == 15 && ((uint32) bx * 73856093u ^ (uint32) by * 19349663u) % 100 >= 55) paper = 1; // grain
+                plates[(size_t) (y * iw + x)] = (uint8) (accent | ramp(1 - (Y - 160) / 520 + n * 0.15f, 2, rank) << 2 | (plot ? 8 : 0) | paper << 4);
+            }
+    }
+    void reinkArea(Rectangle<int> area)
+    {
+        const Image::BitmapData d(image, area.getX(), area.getY(), area.getWidth(), area.getHeight(), Image::BitmapData::readWrite);
+        for (int y = 0; y < d.height; ++y)
+            for (int x = 0; x < d.width; ++x)
+            {
+                auto* p = reinterpret_cast<PixelRGB*>(d.getPixelPointer(x, y));
+                p->set(reink(Colour(p->getRed(), p->getGreen(), p->getBlue()), plates[(size_t) ((area.getY() + y) * image.getWidth() + area.getX() + x)]).getPixelARGB());
+            }
+    }
+    Rectangle<int> pixelsOf(int i, int j) const // a cell in device pixels, snapped to whole pixels
+    {
+        const auto px = [this](int k) { return roundToInt((float) k * (float) image.getWidth() / C); };
+        const auto py = [this](int k) { return roundToInt((float) k * (float) image.getHeight() / R); };
+        return Rectangle<int>::leftTopRightBottom(px(i), py(j), px(i + 1), py(j + 1));
     }
     // One cell in device pixels, snapped to whole pixels so lines and blocks join; vector glyphs as grid.py draws them.
     void drawCell(Graphics& g, int i, int j)
     {
         const auto& c = shown.at[j][i];
-        const auto px = [this](int k) { return roundToInt((float) k * (float) image.getWidth() / C); };
-        const auto py = [this](int k) { return roundToInt((float) k * (float) image.getHeight() / R); };
-        const auto r = Rectangle<int>::leftTopRightBottom(px(i), py(j), px(i + 1), py(j + 1));
+        const auto r = pixelsOf(i, j);
         g.setColour(c.bg.isTransparent() ? page : c.bg), g.fillRect(r);
         if (c.c == ' ' && c.left <= ' ') return;
         Graphics::ScopedSaveState state(g);

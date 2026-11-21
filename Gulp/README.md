@@ -1,6 +1,6 @@
 # gulp
 
-Sidechain pumping and ducking for dance music, by daveydidit. Version 0.2.1. Zero latency unless audio-trigger lookahead
+Sidechain pumping and ducking for dance music, by daveydidit. Version 0.3.0. Zero latency unless audio-trigger lookahead
 is on (5 ms), mono or stereo, with an optional mono or stereo sidechain input. One screen, no menus: 12 curves, 10 factory presets, user
 presets and A/B.
 
@@ -43,8 +43,9 @@ soothe is off. 0.1.0 and 0.2.0 sessions load with lookahead off.
 
 ## Editor
 
-One 120 × 34 cell grid in Geist Mono (scales 50–200 %, the size is saved with the session). Left: the curve list.
-Middle: one cycle as a tide — the red gain line, the audio that passes as shaded water under it, the sidechain's kick as
+One 120 × 34 cell grid in Geist Mono (scales 50–200 %, the size is saved with the session), printed in a multicolour riso
+"pump" skin: cream text, pink / tangerine / sun accents by region, a cobalt-lilac shadow and a dim braille field in the
+graph. Left: the curve list. Middle: one cycle as a tide — the gain line heating from pink to sun across the cycle, the audio that passes as shaded water under it, the sidechain's kick as
 a grey ghost, the playhead and a ruler in fractions of the rate. The nudge slides the curve against the beat; the kick
 and the ruler stay put. Above it: the gain reduction (dotted) and its held peak (click it, or start the transport, to
 reset), invert, the rate (‹ › step from 1/32 to 2 bars; a session saved at 4 bars keeps it; in **free** the Hz value, drag or click to type) and sync / free.
