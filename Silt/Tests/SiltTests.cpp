@@ -163,7 +163,7 @@ static void testContract()
     CHECK(juce::String(JUCE_STRINGIFY(JucePlugin_AUMainType))=="'aumf'");
     CHECK(juce::String(JUCE_STRINGIFY(JucePlugin_CFBundleIdentifier))=="com.dripworks.silt");
     CHECK(juce::String(JucePlugin_Name)=="silt" && juce::String(JucePlugin_Manufacturer)=="daveydidit");
-    CHECK(juce::String(JucePlugin_VersionString)=="0.2.0" && juce::String(JucePlugin_Vst3Category)=="Fx");
+    CHECK(juce::String(JucePlugin_VersionString)=="0.3.0" && juce::String(JucePlugin_Vst3Category)=="Fx");
     CHECK(!JucePlugin_IsSynth && JucePlugin_WantsMidiInput && !JucePlugin_ProducesMidiOutput);
     Proc p;
     CHECK(p.getParameters().size()==(int)std::size(contract) && p.stateVersion==2 && p.getNumPrograms()==20);
@@ -1536,6 +1536,24 @@ static juce::Image snapshot(int percent=100,bool freeze=false,float scale=2,bool
     else editor->setSize(juce::roundToInt(905*percent/100.0),836*percent/100);
     return editor->createComponentSnapshot(editor->getLocalBounds(),true,scale);
 }
+// 0.3's riso skin at 2x (family.py silt02): each region's accent is its ink, bright text cream, greys stay grey.
+static void testSkin()
+{
+    const auto shot=snapshot();
+    const auto has=[&](int x,int y,int w,int h,juce::uint32 argb) {
+        const double cell=1024.0/60; // 2x pixels per cell across; a cell is twice as tall
+        for(int py=juce::roundToInt(2*cell*y);py<juce::roundToInt(2*cell*(y+h));++py)
+            for(int px=juce::roundToInt(cell*x);px<juce::roundToInt(cell*(x+w));++px)
+                if(shot.getPixelAt(px,py).getARGB()==argb)return true;
+        return false;
+    };
+    const juce::uint32 cobalt=0xff5b7cff,aqua=0xff2fd3c4,lilac=0xffa98bff,sand=0xffe9cf8f,coral=0xffff7f6a,cream=0xffefe6d2,red=0xffff3d1f;
+    CHECK(has(3,1,4,1,cream) && !has(3,1,4,1,0xffececec));                    // the title: cream, not white
+    CHECK(has(3,20,7,1,0xff7a7a7a));                                           // trigger's label stays grey
+    CHECK(has(3,21,5,1,cobalt) && has(20,20,11,5,aqua) && has(94,21,8,3,sand)); // input, grain, the window glyph
+    CHECK(has(6,44,1,1,lilac) && has(83,36,1,1,coral));                        // heads 1, the reverb switch
+    CHECK(!has(0,0,106,49,red));                                               // no 0.2 red anywhere
+}
 // The golden render: a playing host, a note with a mod-wheel move, then its release.
 static Audio goldenRun(Proc& p,int samples)
 {
@@ -1594,7 +1612,7 @@ static void testGoldens(bool record=false)
     const bool ci=std::getenv("GITHUB_ACTIONS")!=nullptr;
     const char* expectedEnvironment="14.2.0/Release/07adb83962bd7f372226ea055bca705c159534fa4a19d3279488b12cd95eea5c", *expectedRenderer="506141d22f79fb1886eb4dec6e8e40da3c3c48e3df63f1f3d60e979dd78361b5";
     const char* expectedSound="c84295f77b28dd4228a7fe471bf7e41937303f55ff5663e927482f9dca5907da";
-    const char* expectedShots[]{"35d32637a5422024c559ff3d06ed063f60308a9f356317f83725ac90e91083ec","70afc797a00590aeb24e6f23be7d1dad1b42efd3caf93f3729914c7a55c133f9","c5e9302f2e3956a5b2716486cd72d737ac8070e6a34938aacc62c6b757dccfd6"};
+    const char* expectedShots[]{"36847f292584461c75ee4eaa53aa7b12190f71b79eac21af117a31d9869e1d19","e3c8382ff7b8aede4c96b3387bbdca70f1078a7f92b1115a852d134bef88ad61","112d0aab98285bd27741021fd883dd3e9732e36d8af491e4dd7938370e769de9"}; // 0.3 riso skin
     std::cout<<"Golden environment: "<<environment<<"\nGolden renderer: "<<renderer<<"\n";
     if(record || (!ci && environment==expectedEnvironment))
     {
@@ -1648,7 +1666,7 @@ int main(int argc,char** argv)
     if(argc>=2 && (juce::String(argv[1])=="--bench" || juce::String(argv[1])=="--profile")){bench(juce::String(argv[1])=="--profile");return failures?1:0;}
     if(argc>=3 && juce::String(argv[1])=="--renders"){renderFiles(juce::File(argv[2]));return failures?1:0;}
     if(argc>=2 && juce::String(argv[1])=="--benchmark"){testPerformance();return failures?1:0;}
-    if(argc>=2 && juce::String(argv[1])=="--editor"){testEditor();return failures?1:0;}
+    if(argc>=2 && juce::String(argv[1])=="--editor"){testEditor();testSkin();return failures?1:0;}
     if(argc>=2 && juce::String(argv[1])=="--goldens"){testGoldens(true);return failures?1:0;}
     if(argc>=2 && juce::String(argv[1])=="--loudness"){testLoudness(true);return failures?1:0;}
     // Make sure the allocation probe itself works, then clear its calibration allocation.
@@ -1656,7 +1674,7 @@ int main(int argc,char** argv)
     CHECK(audioAllocations>0);audioAllocations=0;
     testContract();testParameterText();testState();testPresets();testDryAndLifecycle();testTimingAndMidi();testRatios();testOnsetsAndSource();testFreezeAndWindows();
     testGrainFeatures();testHeadsAndLock();testColourAndSpace();testSound();testEdges();testDenseBlocks();
-    if(argc<2 || juce::String(argv[1])!="--core")testEditor(),testGoldens(),testPerformance(),testLoudness();
+    if(argc<2 || juce::String(argv[1])!="--core")testEditor(),testSkin(),testGoldens(),testPerformance(),testLoudness();
     CHECK(audioAllocations==0);
     std::cout<<"Audio allocations: "<<audioAllocations<<"\n"<<(failures?"Silt tests FAILED\n":"All Silt tests passed\n");
     return failures?1:0;

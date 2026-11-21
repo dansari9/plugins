@@ -1,4 +1,4 @@
-# silt 0.2.0
+# silt 0.3.0
 
 A granular effect by daveydidit. Eight seconds of captured main input feed up to 128 stereo grains. The first instance opens **05 tide**, fully wet. Freeze holds the history while grains continue; captured audio is not saved, so after a reopened project or a re-prepare it refills 4 s of input before holding. The cloud shows buffer time, pitch, actual grain footprints and age. Every control is visible in one 905×836 window that scales from 50–200% at a fixed aspect and saves its size.
 
@@ -16,6 +16,8 @@ For Logic Pro, copy `Silt/build/Silt_artefacts/Release/AU/silt.component` to `~/
 The four **macros** are always-visible faders. Motion adds scan, jitter, pan spread and backward spray bias; texture changes window/skew, spray slope and size spread; bloom increases feedback, diffusion, reverb size and width (0.8–1.0); chaos adds chromatically snapped pitch randomisation, reverse probability, spray and jitter.
 
 0.2 appends 20 parameters after the frozen 18: scan, lock (free / overlap / tone), heads and harmony, window shape and tilt, reverse, detune and scale, drop, repeat, band / centre / spectra colour, pan or binaural space, width, feedback, a one-knob filter, spray direction and the full onset. Every default reproduces 0.1.0's sound, and ten more factory presets (11–20) use them.
+
+0.3 is a riso "sediment" reskin of the same window: inks by region (input cobalt, grain aqua, window sand, voices lilac, colour pink, space and out coral; the macros aqua, sand, coral and pink), cream text, and the cloud tinted cool to warm from 8 s to now over a faint strata texture. Layout, controls, state and sound are 0.2's.
 
 MIDI note-on fires a grain at its sample offset in every trigger mode. Held notes transpose grains relative to note 60 (**c3**; the midi dot lights while one is held); last-note priority resumes the previous note and velocity when released. Velocity scales level. All-notes-off and all-sound-off clear the shared note stack.
 

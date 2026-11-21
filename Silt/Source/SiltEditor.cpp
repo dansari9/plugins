@@ -1,5 +1,6 @@
 // silt 0.2's v6 editor: one cell grid (0.1.0's cell, 106 x 49) drawn into a device-pixel backing image.
 // Coordinates are the v6 mockup's cells (gui/v6/v6.py); each group owns its hit cells, and only changed cells repaint.
+// 0.3 reskins it riso: each drawn cell is recoloured pixel by pixel (sediment, below). Nothing moves.
 #include "BinaryData.h"
 #include "Silt.h"
 #include <tuple>
@@ -23,6 +24,76 @@ Font mono(float size, bool bold)
     static const Typeface::Ptr faces[] { Typeface::createSystemTypefaceFor(BinaryData::GeistMonoRegular_ttf, BinaryData::GeistMonoRegular_ttfSize),
                                          Typeface::createSystemTypefaceFor(BinaryData::GeistMonoSemiBold_ttf, BinaryData::GeistMonoSemiBold_ttfSize) };
     return Font(FontOptions(faces[bold ? 1 : 0]).withPointHeight(size));
+}
+// The riso "sediment" skin (family.py silt02, approved 0.3): the accent red takes its region's ink, bright neutrals
+// cream, the cloud's neutrals its timeline ink, and the cloud's bare page a strata and halftone texture at 13%.
+enum Ink { cobalt, aqua, lilac, sand, coral, pink, cream };
+const Colour inks[] { Colour(0xff5b7cff), Colour(0xff2fd3c4), Colour(0xffa98bff), Colour(0xffe9cf8f), Colour(0xffff7f6a), Colour(0xffff4f9a), Colour(0xffefe6d2) };
+constexpr int SW = 2 * W, SH = 2 * H, fx0 = 50, fx1 = 1770, fy0 = 168, fy1 = 548; // 2x design pixels; the cloud's texture
+bool field(int x, int y) { return fy0 < y && y < fy1 && fx0 - 10 < x && x < fx1 + 30; } // where neutrals take the timeline ink
+// Octaves of smooth value noise, 3 * 2^o lattice rows down, normalised to 0..1.
+std::vector<float> fbm(int w, int h, int octaves, int seed)
+{
+    std::vector<float> out((size_t) (w * h));
+    for (int o = 0; o < octaves; ++o)
+    {
+        const int rows = 3 << o, cols = rows * w / h + 1;
+        Random random(seed * 100 + o);
+        std::vector<float> lattice((size_t) ((rows + 1) * (cols + 1)));
+        for (auto& v : lattice) v = random.nextFloat();
+        const auto at = [&](int i, int j) { return lattice[(size_t) (j * (cols + 1) + i)]; };
+        const auto smooth = [](float t) { return t * t * (3 - 2 * t); };
+        for (int y = 0; y < h; ++y)
+            for (int x = 0; x < w; ++x)
+            {
+                const float gx = (x + .5f) * (float) cols / (float) w, gy = (y + .5f) * (float) rows / (float) h, tx = smooth(gx - (int) gx), ty = smooth(gy - (int) gy);
+                const int i = (int) gx, j = (int) gy;
+                out[(size_t) (y * w + x)] += jmap(ty, jmap(tx, at(i, j), at(i + 1, j)), jmap(tx, at(i, j + 1), at(i + 1, j + 1))) / (float) (1 << o);
+            }
+    }
+    const auto [lo, hi] = std::minmax_element(out.begin(), out.end());
+    const float low = *lo, range = *hi - *lo;
+    for (auto& v : out) v = (v - low) / range;
+    return out;
+}
+// u across the stops, Bayer-dithered (2 px cells) between neighbours, like a print.
+int ramp(double u, std::initializer_list<int> stops, int x, int y)
+{
+    constexpr int bayer[4][4] { { 0, 8, 2, 10 }, { 12, 4, 14, 6 }, { 3, 11, 1, 9 }, { 15, 7, 13, 5 } };
+    const int n = (int) stops.size() - 1;
+    const double v = jlimit(0.0, 1.0, u) * n;
+    const int i = jmin((int) v, n);
+    return stops.begin()[jmin(n, i + (jlimit(0.0, 1.0, (v - i - .3) / .4) > bayer[y / 2 % 4][x / 2 % 4] / 16.0))];
+}
+// Per 2x design pixel, built once: the accent ink (bits 0-2), the timeline ink (3-5) and the texture (6-7: none, strata, halftone).
+const std::vector<uint8>& sediment()
+{
+    static const auto map = [] {
+        constexpr int w = fx1 - fx0, h = fy1 - fy0;
+        const auto wobble = fbm(SW, SH, 5, 11), strata = fbm(w, h, 6, 5), cloud = fbm(w, h, 6, 8);
+        std::vector<uint8> m((size_t) (SW * SH));
+        for (int y = 0; y < SH; ++y)
+            for (int x = 0; x < SW; ++x)
+            {
+                const double u = (x - fx0) / (double) w + (wobble[(size_t) (y * SW + x)] - .5) * .12; // 8 s .. now
+                const int time = ramp(u, { cobalt, aqua, sand, coral }, x, y);
+                const int ink = field(x, y) ? ramp(u, { aqua, coral, coral, pink }, x, y) // live grains glow hot
+                              : y <= 90 ? coral : y < 160 ? (x < 470 ? aqua : x < 920 ? sand : x < 1360 ? coral : pink) // top bar; macros
+                              : y >= 1170 ? (x < 680 ? lilac : x < 1158 ? pink : coral) // voices, colour, space + out
+                              : y >= 600 ? (x < 309 ? cobalt : x < 1158 ? aqua : sand) : time; // input, grain, window; the timeline
+                int texture = 0;
+                if (const int i = x - fx0, j = y - fy0; isPositiveAndBelow(i, w) && isPositiveAndBelow(j, h))
+                {
+                    const auto k = (size_t) (j * w + i);
+                    const auto dot = [](double v) { return v - 7 * std::floor(v / 7) - 3.5; }; // 7 px halftone cells at 45 degrees
+                    if (std::hypot(dot((i + j) * .7071), dot((j - i) * .7071)) / 4.95 < std::sqrt(jlimit(0.0, 1.0, cloud[k] * 1.5 - .7)) * .95) texture = 2;
+                    else if (j % 5 / 5.0 < (std::sin(j * 26.0 / h + strata[k] * 7) * .5 + .5) * (.35 + .65 * strata[k]) * .55) texture = 1;
+                }
+                m[(size_t) (y * SW + x)] = (uint8) (ink | time << 3 | texture << 6);
+            }
+        return m;
+    }();
+    return map;
 }
 struct Cell
 {
@@ -505,8 +576,8 @@ struct Dial : Component, Timer
         setMouseCursor(horizontal ? MouseCursor::LeftRightResizeCursor : MouseCursor::UpDownResizeCursor);
         field.setColour(TextEditor::backgroundColourId, rule), field.setColour(TextEditor::textColourId, white);
         field.setColour(TextEditor::outlineColourId, {}), field.setColour(TextEditor::focusedOutlineColourId, {});
-        field.setColour(TextEditor::highlightColourId, red.withAlpha(.4f)), field.setColour(TextEditor::highlightedTextColourId, white);
-        field.setColour(CaretComponent::caretColourId, red), field.setJustification(fader ? Justification::centredRight : Justification::centred);
+        field.setColour(TextEditor::highlightColourId, inks[coral].withAlpha(.4f)), field.setColour(TextEditor::highlightedTextColourId, white);
+        field.setColour(CaretComponent::caretColourId, inks[coral]), field.setJustification(fader ? Justification::centredRight : Justification::centred);
         field.setPopupMenuEnabled(false); // a modal edit menu would trap a host's GUI test
         field.onReturnKey = [this] { commit(); };
         field.onEscapeKey = [this] { field.setVisible(false); };
@@ -542,7 +613,7 @@ struct Dial : Component, Timer
         const auto typed = p.parse(q.paramID, field.getText());
         if (!typed && !closing)
         {
-            field.setColour(TextEditor::backgroundColourId, red);
+            field.setColour(TextEditor::backgroundColourId, inks[coral]);
             Timer::callAfterDelay(300, [f = SafePointer<Field>(&field)] { if (f) f->setColour(TextEditor::backgroundColourId, rule); });
             return false;
         }
@@ -1007,7 +1078,7 @@ struct Editor : AudioProcessorEditor, Timer
                     {
                         // Opening a new context invalidates the native image's cached CoreGraphics copy.
                         if (!graphics) graphics.emplace(image);
-                        drawCell(*graphics, i, j);
+                        skin(drawCell(*graphics, i, j));
                     }
                 }
                 else if (first >= 0 && (i == x + w || i - last > 8))
@@ -1033,11 +1104,11 @@ struct Editor : AudioProcessorEditor, Timer
             fonts[0] = mono(em, false), fonts[1] = mono(em, true);
             for (int j = 0; j < R; ++j)
                 for (int i = 0; i < C; ++i)
-                    drawCell(graphics, i, j);
+                    skin(drawCell(graphics, i, j));
         }
         g.drawImageTransformed(image, AffineTransform::scale((float) getWidth() / (float) iw, (float) getHeight() / (float) ih));
     }
-    void drawCell(Graphics& g, int i, int j)
+    Rectangle<int> drawCell(Graphics& g, int i, int j) // its pixels
     {
         const auto& c = shown->at[j][i];
         const double w = pixelCell, h = 2 * w;
@@ -1077,7 +1148,7 @@ struct Editor : AudioProcessorEditor, Timer
                     g.fillRect(r.getIntersection({ x0 + inset, row, x1 - x0 + 1 - 2 * inset, 1 }));
                 }
             }
-        if (c.c == ' ') return;
+        if (c.c == ' ') return r;
         Graphics::ScopedSaveState state(g);
         g.reduceClipRegion(r), g.setColour(c.fg);
         const float fw = (float) w, fh = (float) h, cx = (float) ((i + .5) * w), cy = (float) ((j + .55) * h), lw = jmax(1.0f, fw * .12f);
@@ -1118,6 +1189,33 @@ struct Editor : AudioProcessorEditor, Timer
             g.setFont(fonts[c.bold ? 1 : 0]);
             g.getInternalContext().drawGlyphs({ &index, 1 }, { &at, 1 }, {});
         }
+        return r;
+    }
+    // Recolour one freshly drawn cell (family.py recolor and texture): accents by region, bright neutrals cream, the cloud
+    // timeline-tinted (30% cream) over strata. The page elsewhere stays #0d0d0d.
+    void skin(Rectangle<int> r)
+    {
+        const auto& map = sediment();
+        Image::BitmapData d(image, r.getX(), r.getY(), r.getWidth(), r.getHeight(), Image::BitmapData::readWrite);
+        for (int y = 0; y < d.height; ++y)
+            for (int x = 0; x < d.width; ++x)
+            {
+                const int x2 = (r.getX() + x) * SW / image.getWidth(), y2 = (r.getY() + y) * SH / image.getHeight();
+                const auto bits = map[(size_t) (y2 * SW + x2)];
+                const auto c = d.getPixelColour(x, y);
+                const int r8 = c.getRed(), g8 = c.getGreen(), b8 = c.getBlue(), texture = bits >> 6;
+                const bool neutral = jmax(r8, g8, b8) - jmin(r8, g8, b8) < 12;
+                const float lum = (float) (r8 + g8 + b8) / 3, t = jlimit(0.0f, 1.0f, (lum - 13) / 223);
+                const auto time = inks[bits >> 3 & 7];
+                if (texture && std::abs(r8 - 13) + std::abs(g8 - 13) + std::abs(b8 - 13) < 4)
+                {
+                    const auto lift = [k = texture == 2 ? 1.0f : .8f](uint8 v) { return (uint8) (13 + jmax(0.0f, v * k - 13) * .13f); };
+                    d.setPixelColour(x, y, Colour(lift(time.getRed()), lift(time.getGreen()), lift(time.getBlue())));
+                }
+                else if (r8 - g8 > 40 && r8 - b8 > 30) d.setPixelColour(x, y, page.interpolatedWith(inks[bits & 7], jlimit(0.0f, 1.0f, (float) (r8 - 13) / 242)));
+                else if (neutral && field(x2, y2) && lum > 20) d.setPixelColour(x, y, page.interpolatedWith(time.interpolatedWith(inks[cream], .3f), t));
+                else if (neutral && lum > 150) d.setPixelColour(x, y, page.interpolatedWith(inks[cream], t));
+            }
     }
 };
 } // namespace
