@@ -1,5 +1,6 @@
 #include "Widgets.h"
 #include "../PluginProcessor.h"
+#include "Riso.h"
 
 using namespace juce;
 
@@ -82,10 +83,9 @@ Control::Control(SnapProcessor& p, Kind k, const char* id, const char* secondId)
         }
     setComponentID(id), setTitle(params[0]->getName(64).toLowerCase()), setWantsKeyboardFocus(true);
     setMouseCursor(kind == Kind::fader || kind == Kind::range ? MouseCursor::LeftRightResizeCursor : MouseCursor::UpDownResizeCursor);
-    field.setColour(TextEditor::backgroundColourId, colours::rule), field.setColour(TextEditor::textColourId, colours::primary);
+    field.setColour(TextEditor::backgroundColourId, colours::rule), field.setColour(TextEditor::textColourId, riso::paper);
     field.setColour(TextEditor::outlineColourId, {}), field.setColour(TextEditor::focusedOutlineColourId, {});
-    field.setColour(TextEditor::highlightColourId, colours::accent.withAlpha(0.4f));
-    field.setColour(CaretComponent::caretColourId, colours::accent), field.setJustification(Justification::centred);
+    field.setJustification(Justification::centred);
     field.setPopupMenuEnabled(false), field.setFont(mono(12)), field.setIndents(2, 1);
     field.onReturnKey = [this] { commit(); };
     field.onEscapeKey = [this] { field.setVisible(false), grabKeyboardFocus(); };
@@ -153,7 +153,9 @@ void Control::edit()
     if (isTimerRunning())
         timerCallback();
     field.setText(format(spec(params[(size_t) active]->paramID.toRawUTF8()), param(active).convertFrom0to1(norm(active))), false);
-    field.setColour(TextEditor::backgroundColourId, colours::rule);
+    const auto ink = riso::inkAt(*this);
+    field.setColour(TextEditor::backgroundColourId, colours::rule), field.setColour(TextEditor::highlightColourId, ink.withAlpha(0.4f));
+    field.setColour(CaretComponent::caretColourId, ink);
     field.setVisible(true), field.grabKeyboardFocus(), field.selectAll();
     repaint();
 }
@@ -173,7 +175,7 @@ bool Control::commit(bool closing)
         return true;
     if (!apply(field.getText()) && !closing)
     {
-        field.setColour(TextEditor::backgroundColourId, colours::accent);
+        field.setColour(TextEditor::backgroundColourId, riso::inkAt(*this));
         Timer::callAfterDelay(300, [f = SafePointer<Field>(&field)] {
             if (f)
                 f->setColour(TextEditor::backgroundColourId, colours::rule);

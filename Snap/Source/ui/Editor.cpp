@@ -8,6 +8,7 @@
 #include "Braille.h"
 #include "Layout.h"
 #include "PresetBrowser.h"
+#include "Riso.h"
 #include "Visualizers.h"
 #include "Widgets.h"
 
@@ -810,7 +811,7 @@ struct Editor : AudioProcessorEditor, Timer
                 [this, i, label](Graphics& g, Key& k) {
                     const bool current = i == snapshot;
                     if (current)
-                        g.setColour(primary), g.fillRect(k.getLocalBounds());
+                        riso::use(g, primary), g.fillRect(k.getLocalBounds());
                     const auto c = current ? bg : k.isMouseOver() ? primary : i < 4 && !proc.hasSnapshot(i) ? colours::dim : muted;
                     centred(g, label, 0, 2, 18, c, 12, current);
                 },
@@ -841,6 +842,7 @@ struct Editor : AudioProcessorEditor, Timer
     void paint(Graphics& g) override { g.fillAll(bg); }
     void paintLayer(Graphics& g)
     {
+        g.setImageResamplingQuality(Graphics::lowResamplingQuality), g.drawImageAt(riso::backdrop(), 0, 0);
         text(g, "magnitude", 869, 20, muted), text(g, show("magnitude"), 1255, 20, primary, 12, true);
         text(g, "daveydidit", 1344, 20, colours::dim), hline(g, 24, 50, 1392);
         for (int i = 1; i < 6; ++i)

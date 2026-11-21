@@ -13,6 +13,9 @@ constexpr juce::uint8 brailleBit(int dx, int dy) { return (juce::uint8) (dy == 3
 // Onto a cell an earlier stroke drew: or the dots in, keep the old cell, replace it. Within one stroke dots always or in.
 enum class Mode { merge, under, over };
 
+// Where a component sits in the 1440 x 840 layer (the editor's one child).
+juce::Point<float> layerOffset(const juce::Component&);
+
 // While a component paints, the lattice is pinned to the layer's origin, so dots line up across components.
 struct Lattice
 {

@@ -1,5 +1,6 @@
 #include "PresetBrowser.h"
 #include "Braille.h"
+#include "Riso.h"
 #include "../PluginProcessor.h"
 
 using namespace juce;
@@ -25,7 +26,7 @@ int scrolledOffset(int offset, int delta, int end) { return jlimit(0, end, jmin(
 String moduleName(size_t i) { return String(modules[i].name.data(), modules[i].name.size()); }
 String tagLabel(const String& name) { return name.equalsIgnoreCase("General Purpose") ? String("general") : name.toLowerCase(); }
 
-void fill(Graphics& g, Rectangle<float> bounds, Colour colour) { g.setColour(colour), g.fillRect(bounds); }
+void fill(Graphics& g, Rectangle<float> bounds, Colour colour) { riso::use(g, colour), g.fillRect(bounds); }
 
 struct ChipFlow
 {
@@ -60,7 +61,7 @@ void paragraph(Graphics& g, const String& content, Rectangle<int> box, Colour co
         return;
     const auto font = mono(11);
     g.setFont(font);
-    g.setColour(colour);
+    riso::use(g, colour);
     g.drawMultiLineText(content, box.getX(), box.getY() + roundToInt(font.getAscent()), box.getWidth());
 }
 
@@ -73,10 +74,9 @@ void styleEditor(TextEditor& editor, int inset, const String& title)
     editor.setColour(TextEditor::backgroundColourId, Colours::transparentBlack);
     editor.setColour(TextEditor::outlineColourId, Colours::transparentBlack);
     editor.setColour(TextEditor::focusedOutlineColourId, Colours::transparentBlack);
-    editor.setColour(TextEditor::textColourId, primary);
+    editor.setColour(TextEditor::textColourId, riso::paper);
     editor.setColour(TextEditor::highlightColourId, tag);
-    editor.setColour(TextEditor::highlightedTextColourId, primary);
-    editor.setColour(CaretComponent::caretColourId, accent);
+    editor.setColour(TextEditor::highlightedTextColourId, riso::paper);
     editor.setEscapeAndReturnKeysConsumed(false);
 }
 
@@ -155,6 +155,7 @@ struct PresetBrowser::Impl
     {
         collection.setText({}, false);
         collection.setBounds(sourceBox(store.collections().size() + 3 - sourceScroll));
+        collection.setColour(CaretComponent::caretColourId, riso::inkAt(collection));
         collection.setVisible(true);
         collection.grabKeyboardFocus();
         browser.repaint();
@@ -366,7 +367,11 @@ void PresetBrowser::open(const String& currentKey)
 
 void PresetBrowser::finish(bool cancel) { impl->finish(cancel); }
 
-void PresetBrowser::resized() { impl->search.setBounds(searchBox); }
+void PresetBrowser::resized()
+{
+    impl->search.setBounds(searchBox);
+    impl->search.setColour(CaretComponent::caretColourId, riso::inkAt(impl->search));
+}
 
 void PresetBrowser::paint(Graphics& g)
 {
@@ -374,7 +379,7 @@ void PresetBrowser::paint(Graphics& g)
     const auto rows = p.store.list(p.filter);
     const auto selected = std::ranges::find(rows, p.selectedKey, &Preset::key);
     const Lattice lattice(*this);
-    g.fillAll(bg);
+    g.setImageResamplingQuality(Graphics::lowResamplingQuality), g.drawImageAt(riso::backdrop(), -roundToInt(Braille::origin.x), -roundToInt(Braille::origin.y));
     ui::box(g, getLocalBounds().toFloat(), rule);
     text(g, "presets", 16, 12, primary, 12, true);
     text(g, String(rows.size()) + u(" presets · ") + (selected != rows.end() ? "1 selected" : "0 selected"), 92, 13, muted, 11);

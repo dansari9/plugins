@@ -1,5 +1,6 @@
 #include "Visualizers.h"
 #include "Braille.h"
+#include "Riso.h"
 #include "../PluginProcessor.h"
 #include <juce_dsp/juce_dsp.h>
 #include <algorithm>
@@ -228,6 +229,11 @@ void Visualizer::update(const Levels& levels)
 void Visualizer::paint(Graphics& g)
 {
     const Lattice lattice(*this);
+    {
+        const Graphics::ScopedSaveState save(g); // the printed texture first, so it shows only between the dots
+        g.setOpacity(riso::textureOpacity), g.setImageResamplingQuality(Graphics::lowResamplingQuality);
+        g.drawImage(riso::texture(module), getLocalBounds().toFloat());
+    }
     gridDots(g, 217, 104);
     const auto& f = state->frame;
     const auto shade = [&](Colour c) { return dimmed(c, dim); };
@@ -252,7 +258,7 @@ void Visualizer::paint(Graphics& g)
                 const float y = 8 + 26.0f * (float) i;
                 box(g, { 162, y, 50, 20 }, shade(rule));
                 square(g, 168, y + 6, f.lit[i], accent, dim);
-                g.setColour(shade(f.lit[i] ? primary : muted));
+                riso::use(g, shade(f.lit[i] ? primary : muted));
                 g.fillPath(state->spectrum->labels[i]);
             }
             break;

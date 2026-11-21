@@ -1,4 +1,5 @@
 #include "Braille.h"
+#include "Riso.h"
 #include <juce_audio_processors/juce_audio_processors.h>
 
 using namespace juce;
@@ -7,7 +8,7 @@ namespace snap::ui
 {
 Point<float> Braille::origin;
 
-Lattice::Lattice(const Component& c) : saved(Braille::origin)
+Point<float> layerOffset(const Component& c)
 {
     auto* layer = &c; // the editor's one child, which holds everything in 1440 x 840 logical px
     while (auto* p = layer->getParentComponent())
@@ -16,8 +17,10 @@ Lattice::Lattice(const Component& c) : saved(Braille::origin)
             break;
         layer = p;
     }
-    Braille::origin = layer->getLocalPoint(&c, Point<float>());
+    return layer->getLocalPoint(&c, Point<float>());
 }
+
+Lattice::Lattice(const Component& c) : saved(Braille::origin) { Braille::origin = layerOffset(c); }
 
 Lattice::~Lattice() { Braille::origin = saved; }
 
@@ -27,7 +30,7 @@ Braille::~Braille()
         if (taken[(size_t) i])
         {
             const auto& c = cells[i];
-            g.setColour(Colour(c.argb));
+            g.setColour(riso::ink(Colour(c.argb), { (float) (c.col * charW + charW / 2), (float) (c.row * charH + charH / 2) }));
             for (int dx = 0; dx < 2; ++dx)
                 for (int dy = 0; dy < 4; ++dy)
                     if (c.bits & brailleBit(dx, dy))

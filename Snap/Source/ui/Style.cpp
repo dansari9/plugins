@@ -1,5 +1,6 @@
 #include "Style.h"
 #include "Braille.h"
+#include "Riso.h"
 #include "BinaryData.h"
 
 using namespace juce;
@@ -17,7 +18,7 @@ Font mono(float size, bool bold)
 // Geist Mono's ascent + descent is 1.3 em, so a box that tall, centred, puts the baseline where the mockup's text has it.
 void text(Graphics& g, const String& s, float x, float y, Colour c, float size, bool bold, float width, Justification j)
 {
-    g.setColour(c), g.setFont(mono(size, bold));
+    riso::use(g, c), g.setFont(mono(size, bold));
     const float w = width > 0 ? width : textWidth(s, size) + size;
     g.drawText(s, Rectangle<float>(x, y, w, size * 1.3f), j.getOnlyHorizontalFlags() | Justification::verticallyCentred, false);
 }
@@ -117,7 +118,7 @@ void led(Graphics& g, Rectangle<float> r, Colour c) { Braille(g).fill(r, c, true
 
 void moduleGlyph(Graphics& g, Module m, float x, float y, Colour c)
 {
-    g.setColour(c);
+    riso::use(g, c);
     const float cx = x + 6, cy = y + 9;
     switch (m)
     {
@@ -181,7 +182,7 @@ void arrow(Graphics& g, float x, float y, Colour c)
     Path p;
     p.startNewSubPath(x + 1, y + 8.5f), p.lineTo(x + 11, y + 8.5f);
     p.startNewSubPath(x + 7.5f, y + 5), p.lineTo(x + 11, y + 8.5f), p.lineTo(x + 7.5f, y + 12);
-    g.setColour(c), g.strokePath(p, PathStrokeType(1.1f));
+    riso::use(g, c), g.strokePath(p, PathStrokeType(1.1f));
 }
 
 void swapArrows(Graphics& g, float x, float y, Colour c)
@@ -189,7 +190,7 @@ void swapArrows(Graphics& g, float x, float y, Colour c)
     Path p;
     p.startNewSubPath(x + 1, y + 6), p.lineTo(x + 11, y + 6), p.startNewSubPath(x + 8.5f, y + 3.5f), p.lineTo(x + 11, y + 6), p.lineTo(x + 8.5f, y + 8.5f);
     p.startNewSubPath(x + 11, y + 11), p.lineTo(x + 1, y + 11), p.startNewSubPath(x + 3.5f, y + 8.5f), p.lineTo(x + 1, y + 11), p.lineTo(x + 3.5f, y + 13.5f);
-    g.setColour(c), g.strokePath(p, PathStrokeType(1.1f));
+    riso::use(g, c), g.strokePath(p, PathStrokeType(1.1f));
 }
 
 void menuIcon(Graphics& g, float x, float y, Colour c)

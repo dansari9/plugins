@@ -6,7 +6,7 @@ if(APPLE)
 endif()
 
 # Bump on every build that is handed out: Logic caches Audio Units by version.
-project(Snap VERSION 0.2.0 LANGUAGES C CXX)
+project(Snap VERSION 0.4.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -59,6 +59,7 @@ target_sources(Snap PRIVATE
     Source/ui/Widgets.cpp
     Source/ui/Style.cpp
     Source/ui/Braille.cpp
+    Source/ui/Riso.cpp
     Source/ui/Visualizers.cpp
     Source/ui/PresetBrowser.cpp
     Source/Parameters.cpp
@@ -69,6 +70,9 @@ target_sources(Snap PRIVATE
 )
 juce_add_binary_data(SnapFonts SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/Assets/Fonts/GeistMono-Regular.ttf
     ${CMAKE_CURRENT_SOURCE_DIR}/Assets/Fonts/GeistMono-SemiBold.ttf)
+# The riso skin's ink field and visualizer textures; regenerate with Tools/generate_riso.py.
+file(GLOB snap_riso CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/Resources/riso/*.png)
+juce_add_binary_data(SnapRiso HEADER_NAME RisoData.h NAMESPACE RisoData SOURCES ${snap_riso})
 # The generated impulse responses (space) and noise loops (hiss), embedded; regenerate with Tools/generate_*.py.
 file(GLOB snap_irs CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/Resources/irs/*.wav)
 file(GLOB snap_noise CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/Resources/noise/*.wav)
@@ -90,6 +94,7 @@ target_compile_definitions(Snap
 target_link_libraries(Snap
     PRIVATE
         SnapFonts
+        SnapRiso
         SnapSpaceIRs
         SnapSubHissNoise
         SnapFactoryPresets

@@ -7,6 +7,7 @@
 #include "PluginProcessor.h"
 #include "ui/Braille.h"
 #include "ui/PresetBrowser.h"
+#include "ui/Riso.h"
 #include "ui/Widgets.h"
 #include "presets/PresetStore.h"
 #include "presets/StateIO.h"
@@ -316,7 +317,7 @@ static void testIdentity() // (4)
     CHECK(juce::String(JUCE_STRINGIFY(JucePlugin_AUMainType)) == "'aufx'");
     CHECK(juce::String(JUCE_STRINGIFY(JucePlugin_CFBundleIdentifier)) == "com.dripworks.snap");
     CHECK(juce::String(JucePlugin_Name) == "snap" && juce::String(JucePlugin_Manufacturer) == "daveydidit");
-    CHECK(juce::String(JucePlugin_VersionString) == "0.2.0");
+    CHECK(juce::String(JucePlugin_VersionString) == "0.4.0");
     // The wrappers derive the VST3 class IDs and the AU/VST3 numeric parameter IDs from the codes and IDs only under these settings.
     static_assert(JUCE_VST3_CAN_REPLACE_VST2 == 0 && JUCE_FORCE_USE_LEGACY_PARAM_IDS == 0, "frozen host-facing IDs");
     CHECK(!JucePlugin_IsSynth && !JucePlugin_WantsMidiInput);
@@ -647,6 +648,47 @@ static void testBraille()
     }
     CHECK(image.getPixelAt(13, 30).getGreen() > 200 && image.getPixelAt(13, 31).getAlpha() > 0);
     CHECK(image.getPixelAt(2, 2).getRed() > 200 && image.getPixelAt(5, 6).getRed() > 200);
+}
+
+// The riso ink field: deterministic, one ink per 240 px column (push grey), bright neutrals in paper ink, others untouched.
+static void testRiso()
+{
+    using namespace snap::ui;
+    CHECK(riso::field().getWidth() == 1440 && riso::field().getHeight() == 840 && riso::backdrop().getWidth() == 1440);
+    CHECK(riso::ink(colours::accent, { 700, 300 }) == riso::ink(colours::accent, { 700, 300 }));
+    const auto nearest = [](juce::Colour c) { // the ink this pixel was printed from (the field dims inks by up to 12 %)
+        int best = 0;
+        float bestDistance = 1e9f;
+        for (int k = 0; k < 6; ++k)
+        {
+            const auto i = riso::inks[k];
+            const float d = juce::square(c.getFloatRed() - 0.94f * i.getFloatRed()) + juce::square(c.getFloatGreen() - 0.94f * i.getFloatGreen())
+                          + juce::square(c.getFloatBlue() - 0.94f * i.getFloatBlue());
+            if (d < bestDistance)
+                bestDistance = d, best = k;
+        }
+        return best;
+    };
+    for (int k = 0; k < 6; ++k)
+    {
+        int hits = 0, n = 0;
+        for (int y = 0; y < 840; y += 7, ++n)
+            hits += nearest(riso::ink(colours::accent, { 240.0f * (float) k + 120, (float) y })) == k ? 1 : 0;
+        CHECK(hits * 10 > n * 7); // at least 70 % of the column's centre line
+    }
+    const auto push = riso::ink(colours::accent, { 1320, 420 });
+    CHECK(push.getRed() == push.getGreen() && push.getGreen() == push.getBlue());
+    CHECK(riso::ink(colours::accent.withAlpha(0.5f), { 10, 10 }).getAlpha() == colours::accent.withAlpha(0.5f).getAlpha());
+    CHECK(riso::ink(colours::primary, { 10, 10 }) == riso::paper);
+    CHECK(riso::ink(colours::muted, { 10, 10 }) == colours::muted && riso::ink(colours::dim, { 10, 10 }) == colours::dim);
+    const auto glow = [](int x0) { // any ink in the 120 px glow box behind a column's amount dial
+        for (int y = 492; y < 612; ++y)
+            for (int x = x0 - 60; x < x0 + 60; ++x)
+                if (const auto c = riso::backdrop().getPixelAt(x, y); c.getBlue() != c.getRed())
+                    return true;
+        return false;
+    };
+    CHECK(glow(132) && glow(1072) && !glow(1307));
 }
 
 static void testEditor()
@@ -1077,7 +1119,7 @@ int main(int argc, char** argv)
     if (argc == 2 && juce::String(argv[1]) == "--bench")
         return benchmark();
     if (argc == 2 && juce::String(argv[1]) == "--editor") // the editor tests on their own
-        testBraille(), testEditor();
+        testBraille(), testRiso(), testEditor();
     else
     if (argc == 3 && juce::String(argv[1]) == "--render")
         return render(juce::File::getCurrentWorkingDirectory().getChildFile(argv[2]));
@@ -1102,6 +1144,7 @@ int main(int argc, char** argv)
     testBounded();
     testSound();
     testBraille();
+    testRiso();
     testEditor();
     testDsp();
     testPress();

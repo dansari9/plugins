@@ -2,8 +2,9 @@
 #include "../dsp/modules/Modules.h"
 #include <juce_gui_basics/juce_gui_basics.h>
 
-// The ascii look: monochrome plus one red, Geist Mono text, every graphic braille dots (Braille.h). Every coordinate in
-// the UI is in the 1440 x 840 logical layout of the approved mockup; the editor scales the whole layer.
+// The ascii look: monochrome plus one accent, Geist Mono text, every graphic braille dots (Braille.h), printed riso style:
+// the accent and the bright neutrals resolve to inks by position as they are drawn (Riso.h). Every coordinate in the UI
+// is in the 1440 x 840 logical layout of the approved mockup; the editor scales the whole layer.
 namespace snap::ui
 {
 namespace colours
