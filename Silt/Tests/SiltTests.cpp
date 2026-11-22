@@ -163,7 +163,7 @@ static void testContract()
     CHECK(juce::String(JUCE_STRINGIFY(JucePlugin_AUMainType))=="'aumf'");
     CHECK(juce::String(JUCE_STRINGIFY(JucePlugin_CFBundleIdentifier))=="com.dripworks.silt");
     CHECK(juce::String(JucePlugin_Name)=="silt" && juce::String(JucePlugin_Manufacturer)=="daveydidit");
-    CHECK(juce::String(JucePlugin_VersionString)=="0.3.0" && juce::String(JucePlugin_Vst3Category)=="Fx");
+    CHECK(juce::String(JucePlugin_VersionString)=="0.4.0" && juce::String(JucePlugin_Vst3Category)=="Fx");
     CHECK(!JucePlugin_IsSynth && JucePlugin_WantsMidiInput && !JucePlugin_ProducesMidiOutput);
     Proc p;
     CHECK(p.getParameters().size()==(int)std::size(contract) && p.stateVersion==2 && p.getNumPrograms()==20);
@@ -611,7 +611,9 @@ static void testGrainFeatures()
     const auto bell=window({}),pluck=window({{"tilt",-100}}),swell=window({{"tilt",100}}),top=window({{"shape",50}}),rect=window({{"shape",100}});
     std::cout<<"Window peaks: bell "<<peak(bell)<<" pluck "<<peak(pluck)<<" swell "<<peak(swell)<<"; flat samples "<<flat(bell)<<" / "<<flat(top)<<" / "<<flat(rect)<<"\n";
     CHECK(std::abs(peak(bell)-2399)<=2 && std::abs(peak(pluck)-95)<=2 && std::abs(peak(swell)-4703)<=2);
-    CHECK(flat(bell)<200 && flat(top)>600 && flat(top)<1000 && flat(rect)>=4799-2*48-2 && rect.front()<.05f);
+    // 0.4: shape narrows the window to 3/4 of the grain at 50 % and 1/2 at 100 % (square, 1 ms edges), silent after it
+    CHECK(flat(bell)<200 && flat(top)>450 && flat(top)<800 && flat(rect)>=2399-2*48-2 && flat(rect)<=2400 && rect.front()<.05f && rect.back()<=0.001f);
+    CHECK(top[3700]<=0.001f && top[3500]>0.001f); // 3/4 of the grain
     // Grain events: pitch, fire time and where each grain starts reading (capture frames).
     struct Grain{float pitch;juce::int64 frame;double start,back;};
     const auto grains=[](const Settings& s,int samples=48000)
@@ -926,6 +928,34 @@ static void testSound()
     CHECK(run(a,30000,512,first)==run(b,30000,512,first));set(b,"texture",100);first.offset=30000;CHECK(run(a,12000,512,first)==run(b,12000,512,first));
     // Capture history and fired events reflect actual audio, and are stable without processBlock.
     CHECK(a.feed.events>0 && a.feed.time==42000);const auto count=a.feed.events.load();CHECK(count==a.feed.events);
+}
+
+
+// 0.4: window shape and tilt are clearly audible in the default preset's dense cloud: on the pluck program, the widest
+// change each makes across its range must reach 2 dB on the 5 ms envelope (frames within 40 dB of the peak) or level.
+// The site's tools/silt-audit.mjs measures the same on the demo phrase (logs/notes/silt-audit.md).
+static void testWindowAudible()
+{
+    const auto render=[](float shape,float tilt)
+    {
+        Proc p;load(p,blob("<SILT/>"));set(p,{{"shape",shape},{"tilt",tilt}});prepare(p);
+        Program program(2);Run material=program.input();
+        run(p,4*48000,512,material);material.offset=4*48000;
+        return run(p,6*48000,512,material);
+    };
+    const auto envelope=[](const Audio& a){std::vector<double> e;for(size_t s=0;s+240<=a.l.size();s+=240){double q=0;for(size_t i=s;i<s+240;++i)q+=(double)a.l[i]*a.l[i]+(double)a.r[i]*a.r[i];e.push_back(10*std::log10(q/480+1e-12));}return e;};
+    const auto change=[&](const Audio& a,const Audio& b)
+    {
+        const auto ea=envelope(a),eb=envelope(b);double top=-1e9,sum=0,ra=0,rb=0;int n=0;
+        for(size_t k=0;k<ea.size();++k)top=std::max({top,ea[k],eb[k]});
+        for(size_t k=0;k<ea.size();++k)if(std::max(ea[k],eb[k])>top-40)sum+=std::abs(std::max(ea[k],top-60)-std::max(eb[k],top-60)),++n;
+        for(size_t i=0;i<a.l.size();++i)ra+=(double)a.l[i]*a.l[i],rb+=(double)b.l[i]*b.l[i];
+        return std::max(n?sum/n:0.0,std::abs(10*std::log10((ra+1e-20)/(rb+1e-20))));
+    };
+    const auto s0=render(0,0),s50=render(50,0),s100=render(100,0),pluck=render(0,-100),swell=render(0,100);
+    const double shape=std::max({change(s0,s100),change(s0,s50),change(s50,s100)}),tilt=std::max({change(pluck,s0),change(swell,s0),change(pluck,swell)});
+    std::cout<<"Window audibility (pluck, 05 tide): shape "<<shape<<" dB, tilt "<<tilt<<" dB\n";
+    CHECK(shape>=2 && tilt>=2);
 }
 
 static void testLoudness(bool tableOnly=false)
@@ -1612,14 +1642,13 @@ static void testGoldens(bool record=false)
     const bool ci=std::getenv("GITHUB_ACTIONS")!=nullptr;
     const char* expectedEnvironment="14.2.0/Release/07adb83962bd7f372226ea055bca705c159534fa4a19d3279488b12cd95eea5c", *expectedRenderer="506141d22f79fb1886eb4dec6e8e40da3c3c48e3df63f1f3d60e979dd78361b5";
     const char* expectedSound="c84295f77b28dd4228a7fe471bf7e41937303f55ff5663e927482f9dca5907da";
-    const char* expectedShots[]{"36847f292584461c75ee4eaa53aa7b12190f71b79eac21af117a31d9869e1d19","e3c8382ff7b8aede4c96b3387bbdca70f1078a7f92b1115a852d134bef88ad61","112d0aab98285bd27741021fd883dd3e9732e36d8af491e4dd7938370e769de9"}; // 0.3 riso skin
+    const char* expectedShots[]{"403fbe5747b4a7328cdea437ebb3830b086d7afdfffe1b7fd202ca05c9fde30b","f584fb949cc906f95de05e8a9872ac4304097af1bcac0d3feca5a77211ef9647","1ff0096dc94cb858963d8d71180d448c629c574e0c98a2005f695a856464a980"}; // 0.4: the fixed-width preset name
     std::cout<<"Golden environment: "<<environment<<"\nGolden renderer: "<<renderer<<"\n";
     if(record || (!ci && environment==expectedEnvironment))
     {
         const auto audio=soundHash();std::cout<<"Golden sound: "<<audio<<"\n";
         if(!record)CHECK(audio==expectedSound);
-        const char* expectedLegacy[]{"49a665f135552f91","4f990f341d3ef688","ad373836121b1f3c","ff7b604aba9a3ab8","41e0d592e0b2ab2a","63f176c6e5a5e2d5",
-            "3a8e7ffa6fbe0cd3","88107176265b1e65","42faedd107cb9113","4f990f341d3ef688","99bfadade61751c0","cc09de93224ecb2d"}; // 0.1.0, ad32710
+        const char* expectedLegacy[]{"49a665f135552f91","6454966756e73380","20f30548f443f925","fb36f827a1e13baf","88aea60367c84d31","53cd7ca7d81578e1","3a8e7ffa6fbe0cd3","c3ccb5926b536e6a","a1a905fc3e8112d7","6454966756e73380","93353edc6e5795e7","a43203e4e8698b7f"}; // 0.1.0 sessions; 0.4.0 re-recorded: their shape and tilt are louder by design
         const auto legacy=legacyHashes();CHECK(legacy.size()==std::size(expectedLegacy));
         for(size_t k=0;k<legacy.size();++k)
         {
@@ -1674,7 +1703,7 @@ int main(int argc,char** argv)
     CHECK(audioAllocations>0);audioAllocations=0;
     testContract();testParameterText();testState();testPresets();testDryAndLifecycle();testTimingAndMidi();testRatios();testOnsetsAndSource();testFreezeAndWindows();
     testGrainFeatures();testHeadsAndLock();testColourAndSpace();testSound();testEdges();testDenseBlocks();
-    if(argc<2 || juce::String(argv[1])!="--core")testEditor(),testSkin(),testGoldens(),testPerformance(),testLoudness();
+    if(argc<2 || juce::String(argv[1])!="--core")testEditor(),testSkin(),testGoldens(),testPerformance(),testWindowAudible(),testLoudness();
     CHECK(audioAllocations==0);
     std::cout<<"Audio allocations: "<<audioAllocations<<"\n"<<(failures?"Silt tests FAILED\n":"All Silt tests passed\n");
     return failures?1:0;

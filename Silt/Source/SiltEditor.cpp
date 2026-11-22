@@ -366,19 +366,21 @@ struct Header : Group
         });
     }
     void tell(String message) { notice = std::move(message), noticeTime = Time::getMillisecondCounter(); }
+    static constexpr int nameCells = 9; // the longest name shown (names are cut to it)
     void place(int index, const String& user)
     {
         if (index == program && (index >= 0 || name == user.substring(0, 9))) return;
         program = index;
-        name = (index >= 0 ? p.getProgramName(index) : user).substring(0, 9);
-        nextPreset.setBounds(cells(15 + name.length(), 1, 2, 1));
-        picker.setBounds(cells(11, 1, 4 + name.length(), 1));
+        name = (index >= 0 ? p.getProgramName(index) : user).substring(0, nameCells);
+        // the name box is nameCells wide whatever the name, so ‹ and › never move
+        nextPreset.setBounds(cells(15 + nameCells, 1, 2, 1));
+        picker.setBounds(cells(11, 1, 4 + nameCells, 1));
     }
     void draw(Grid& g) override
     {
         g.put(3, 1, "silt", white, true), g.put(10, 1, u("‹"), grey);
         g.put(12, 1, program >= 0 ? String(program + 1).paddedLeft('0', 2) : String("--"), grey);
-        g.put(15, 1, name, white, true), g.put(16 + name.length(), 1, u("›"), grey);
+        g.put(15, 1, name, white, true), g.put(16 + nameCells, 1, u("›"), grey);
         g.put(27, 1, "save", grey);
         for (int s = 0; s < 2; ++s) g.put(34 + 2 * s, 1, s ? "B" : "A", p.abSlot() == s ? page : grey, p.abSlot() == s, p.abSlot() == s ? white : Colour());
         g.put(42, 1, "randomize", grey);

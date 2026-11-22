@@ -1,4 +1,4 @@
-# silt 0.3.0
+# silt 0.4.0
 
 A granular effect by daveydidit. Eight seconds of captured main input feed up to 128 stereo grains. The first instance opens **05 tide**, fully wet. Freeze holds the history while grains continue; captured audio is not saved, so after a reopened project or a re-prepare it refills 4 s of input before holding. The cloud shows buffer time, pitch, actual grain footprints and age. Every control is visible in one 905×836 window that scales from 50–200% at a fixed aspect and saves its size.
 
@@ -37,3 +37,11 @@ Previous/next includes factory and saved user presets. **save** writes `user nn.
 `Source/SiltReverb.h` is self-contained and marked **SILT_REVERB: removable**. Remove its setup/process calls and file to remove the FDN; retain `reverbOn` and `reverb` as inert frozen parameters. Bloom's feedback, diffusion and stereo functions remain useful.
 
 On Linux use Ninja and run `xvfb-run -a Silt/build/SiltTests`. `--core` runs DSP/state regressions; `--screenshot`, `--screenshot-freeze` and `--screenshot-v6` (`path.png [scale]`) render tide after 4.8 s of pad (freeze: then held for 1 s) at 1× (905×836) or 2× (default) pixels; `--screenshot-v6` matches the design mockup's size and illustrated meters. `--loudness`, `--bench` and `--renders /absolute/folder` provide measurements and audio exports. Goldens require the recorded compiler/math/renderer fingerprint and skip on GitHub Actions. Geist Mono is included under the SIL Open Font License in `Assets/Fonts/OFL.txt`.
+
+## 0.4.0
+
+- **shape** and **tilt** are clearly audible across their range, even in dense clouds: shape now also narrows the grain
+  window (the whole grain at 0 %, three quarters at 50 %, half at 100 %, square past the flat top), and tilt also
+  sharpens the window's long side (up to cubed at ±100 %), so pluck and swell are real. At 0 both are as before.
+- The editor's cloud, waveform and clock hold still while no audio flows (silent input and output), as when the host
+  stops; the preset name box has a fixed width so `‹` and `›` never move.

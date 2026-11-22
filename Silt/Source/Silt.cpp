@@ -210,6 +210,7 @@ struct Capture
     int count = 0, slice = 1, startup = 240;
     double history = 384000;
     std::array<std::atomic<float>, silt::Feed::bins>* wave = nullptr;
+    bool quiet = false; // no audio flowing: the telemetry holds still
     std::atomic<int>* at = nullptr;
 
     void prepare(size_t size, int sliceLength, double frames)
@@ -250,8 +251,11 @@ struct Capture
         peak = jmax(peak, std::abs(d[0][i]), std::abs(d[1][i]));
         if (++count >= slice)
         {
-            const int k = at->load(std::memory_order_relaxed);
-            (*wave)[(size_t) k].store(peak, std::memory_order_relaxed), at->store((k + 1) % silt::Feed::bins, std::memory_order_relaxed);
+            if (!quiet) // silence pauses the editor's waveform, as it pauses the cloud
+            {
+                const int k = at->load(std::memory_order_relaxed);
+                (*wave)[(size_t) k].store(peak, std::memory_order_relaxed), at->store((k + 1) % silt::Feed::bins, std::memory_order_relaxed);
+            }
             peak = 0, count = 0;
         }
     }
@@ -329,6 +333,7 @@ struct Grain
     float gl = 0, gr = 0, pitch = 0;
     float peak = 0.5f, attack = 1, decay = 1;
     float morph = 0, edge = 2; // shape: 0 the texture's table, 1 the flat-top table, 2 a rectangle with 1 ms edges
+    float sharp = 1;           // tilt: the power the window's long side is raised to (1 with the peak centred)
     unsigned tag = 0;
     int shape = 0, fade = 0;   // fade: a stolen grain's linear release length (samples), 0 = not stolen
     int level = 0;
@@ -456,6 +461,8 @@ struct SiltProcessor::Engine
     std::vector<float> diffusion[4];
     size_t diffusionAt[4] {};
     float level = 0, inputLevel = 0, levelGlide = 0, inputAttack = 0, inputRelease = 0, meterDecay = 0;
+    bool quietTelemetry = false; // no audio in or out this block: the editor's telemetry holds still
+    float lastOutputPeak = 0;
     float lowpass = 0, highpass = 0, dcCoef = 0, outputDcCoef = 0; // the fixed feedback band and DC blockers
     SmoothedValue<float> mix, gain, verb, width, feedback, power;
     std::array<Azimuth, 7> buses;    // binaural; they run while any grain is routed to them (`spatial` grains)
@@ -525,13 +532,29 @@ struct SiltProcessor::Engine
     }
     float envelope(const Grain& g) const
     {
-        const float x = (float) (g.phase < g.peak ? g.phase * g.attack : 0.5f + (g.phase - g.peak) * g.decay);
-        const float w = lookup(env[g.shape], x);
-        if (g.morph <= 0) return w; // shape 0: 0.1.0's windows
-        const float flat = lookup(env[1], x);
-        if (g.morph <= 1) return w + g.morph * (flat - w);
-        const float rect = jmin(1.0f, (float) g.phase * g.edge, (float) (1 - g.phase) * g.edge);
-        return flat + (g.morph - 1) * (rect - flat);
+        // Shape narrows the window as it goes from the texture's curve to flat-top to square: it fills the whole grain at
+        // 0 %, three quarters at 50 % and half at 100 %, so the cloud thins into a gated chop.
+        const float duty = 1.0f - 0.25f * g.morph, at = (float) g.phase / duty;
+        if (at >= 1.0f)
+            return 0.0f;
+        const bool rising = at < g.peak;
+        const float x = rising ? at * g.attack : 0.5f + (at - g.peak) * g.decay;
+        float w = lookup(env[g.shape], x);
+        if (g.morph > 0) // shape 0: 0.1.0's windows
+        {
+            const float flat = lookup(env[1], x);
+            if (g.morph <= 1)
+                w = w + g.morph * (flat - w);
+            else
+            {
+                const float rect = jmin(1.0f, at * g.edge, (1 - at) * g.edge);
+                w = flat + (g.morph - 1) * (rect - flat);
+            }
+        }
+        // Tilt sharpens the long side as well as moving the peak: a real pluck (fast fall) or swell (late rise).
+        if (!exactlyEqual(g.sharp, 1.0f) && rising == (g.peak > 0.5f))
+            w = std::pow(w, g.sharp);
+        return w;
     }
     // The nearest note of a scale (chromatic, major, minor, pentatonic) over the source's pitch.
     static double snap(double st, int mode)
@@ -644,6 +667,7 @@ struct SiltProcessor::Engine
         g->peak = jlimit(0.02f, 0.98f, 0.5f - 0.3f * macro(Texture) + 0.0048f * v[Tilt]); // tilt: -100 pluck .. +100 swell
         g->morph = v[Shape] / 50, g->edge = (float) jmax(2.0, g->length / (0.001 * fs));
         g->attack = 0.5f / g->peak, g->decay = 0.5f / (1 - g->peak);
+        g->sharp = 1.0f + 0.02f * std::abs(v[Tilt]); // the tilt control alone: x3 at +-100 %, 1 (as before) at 0
         g->shifted = shifted && std::abs(r - 1) > 1e-8, g->pitch = (float) st;
         g->step = shifted ? dir : dir * r;
         g->pos = shifted ? (reverse ? start + size : start) : (reverse ? start + dur * r : start);
@@ -746,7 +770,10 @@ struct SiltProcessor::Engine
             feed.lastFire.store(frame, std::memory_order_relaxed);
             feed.lastPitch.store(g.pitch, std::memory_order_relaxed);
             feed.lastLength.store(g.left, std::memory_order_relaxed);
-            // One event per grain at its start: the cloud colours a grain by its age since it began.
+            // One event per grain at its start: the cloud colours a grain by its age since it began. Grains of silence
+            // (no audio flowing in or out) leave no trace, so the cloud only moves with sound.
+            if (quietTelemetry)
+                return;
             const auto serial = feed.events.load(std::memory_order_relaxed);
             auto& e = feed.history[(size_t) serial % silt::Feed::historySize];
             // A seqlock per slot prevents a GUI frame combining data from two ring generations.
@@ -825,6 +852,12 @@ struct SiltProcessor::Engine
         const int n = buffer.getNumSamples(), ins = jmin(2, p.getMainBusNumInputChannels()), outs = jmin(2, p.getMainBusNumOutputChannels());
         const auto sc = p.getBusBuffer(buffer, true, 1);
         const int scs = jmin(2, sc.getNumChannels());
+        float inputPeak = 0;
+        for (int c = 0; c < ins; ++c)
+            inputPeak = jmax(inputPeak, buffer.getMagnitude(c, 0, n));
+        for (int c = 0; c < scs; ++c)
+            inputPeak = jmax(inputPeak, sc.getMagnitude(c, 0, n));
+        quietTelemetry = capture.quiet = !(inputPeak > 1.0e-5f) && !(lastOutputPeak > 1.0e-5f);
         // The host's tempo (120 without one) and, while it plays, its position for the synced clock.
         double bpm = 120, ppq = 0;
         bool playing = false;
@@ -1076,6 +1109,9 @@ struct SiltProcessor::Engine
             }
             chunk += count;
         }
+        lastOutputPeak = 0;
+        for (int c = 0; c < outs; ++c)
+            lastOutputPeak = jmax(lastOutputPeak, buffer.getMagnitude(c, 0, n));
         publish(feed, bpm);
     }
     float diffuse(float x, size_t k)
@@ -1095,6 +1131,9 @@ struct SiltProcessor::Engine
                 feed.env[k++].store(jmax(0.001f, envelope(g)), std::memory_order_relaxed);
             }
         for (; k < (size_t) silt::Feed::dots; ++k) feed.env[k].store(0, std::memory_order_relaxed);
+        for (size_t i = 0; i < 3; ++i) feed.meter[i].store(meters[i], std::memory_order_relaxed);
+        if (quietTelemetry) // the cloud's clock and positions hold while no audio flows
+            return;
         feed.centre.store((float) ((position(bpm) + scanned) / fs), std::memory_order_relaxed);
         feed.frozen.store(capture.gain <= 0, std::memory_order_relaxed);
         feed.captureHead.store(capture.head, std::memory_order_relaxed);
