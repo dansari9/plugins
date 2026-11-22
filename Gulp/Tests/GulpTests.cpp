@@ -182,7 +182,7 @@ static void testIdentity()
     CHECK(JucePlugin_ManufacturerCode == 0x44776b73); // 'Dwks'
     CHECK(juce::String(JUCE_STRINGIFY(JucePlugin_AUMainType)) == "'aumf'");
     CHECK(juce::String(JUCE_STRINGIFY(JucePlugin_CFBundleIdentifier)) == "com.dripworks.gulp");
-    CHECK(juce::String(JucePlugin_Name) == "gulp" && juce::String(JucePlugin_Manufacturer) == "daveydidit" && juce::String(JucePlugin_VersionString) == "0.3.0");
+    CHECK(juce::String(JucePlugin_Name) == "gulp" && juce::String(JucePlugin_Manufacturer) == "daveydidit" && juce::String(JucePlugin_VersionString) == "0.4.0");
     static_assert(JUCE_VST3_CAN_REPLACE_VST2 == 0 && JUCE_FORCE_USE_LEGACY_PARAM_IDS == 0, "frozen host-facing IDs");
     CHECK(!JucePlugin_IsSynth && JucePlugin_WantsMidiInput && !JucePlugin_ProducesMidiOutput);
     // Golden: id -> range and default (floats), item list and default (choices), default (switches).
@@ -1475,10 +1475,10 @@ static const Golden sounds[] = {
     { 0, 6, "03605e6dfe815adbeedede492bfc2cfe1c00a676c6571bcc58ebd23c2e0c87a3" },
     { 0, 7, "f3ef30e486df5dfa2c033e2e2bb9cc182a3cf82a373247bb2527928ee56863f7" },
 };
-struct Shot { int percent; const char* hash; }; // the editor's pixels: new with 0.3.0's riso skin
-static const Shot shots[] = { { 100, "789481660d15e9aae0cfff7192f0ffd74e14ae1eedc659e997cb8d269ad413c0" },
-                              { 50, "1f9cf24358d58203e88b3c5593e4e9c225a9f359a32d316dc6c63f14ef6ac671" },
-                              { 200, "326ae3029583b764cf0e2fd360b15242eacea752e034da7c6a164ce7c5f6340d" } };
+struct Shot { int percent; const char* hash; }; // the editor's pixels: 0.4.0 (the knob glows end at their rings)
+static const Shot shots[] = { { 100, "d2f55431fe91d4cbf6259925b597a6025c1c269f722d20e24bf3e8c9a03fdc1e" },
+                              { 50, "4ccb5cc4d5213015220a4b616ba52701c58c3c1a3704aab2841a1f20c6c59b8e" },
+                              { 200, "939c0e22bd6ccadf2d99e54e34b74442cbf82896411cad36ef24013474f1d2bf" } };
 static void testGoldens()
 {
     CHECK(render(0, 0) == render(0, 0) && pixels(snapshot(100)) == pixels(snapshot(100)));

@@ -373,6 +373,14 @@ void GulpProcessor::process(AudioBuffer<float>& buffer, MidiBuffer& midi, bool b
     const size_t ring = d.due.size(); // positive shift delays a trigger
     const size_t delay = trigger == 0 ? 0 : (size_t) jmin((long) ring - 1, std::lround(jmax(0.0, shift) / inc));
     double scPeak = d.env, outPeak = d.outEnv; // the meters: the followers' peaks over the block
+    // No audio flowing (a silent main input and sidechain, and the output's follower already below -100 dB) freezes the
+    // graph's telemetry as a stopped transport does: the picture only moves with sound.
+    float inputPeak = 0;
+    for (int c = 0; c < jmin(channels, buffer.getNumChannels()); ++c)
+        inputPeak = jmax(inputPeak, buffer.getMagnitude(c, 0, n));
+    for (int c = 0; c < scChannels; ++c)
+        inputPeak = jmax(inputPeak, sc.getMagnitude(c, 0, n));
+    const bool still = stopped || (!(inputPeak > 1.0e-5f) && d.outEnv < 1.0e-5);
     const double threshold = Decibels::decibelsToGain((double) p(Thresh)), rearm = threshold * Decibels::decibelsToGain(-3.0);
     auto event = midi.cbegin();
     double phase = 0, view = 0, held = 0; // view: where the graph is (the beat or the time since the trigger)
@@ -465,7 +473,7 @@ void GulpProcessor::process(AudioBuffer<float>& buffer, MidiBuffer& midi, bool b
         const int b = jmin(gulp::Feed::bins - 1, (int) (view * gulp::Feed::bins));
         if (b != d.bin)
         {
-            if (const auto k = (size_t) d.bin; !stopped)
+            if (const auto k = (size_t) d.bin; !still)
                 feed.lo[k].store((float) d.lo, std::memory_order_relaxed), feed.hi[k].store((float) d.hi, std::memory_order_relaxed);
             d.bin = b, d.lo = d.hi = s;
         }
@@ -474,7 +482,7 @@ void GulpProcessor::process(AudioBuffer<float>& buffer, MidiBuffer& midi, bool b
     }
     for (int c = channels; c < getTotalNumOutputChannels(); ++c)
         buffer.clear(c, 0, n);
-    if (!stopped) // the held peak has one writer here; the editor only zeroes it, so a compare-exchange keeps the max
+    if (!still) // the held peak has one writer here; the editor only zeroes it, so a compare-exchange keeps the max
     {
         feed.phase.store((float) view, std::memory_order_relaxed), feed.duck.store((float) d.a, std::memory_order_relaxed);
         for (float was = feed.held.load(std::memory_order_relaxed); (float) held > was && !feed.held.compare_exchange_weak(was, (float) held, std::memory_order_relaxed);) {}

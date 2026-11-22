@@ -585,7 +585,11 @@ struct Editor : AudioProcessorEditor, Timer
             return jmin(stops - 1, k + (jlimit(0.0f, 1.0f, (v - (float) k - 0.3f) / 0.4f) > (float) at / 16 ? 1 : 0));
         };
         Point<int> glows[std::size(knobSpecs)];
-        for (size_t k = 0; k < std::size(knobSpecs); ++k) glows[k] = cells(knobSpecs[k].x, knobSpecs[k].y - 1, 8, 5).getCentre() * 2; // dial and name
+        Point<float> rings[std::size(knobSpecs)]; // each dial's ring centre (2x px): the glow stops at its outer edge
+        for (size_t k = 0; k < std::size(knobSpecs); ++k)
+            glows[k] = cells(knobSpecs[k].x, knobSpecs[k].y - 1, 8, 5).getCentre() * 2, // dial and name
+            rings[k] = { 2 * cw * (float) (knobSpecs[k].x + 4), 2 * ch * (float) (knobSpecs[k].y + 2) };
+        const float ringX = 2 * 7.9f * cw / 2, ringY = 2 * 7.9f * ch / 4; // the 7.2-dot ring, its dots and a little air
         const int iw = image.getWidth(), ih = image.getHeight();
         plates.resize((size_t) (iw * ih));
         for (int y = 0; y < ih; ++y)
@@ -610,7 +614,8 @@ struct Editor : AudioProcessorEditor, Timer
                             paper = 2 + ramp((float) dy / 493, 2, bayer[dy / 2 % 4][dx / 2 % 4]);
                 }
                 for (size_t k = 0; k < std::size(knobSpecs); ++k)
-                    if (const float gx = X - (float) glows[k].x + 85, gy = Y - (float) glows[k].y + 85; gx >= 0 && gy >= 0 && gx < 170 && gy < 170)
+                    if (const float gx = X - (float) glows[k].x + 85, gy = Y - (float) glows[k].y + 85;
+                        gx >= 0 && gy >= 0 && gx < 170 && gy < 170 && std::hypot((X - rings[k].x) / ringX, (Y - rings[k].y) / ringY) <= 1)
                     {
                         const float level = std::pow(jmax(0.0f, 1 - std::hypot(gx - 85, gy - 85) / 85), 1.6f), cs = std::cos(0.5236f), sn = std::sin(0.5236f);
                         const auto wrap = [](float t) { return t - 6 * std::floor(t / 6) - 3; }; // a 6 px halftone screen at 30 degrees
