@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <SNAP stateVersion="2" order="shift,space,press,drive" name="walls swallow sparks" tags="FUN!,Huge,Dirty,FX" description="turns hits into dark effects with a deep pitch drop, long sub rumble, ring modulation and silo reverb.">
-  <PARAM id="sub_amt" value="47"/>
+  <PARAM id="sub_amt" value="24"/>
   <PARAM id="hiss_amt" value="35"/>
   <PARAM id="sub_sens" value="61"/>
   <PARAM id="sub_pitch" value="26"/>
@@ -17,7 +17,7 @@
   <PARAM id="shift_stereo" value="-55"/>
   <PARAM id="shift_stretch" value="-39"/>
   <PARAM id="shift_fmix" value="87"/>
-  <PARAM id="space_amt" value="81"/>
+  <PARAM id="space_amt" value="42"/>
   <PARAM id="space_type" value="10"/>
   <PARAM id="space_decay" value="80"/>
   <PARAM id="space_stretch" value="45"/>
@@ -43,7 +43,7 @@
   <PARAM id="push_mix" value="66"/>
   <PARAM id="push_focus_hi" value="6300"/>
   <PARAM id="in_gain" value="-3"/>
-  <PARAM id="out_gain" value="3"/>
+  <PARAM id="out_gain" value="0"/>
   <PARAM id="cut_lo" value="31"/>
   <PARAM id="cut_hi" value="7300"/>
   <PARAM id="hc_shape" value="1"/>

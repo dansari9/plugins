@@ -21,6 +21,8 @@ inline constexpr std::array<Response, 20> responses {{
     { "gate", 0.53 }, { "rewind", 0.34, 0.31 }, { "shimmer", 2.16 }, { "fog", 2.40 }
 }};
 
+// Per-response level (dB, same order): every room's wet sits about 6 dB under the dry drums at amount 100 %.
+inline constexpr std::array<double, 20> levelTrimDb { 11.6, 9.9, 9.7, 11.3, 12.4, 8.9, 11.1, 12.0, 9.4, 12.7, 11.4, 12.5, 16.7, 6.3, 12.7, 8.8, 11.4, 9.4, 20.8, 4.9 };
 inline constexpr double minDecayScale = 0.35, maxDecayScale = 1.65;
 inline constexpr double irFloorDb = -78.0, endFadeSeconds = 0.012;
 inline constexpr int resamplePhases = 256, resampleHalfTaps = 12;

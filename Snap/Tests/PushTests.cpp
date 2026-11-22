@@ -210,7 +210,9 @@ void testAutomationAndBounds()
     push.reset();
     setAudioThread(false);
     CHECK(takeAudioAllocations() == 0);
-    CHECK(returnedToDry && outputStep < 2.1f * inputStep);
+    // Push at full drive (4.5 since 0.5) squares the sine itself, so its own edges are steeper than the input's; a click
+    // from a switch would be far larger still.
+    CHECK(returnedToDry && outputStep < 6.0f * inputStep);
 
     Buffer noise(1, 8192);
     for (int i = 0; i < noise.getNumSamples(); ++i)
@@ -222,8 +224,9 @@ void testAutomationAndBounds()
                 p = {};
                 p.mult = mult, p.amount = 1, p.tone = tone;
                 const auto out = render(noise, p, 4096, false, rate);
+                // Full-scale noise: the stages stop at the 1.12 ceiling; tone's inverse shelf (6 dB since 0.5) can lift the highs x2 after it.
                 CHECK(std::all_of(out.getReadPointer(0), out.getReadPointer(0) + out.getNumSamples(),
-                                  [](float v) { return std::isfinite(v) && std::abs(v) < 2.0f; }));
+                                  [](float v) { return std::isfinite(v) && std::abs(v) < 2.5f; }));
             }
 }
 } // namespace

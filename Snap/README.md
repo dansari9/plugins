@@ -1,6 +1,6 @@
 # snap
 
-A one-screen drum multi-FX by daveydidit. Version 0.4.0. Mono or stereo.
+A one-screen drum multi-FX by daveydidit. Version 0.5.0. Mono or stereo.
 
 The 0.2 chain is six modules plus a master section, with one **Magnitude** macro that scales the
 module amounts and the master's continuous controls toward neutral:
@@ -31,6 +31,21 @@ reorder), the amount row (on/off, the big dial, hover for the lock), the master 
 redo, the help line, snapshots A–D, bypass). Every dial and fader: drag (Shift finer), Alt/Cmd-click resets,
 double-click types a value with units, the wheel nudges, right-click opens a menu. The preset name opens the
 browser over the module columns; click a row to audition, ok keeps it, cancel goes back.
+
+## 0.5.0
+
+- Every control makes a clearly audible change on drums: sub and hiss are louder (and hiss env also shortens the hiss),
+  each space room is level-trimmed so the wet sits about 6 dB under the dry at 100 %, press compresses deeper and its six
+  modes have distinct characters (punch lets hits through, warm adds even harmonics), drive saturates harder (tube and
+  tape have their own tone), push drives harder with a wider tone, and air adds air on bright material.
+  `SnapTests --audibility` (also in the full run) fails if any control's change on the kit loop drops below 2 dB.
+- press gains **attack** (`press_attack`, appended, version hint 3): slow to fast around each mode's own attack, with
+  the effective time under it. 0, the default, is the mode as before, so older sessions load unchanged.
+- Visualizers move only with the audio: space draws its own wet signal, drive its input and what it adds, push its input
+  and the change it makes; with the module off, the plug-in bypassed or no audio flowing every picture settles and stops.
+  Bypass now dims every column too.
+- The preset name box is as wide as the longest factory name, so `<` and `>` stay put; the amount-dial glows end at the
+  dial ring. A test clicks the middle of every key and control through the editor's own hit testing at 75, 100 and 150 %.
 
 ## Build
 

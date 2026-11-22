@@ -12,7 +12,7 @@
   <PARAM id="push_amt" value="45"/>
   <PARAM id="push_mult" value="2"/>
   <PARAM id="push_tone" value="0.2"/>
-  <PARAM id="out_gain" value="-0.5"/>
+  <PARAM id="out_gain" value="-1.5"/>
   <PARAM id="air" value="20"/>
   <PARAM id="clip_on" value="1"/>
 </SNAP>

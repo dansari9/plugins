@@ -393,7 +393,7 @@ void testLivePostAndRetrigger()
         maximumStep = std::max(maximumStep, std::abs(sample - routed.getSample(0, i - 1)));
     }
     CHECK(changeFromSingle > 0.1f);
-    CHECK(maximumStep < 0.025f);
+    CHECK(maximumStep < 0.025f * snap::subHissConstants::subGain / 0.6f); // scales with the sub's level (0.6 before 0.5)
 }
 
 void testDuck()

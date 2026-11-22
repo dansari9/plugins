@@ -77,6 +77,8 @@ public:
         std::atomic<float> inPeak { 0 }, outPeak { 0 };      // linear peaks since the editor last took them
         std::atomic<float> pressDownDb { 0 }, pressUpDb { 0 }; // press gain readouts (downward <= 0, upward >= 0)
         std::atomic<float> pushLimitDb { 0 };                // push limiter reduction (<= 0)
+        // Linear peaks since the editor last took them: space's wet, drive's input and what it added, push's likewise.
+        std::atomic<float> spaceWet { 0 }, driveIn { 0 }, driveAdded { 0 }, pushIn { 0 }, pushAdded { 0 };
         std::array<std::atomic<int>, 2> hits {};             // sub and hiss detector hits so far
     } display;
 

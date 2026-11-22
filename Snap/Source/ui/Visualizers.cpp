@@ -126,7 +126,7 @@ struct Visualizer::State
     };
     struct Frame
     {
-        float shift = 0, wobble = 0, phase = 0, extent = 0, predelay = 0, cloud = 0, squeeze = 0, drive = 0, push = 0;
+        float shift = 0, wobble = 0, phase = 0, extent = 0, predelay = 0, cloud = 0, squeeze = 0, drive = 0, swell = 0, push = 0;
         int mode = 0, threshold = 11;
         bool dim = false;
         std::array<Column, columns> bands {};
@@ -143,7 +143,7 @@ struct Visualizer::State
     const ParamSpec& amountSpec;
     std::unique_ptr<Spectrum> spectrum;
     double lastTick = Time::getMillisecondCounterHiRes();
-    float envelope = 0;
+    float envelope = 0, second = 0; // followers of the module's levels
 };
 
 Visualizer::Visualizer(SnapProcessor& p, Module m) : proc(p), module(m), state(std::make_unique<State>(m, p.display))
@@ -164,7 +164,16 @@ void Visualizer::update(const Levels& levels)
     const auto raw = [&](const char* id) { return proc.apvts.getRawParameterValue(id)->load(std::memory_order_relaxed); };
     const float magnitude = 0.01f * raw("magnitude");
     const float amount = 0.01f * applyMagnitude(s.amountSpec, raw(s.amountSpec.id), magnitude);
-    const float level = std::sqrt(unit(levels.out));
+    // Only what the audio does moves a picture: off, bypassed or silent, every level here is 0 and the frame settles.
+    const bool live = !dim && levels.flowing;
+    const auto audible = [](float v) { return v > 1.0e-4f ? v : 0.0f; }; // below -80 dB counts as silence
+    const float level = live ? std::sqrt(unit(audible(levels.out))) : 0.0f;
+    const auto follow = [&](float& envelope, float target, float releaseSeconds) {
+        envelope = target >= envelope ? target : target + (envelope - target) * std::exp(-elapsed / releaseSeconds);
+        if (envelope < 0.002f)
+            envelope = 0;
+        return envelope;
+    };
     const auto& display = proc.display;
     switch (module)
     {
@@ -172,8 +181,8 @@ void Visualizer::update(const Levels& levels)
         {
             auto& spectrum = *s.spectrum;
             const double rate = proc.getSampleRate();
-            const bool active = magnitude > 0 && (amount > 0 || raw("hiss_amt") > 0);
-            spectrum.read(display, active, levels.in > 0, (float) (rate > 0 ? rate : 48000), elapsed);
+            const bool active = !dim && magnitude > 0 && (amount > 0 || raw("hiss_amt") > 0);
+            spectrum.read(display, active && levels.flowing, levels.in > 0, (float) (rate > 0 ? rate : 48000), elapsed);
             const float low = raw(tab == 0 ? "sub_det_lo" : "hiss_det_lo"), high = raw(tab == 0 ? "sub_det_hi" : "hiss_det_hi");
             const auto [lo, hi] = std::minmax(low, high);
             next.threshold = roundToInt(0.22f * raw(tab == 0 ? "sub_sens" : "hiss_sens"));
@@ -185,7 +194,7 @@ void Visualizer::update(const Levels& levels)
             for (size_t i = 0; i < next.lit.size(); ++i)
             {
                 const int count = display.hits[i].load(std::memory_order_relaxed);
-                if (count > spectrum.hits[i])
+                if (count > spectrum.hits[i] && !dim)
                     spectrum.hitUntil[i] = now + 150.0;
                 spectrum.hits[i] = count;
                 next.lit[i] = now < spectrum.hitUntil[i];
@@ -195,29 +204,40 @@ void Visualizer::update(const Levels& levels)
         case Module::shift:
             next.shift = amount;
             next.wobble = 3 * std::abs(amount) * level;
-            next.phase = next.wobble > 0 ? std::fmod(next.phase + 0.19f * level, turn) : 0.0f;
+            next.phase = next.wobble > 0 ? std::fmod(next.phase + 0.19f * level, turn) : next.phase;
             break;
         case Module::space:
         {
+            // The cloud is the reverb itself: it blooms with the wet signal and fades with its tail.
             const float decay = 0.01f * raw("space_decay");
-            s.envelope = jmax(level, s.envelope * std::exp(-elapsed / (0.10f + 1.4f * decay)));
-            next.cloud = s.envelope >= 0.002f ? unit(1.5f * std::sqrt(amount) * s.envelope) : 0.0f;
+            const float wet = follow(s.envelope, live ? std::sqrt(unit(audible(levels.spaceWet))) : 0.0f, 0.08f);
+            next.cloud = unit(1.8f * wet);
             next.extent = next.cloud > 0 ? 0.30f + 0.70f * decay : 0.0f;
             next.predelay = next.cloud > 0 ? 0.064f * raw("space_predelay") : 0.0f;
             break;
         }
         case Module::press:
-            next.squeeze = 0.85f * std::sqrt(amount * unit(-display.pressDownDb.load(std::memory_order_relaxed) / 24));
+            next.squeeze = live ? 0.85f * std::sqrt(amount * unit(-display.pressDownDb.load(std::memory_order_relaxed) / 24)) : 0.0f;
             break;
         case Module::drive:
-            next.drive = amount;
+        {
+            // The wave swells with the drive's input and thickens with what the saturation adds to it.
             next.mode = (int) raw("drive_mode");
-            next.phase = amount > 0 ? std::fmod(next.phase + 0.075f * level, 1.0f) : 0.0f;
+            const float in = follow(s.envelope, live ? std::sqrt(unit(audible(levels.driveIn))) : 0.0f, 0.12f);
+            const float added = follow(s.second, live ? std::sqrt(unit(audible(levels.driveAdded))) : 0.0f, 0.12f);
+            next.swell = in;
+            next.drive = in > 0 ? unit(2.5f * added / jmax(in, 0.05f)) : 0.0f;
+            next.phase = in > 0 ? std::fmod(next.phase + 0.075f * in, 1.0f) : next.phase;
             break;
+        }
         case Module::push:
-            next.push = std::sqrt(amount) * (0.75f + 0.5f * std::sqrt(unit(-display.pushLimitDb.load(std::memory_order_relaxed) / 12)));
-            next.phase = next.push > 0 ? std::fmod(next.phase + 0.025f, turn) : 0.0f;
+        {
+            const float in = follow(s.envelope, live ? std::sqrt(unit(audible(levels.pushIn))) : 0.0f, 0.12f);
+            const float added = follow(s.second, live ? std::sqrt(unit(audible(levels.pushAdded))) : 0.0f, 0.12f);
+            next.push = in > 0 ? unit(std::sqrt(amount) * (0.4f * in + 1.6f * added)) : 0.0f;
+            next.phase = next.push > 0 ? std::fmod(next.phase + 0.06f * in, turn) : next.phase;
             break;
+        }
     }
     if (next != s.frame)
     {
@@ -321,7 +341,7 @@ void Visualizer::paint(Graphics& g)
                 }
                 const int layers = 1 + jmin(4, (int) (5 * f.drive * x / 211));
                 for (int k = layers - 1; k >= 0; --k)
-                    drawDot(x, 52 + 30 * wave + 3.0f * (float) k - 1.5f * (float) (layers - 1), k == 0 ? primary : accent);
+                    drawDot(x, 52 + 30 * f.swell * wave + 3.0f * (float) k - 1.5f * (float) (layers - 1), k == 0 ? primary : accent);
             }
             break;
         case Module::push:

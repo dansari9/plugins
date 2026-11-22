@@ -13,14 +13,15 @@ struct Mode
 
 inline constexpr std::array<Mode, 6> modes {{
     // Attack and release, slow timings and share, ratios and knee, relative thresholds and makeup, feedback and colour.
-    { 18,  85, 0,   0,    0,    4,    4,  2.0f,  3,  9, -5, -19,  -9, 3.5f, 0,    0,     0,   0 }, // tight
-    { 24, 110, 100, 380,  0.85f, 2.5f, 3,  2.0f,  6,  9, -6, -20, -11, 3.5f, 0,    0,     0,   0 }, // glue
-    { 0.3, 72, 0,   0,    0,    8,    16, 2.5f,  3, 10, -9, -19, -12, 4.5f, 0.72f, 0.55f, 0,   0 }, // crush
-    { 32, 150, 0,   0,    0,    1.5f, 6,  2.0f, 12, 12, -7, -21, -13, 4.0f, 0,    0,     0,   0 }, // silk
-    { 10,  60, 45,  1700, 0.35f, 3,    3,  2.0f,  9,  9, -6, -20, -11, 3.0f, 0,    0,     2.4f, 0 }, // lull
-    { 4,  125, 0,   0,    0,    6,    12, 5.0f,  5,  9, -9, -21, -12, 4.5f, 0,    0,     0,   1 }  // stack
+    { 30,  60, 0,   0,    0,    4,    4,  2.0f,  3,  9, -13, -19, -16, 3.5f, 0,    0,     0,   0 }, // tight
+    { 24, 110, 100, 380,  0.85f, 2.5f, 3,  2.0f,  6,  9, -14, -20, -18, 3.5f, 0,    0,     0,   0 }, // glue
+    { 0.3, 72, 0,   0,    0,    8,    16, 2.5f,  3, 10, -18, -19, -20, 4.5f, 0.72f, 0.55f, 0,   0 }, // crush
+    { 6,  220, 0,   0,    0,    1.5f, 6,  2.0f, 12, 12, -15, -21, -20, 4.0f, 0,    0,     1.8f, 0 }, // silk
+    { 10,  60, 45,  1700, 0.35f, 3,    3,  2.0f,  9,  9, -14, -20, -18, 3.0f, 0,    0,     2.4f, 0 }, // lull
+    { 4,  125, 0,   0,    0,    6,    12, 5.0f,  5,  9, -17, -21, -20, 4.5f, 0,    0,     0,   1 }  // stack
 }};
 
+inline constexpr float attackOctaves = 3; // press_attack at -1 / +1: the mode's attack time x8 (slow) / x1/8 (fast)
 inline constexpr std::array crossoverHz { 120.0f, 1000.0f, 6000.0f };
 inline constexpr std::array stackMakeupDb { 0.75f, 0.25f, -0.25f, -0.75f };
 inline constexpr double peakAttackMs = 0.25, peakReleaseMs = 12;

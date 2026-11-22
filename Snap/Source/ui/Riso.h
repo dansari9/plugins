@@ -12,6 +12,7 @@ inline const juce::Colour paper { 0xffefe6d2 };
 inline const juce::Colour inks[] { juce::Colour { 0xff5b7cff }, juce::Colour { 0xff2fd3c4 }, juce::Colour { 0xffa98bff },
                                    juce::Colour { 0xffffc83d }, juce::Colour { 0xffff6a2f }, juce::Colour { 0xff8a8a8a } }; // column 0..5
 constexpr float textureOpacity = 0.22f, glowOpacity = 0.12f;
+constexpr float dialGlowEdge = 43.5f; // the 88 px amount dial's ring: dots at radius 41.5 px, 2 px dot radius
 constexpr int grainLift = 5; // levels
 
 const juce::Image& field();                       // 1440 x 840, layer coordinates

@@ -72,6 +72,8 @@ constexpr ParamSpec table[] = {
     hz("cut_hi", "High Cut", 1000, 20000, 20000, true), cho("lc_shape", "Low Cut Shape", lowCutShapes),
     cho("hc_shape", "High Cut Shape", highCutShapes), sgn("tone", "Tone", 0, true), cho("tone_shape", "Tone Shape", toneShapes),
     pct("air", "Air", 0, true), sgn("attack", "Attack", 0, true), sgn("sustain", "Sustain", 0, true), tog("clip_on", "Clip", false),
+    // added in 0.5 (appended, version hint 3): press's attack, slow to fast around each mode's own; 0 is the mode as before
+    bip("press_attack", "Press Attack"),
 };
 
 String signedText(float v, int decimals, const char* suffix) { return (v > 0.5f * std::pow(10.0f, (float) -decimals) ? "+" : "") + String(v, decimals) + suffix; }

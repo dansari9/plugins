@@ -24,8 +24,9 @@ Colour paperFor(Colour c)
 
 constexpr int bayer4[4][4] { { 0, 8, 2, 10 }, { 12, 4, 14, 6 }, { 3, 11, 1, 9 }, { 15, 7, 13, 5 } };
 
-// A halftone radial glow, size x size, in one ink: 4 px dots on a 30 degree screen, coverage falling off from the centre.
-void glow(Image::BitmapData& d, int x0, int y0, int size, Colour c)
+// A halftone radial glow, size x size, in one ink: 4 px dots on a 30 degree screen, coverage falling off from the centre,
+// cut off at `edge` px from the centre (the dial ring's outer edge) so no ink spills past the ring.
+void glow(Image::BitmapData& d, int x0, int y0, int size, Colour c, float edge)
 {
     const float a = degreesToRadians(30.0f), half = (float) size / 2;
     const auto add = [&](uint8 v) { return (uint8) (13 + roundToInt((float) v * glowOpacity)); }; // the dots light the background
@@ -34,7 +35,10 @@ void glow(Image::BitmapData& d, int x0, int y0, int size, Colour c)
     for (int y = 0; y < size; ++y)
         for (int x = 0; x < size; ++x)
         {
-            const float v = std::pow(jmax(0.0f, 1 - std::hypot((float) x - half, (float) y - half) / half), 1.6f);
+            const float distance = std::hypot((float) x - half, (float) y - half);
+            if (distance > edge)
+                continue;
+            const float v = std::pow(jmax(0.0f, 1 - distance / half), 1.6f);
             const float xr = (float) x * std::cos(a) + (float) y * std::sin(a), yr = -(float) x * std::sin(a) + (float) y * std::cos(a);
             if (std::hypot(wrap(xr) - 2, wrap(yr) - 2) / (4 / 1.414f) < std::sqrt(v) * 0.95f)
                 d.setPixelColour(x0 + x, y0 + y, dot);
@@ -81,7 +85,7 @@ const Image& backdrop()
                     d.setPixelColour(x, y, lifted);
         // The amount dials' glows, centred on each column's 88 px dial (push stays plain).
         for (int k = 0; k < 5; ++k)
-            glow(d, (int) layout::colX(k) + 108 - 60, (int) layout::amountTop + 50 - 60, 120, inks[k]);
+            glow(d, (int) layout::colX(k) + 108 - 60, (int) layout::amountTop + 50 - 60, 120, inks[k], dialGlowEdge);
         return im;
     }();
     return image;

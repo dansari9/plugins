@@ -4,7 +4,8 @@
 #include <string_view>
 
 // The full host-facing parameter table. IDs are stable forever: never rename, reuse or remove one.
-// "attack" and "sustain" come from 0.1.x (version hint 1); everything else is new in 0.2 (version hint 2).
+// "attack" and "sustain" come from 0.1.x (version hint 1); "press_attack" from 0.5 (version hint 3); everything else is new
+// in 0.2 (version hint 2). New parameters are appended to the end of the table.
 namespace snap
 {
 enum class Unit { percent, signedPercent, bipolar, decibels, hertz, milliseconds, note, semitones, toggle, choice };
@@ -19,7 +20,7 @@ struct ParamSpec
     bool automatable = true;
     std::span<const char* const> choices {};
 
-    int versionHint() const { return std::string_view(id) == "attack" || std::string_view(id) == "sustain" ? 1 : 2; }
+    int versionHint() const { return std::string_view(id) == "attack" || std::string_view(id) == "sustain" ? 1 : std::string_view(id) == "press_attack" ? 3 : 2; }
     bool logScale() const { return (unit == Unit::hertz || unit == Unit::milliseconds) && lo > 0; }
 };
 

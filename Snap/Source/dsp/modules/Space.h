@@ -32,9 +32,11 @@ public:
     void prepare(const juce::dsp::ProcessSpec& spec) { prepare(spec, {}); }
     void reset();
     void process(juce::AudioBuffer<float>&, const Settings&);
+    float wetPeak() const { return wetMeter; } // audio thread: the largest wet sample the last process call added
     static constexpr int getLatencySamples() { return 0; }
 
 private:
+    float wetMeter = 0;
     using Request = std::uint64_t;
     struct Slot
     {

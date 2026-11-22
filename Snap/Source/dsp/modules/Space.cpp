@@ -244,12 +244,13 @@ juce::AudioBuffer<float> makeImpulse(int type, double decayPercent, double stret
     constexpr int taps = 2 * resampleHalfTaps;
     const double timePerSample = 1.0 / (spec.sampleRate * stretch);
     const double exponent = std::log(0.001) / rt60;
+    const double trim = std::pow(10.0, levelTrimDb[(size_t) type] / 20.0);
 
     for (int i = 0; i < length; ++i)
     {
         const double gain = std::exp(exponent * std::max(0.0, i * timePerSample - response.decayLeadInSeconds));
         const double taper = std::min(1.0, (double) (length - 1 - i) / fade);
-        const float scale = (float) (gain * taper / ratio);
+        const float scale = (float) (trim * gain * taper / ratio);
         const double at = i / ratio;
         const int index = (int) at;
         const int phase = (int) std::lround((at - index) * resamplePhases);
@@ -489,6 +490,7 @@ void Space::process(juce::AudioBuffer<float>& io, const Settings& settings)
     const auto request = encode(settings);
     requested.store(request, std::memory_order_relaxed);
     setContinuousTargets(settings);
+    wetMeter = 0.0f;
     if (amount.value() <= 0.0f && !amount.isSmoothing())
     {
         if (!idle)
@@ -568,7 +570,10 @@ void Space::process(juce::AudioBuffer<float>& io, const Settings& settings)
         }
         if (gain > 0.0f)
             for (int c = 0; c < channels; ++c)
+            {
                 audio[c][i] += wet[(size_t) c] * gain;
+                wetMeter = std::max(wetMeter, std::abs(wet[(size_t) c] * gain));
+            }
     }
 }
 

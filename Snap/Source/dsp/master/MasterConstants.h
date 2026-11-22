@@ -23,9 +23,9 @@ inline constexpr double focusPresenceHz = 2500, focusPresenceDb = 4, focusPresen
 inline constexpr double focusSideCutDb = -2, focusSideShelfHz = 6000, focusSideShelfDb = 6;
 inline constexpr double focusMidShelfHz = 8000, focusMidShelfDb = -2;
 
-inline constexpr float airHz = 7000.0f;
+inline constexpr float airHz = 5500.0f;
 inline constexpr double airAttackMs = 1.0, airReleaseMs = 60.0;
-inline constexpr float airGapDb = 12.0f, airRatioSlope = 0.85f, airBoostMaxDb = 9.0f;
+inline constexpr float airGapDb = 0.0f, airRatioSlope = 0.85f, airBoostMaxDb = 12.0f;
 inline constexpr float airGateDb = -60.0f, airGateOpenDb = -48.0f, airSideDrive = 1.5f;
 
 inline constexpr float shaperRangeDb = 12.0f;

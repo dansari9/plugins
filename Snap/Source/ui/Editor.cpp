@@ -155,7 +155,7 @@ struct Editor : AudioProcessorEditor, Timer
     std::vector<float> drawnParams;
     String tip = defaultTip, notice, drawnState;
     uint32 noticeUntil = 0;
-    int tab = 0, snapshot = 0, dragging = -1;
+    int tab = 0, snapshot = 0, dragging = -1, lastScopeWrite = -1;
     float lufsIn = -100, lufsOut = -100, meterIn = 0, meterOut = 0;
     Component::SafePointer<Component> hovered;
     std::unique_ptr<AlertWindow> saveDialog;
@@ -400,7 +400,10 @@ struct Editor : AudioProcessorEditor, Timer
                        [this](Graphics& g, Key& k) {
                            if (browser.isVisible())
                                g.setColour(tag), g.fillRect(k.getLocalBounds().toFloat().withTrimmedLeft(-20).withTrimmedRight(-20));
-                           text(g, presetName(), 4, 4, primary, 12, true);
+                           auto name = presetName();
+                           if (const int fits = (int) ((float) k.getWidth() / textWidth("x")); name.length() > fits)
+                               name = name.substring(0, fits - 2) + "..";
+                           centred(g, name, 0, 4, (float) k.getWidth(), primary, 12, true);
                        },
                        [this](const ModifierKeys&) { toggleBrowser(); });
         nextKey = &key(layer, "next preset", { 184, 18, 16, 18 }, [](Graphics& g, Key& k) { text(g, ">", 4, 2, k.isMouseOver() ? primary : muted); },
@@ -422,9 +425,19 @@ struct Editor : AudioProcessorEditor, Timer
             .hint = "low latency mode, oversampling, scale, about";
         layoutTopBar();
     }
-    void layoutTopBar() // the name sets where the rest of the left group sits: save, undo, redo 16 px apart
+    // The name box is as wide as the longest factory preset name (the name centred in it), so < and > never move; a longer
+    // user preset name is cut to fit. Save, undo and redo follow 16 px apart.
+    float nameWidth() const
     {
-        const float w = jmin(textWidth(presetName()) + 8, 400.0f);
+        int longest = 4; // "init"
+        for (const auto& p : store.presets())
+            if (p.factory)
+                longest = jmax(longest, p.name.length());
+        return textWidth(String::repeatedString("x", longest)) + 8;
+    }
+    void layoutTopBar()
+    {
+        const float w = nameWidth();
         nameKey->setBounds(Rectangle<float>(104, 16, w, 22).toNearestInt());
         nextKey->setTopLeftPosition(roundToInt(104 + w), 18);
         diceKey->setTopLeftPosition(jmax(216, roundToInt(104 + w + 28)), 20);
@@ -592,8 +605,12 @@ struct Editor : AudioProcessorEditor, Timer
         dial(c, "press_mix", "mix", slotX[0], YK);
         line(c, Control::Kind::fader, "press_downup", YD + 18, "down", nullptr, "up", true).hint = u("down/up \xc2\xb7 downward to upward compression");
         line(c, Control::Kind::fader, "press_bands", YD + 46, "bands", "i", "iii").hint = u("bands \xc2\xb7 single band to multiband");
+        line(c, Control::Kind::fader, "press_attack", bandTarget, "attack", "slow", "fast", true).hint
+            = u("attack \xc2\xb7 slow lets each hit through before press clamps, fast holds it down");
         c.body = [this, &c](Graphics& g) {
             const bool d = c.dim;
+            const float ms = Press::attackMs(roundToInt(raw("press_mode")), raw("press_attack"));
+            readout(g, d, "attack " + (ms < 10 ? String(ms, 1) : String(roundToInt(ms))) + " ms");
             const float down = proc.display.pressDownDb.load(), up = proc.display.pressUpDb.load();
             meterSlot(g, slotX[1], YK, "down", format(spec("in_gain"), down), d), vmeter(g, slotX[1] + 29, YK + 18, 10, -down / 12, true, accent, d);
             meterSlot(g, slotX[2], YK, "up", format(spec("in_gain"), up), d), vmeter(g, slotX[2] + 29, YK + 18, 10, up / 6, false, primary, d);
@@ -860,7 +877,14 @@ struct Editor : AudioProcessorEditor, Timer
     void timerCallback() override
     {
         auto& d = proc.display;
-        const Levels levels { d.inPeak.exchange(0), d.outPeak.exchange(0) };
+        // No audio flowing (the host stopped, or silence): every visualizer settles and stops.
+        const int write = d.scopeWrite.load(std::memory_order_relaxed);
+        const bool flowing = write != lastScopeWrite;
+        lastScopeWrite = write;
+        Levels levels { d.inPeak.exchange(0), d.outPeak.exchange(0), d.spaceWet.exchange(0), d.driveIn.exchange(0), d.driveAdded.exchange(0),
+                        d.pushIn.exchange(0), d.pushAdded.exchange(0), flowing };
+        if (!flowing)
+            levels = { .flowing = false };
         for (auto& c : columns)
             c.viz->update(levels);
 
@@ -930,7 +954,7 @@ struct Editor : AudioProcessorEditor, Timer
         for (int m = 0; m < 6; ++m)
         {
             auto& c = columns[(size_t) m];
-            c.dim = !on(modules[(size_t) m].onId.data());
+            c.dim = !on(modules[(size_t) m].onId.data()) || on("bypass");
             c.viz->dim = c.dim;
             for (auto* part : c.parts)
                 if (auto* control = dynamic_cast<Control*>(part))

@@ -167,7 +167,8 @@ void SnapProcessor::setModuleParams()
                       .stretch = value("shift_stretch") * 0.01f, .formantMix = value("shift_fmix") * 0.01f,
                       .target = value("shift_target"), .focusLo = value("shift_focus_lo"), .focusHi = value("shift_focus_hi") });
     press.setParams({ .amount = active("press_on") * value("press_amt") * 0.01f, .mode = (int) value("press_mode"),
-                      .downUp = value("press_downup"), .mix = value("press_mix") * 0.01f, .bands = value("press_bands") });
+                      .downUp = value("press_downup"), .mix = value("press_mix") * 0.01f, .bands = value("press_bands"),
+                      .attack = value("press_attack") });
     drive.setParams({ .amount = active("drive_on") * value("drive_amt") * 0.01f, .mix = value("drive_mix") * 0.01f,
                       .target = value("drive_target"), .focusLo = value("drive_focus_lo"), .focusHi = value("drive_focus_hi"),
                       .mode = (int) value("drive_mode"), .flavor = value("drive_flavor") });
@@ -296,6 +297,10 @@ void SnapProcessor::processBlock(AudioBuffer<float>& buffer, MidiBuffer&)
         for (int c = 0; c < channels; ++c)
             outLevel = jmax(outLevel, buffer.getMagnitude(c, start, len));
 
+        const auto& modules = middle.current();
+        const auto keep = [](std::atomic<float>& meter, float v) { meter.store(jmax(v, meter.load(std::memory_order_relaxed)), std::memory_order_relaxed); };
+        keep(display.spaceWet, modules.space.wetPeak()), keep(display.driveIn, modules.drive.inPeak());
+        keep(display.driveAdded, modules.drive.addedPeak()), keep(display.pushIn, push.inPeak()), keep(display.pushAdded, push.addedPeak());
         display.inPeak.store(jmax(level, display.inPeak.load(std::memory_order_relaxed)), std::memory_order_relaxed);
         display.outPeak.store(jmax(outLevel, display.outPeak.load(std::memory_order_relaxed)), std::memory_order_relaxed);
     }

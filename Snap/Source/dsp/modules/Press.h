@@ -18,6 +18,7 @@ public:
         float amount = 0;
         int mode = 0;
         float downUp = -1, mix = 1, bands = 0;
+        float attack = 0; // -1 slow .. +1 fast: scales the mode's attack time by 2^(-3 attack); 0 leaves it as it is
     };
 
     Press() { setParams(Params {}); }
@@ -66,6 +67,7 @@ public:
     void setParams(const Params& p)
     {
         amount.setTarget(p.amount), downUp.setTarget(p.downUp), mix.setTarget(p.mix), bands.setTarget(p.bands);
+        attackPower = std::exp2(pressConstants::attackOctaves * std::clamp(p.attack, -1.0f, 1.0f)); // coef^power = the scaled time's coef
         const auto nextMode = static_cast<size_t>(std::clamp(p.mode, 0, static_cast<int>(preparedModes.size()) - 1));
         if (nextMode != mode)
         {
@@ -81,6 +83,12 @@ public:
     // Takes over another instance's level detectors (the slow level reference takes seconds to settle from zero), so a
     // freshly reset copy that starts in another chain position compresses like the one it replaces.
     void seedDetectors(const Press& other) { detectors = other.detectors; }
+    // The current mode's attack in ms with the attack control applied (the editor's readout).
+    static float attackMs(int mode, float attack)
+    {
+        return (float) pressConstants::modes[(size_t) std::clamp(mode, 0, (int) pressConstants::modes.size() - 1)].attackMs
+               * std::exp2(-pressConstants::attackOctaves * std::clamp(attack, -1.0f, 1.0f));
+    }
     float downwardDb() const { return downMeter.load(std::memory_order_relaxed); }
     float upwardDb() const { return upMeter.load(std::memory_order_relaxed); }
 
@@ -109,7 +117,9 @@ public:
                     peaks[k + 1] = std::max(peaks[k + 1], std::abs(parts[k]));
             }
 
-            const auto m = currentMode(modeRamp.next());
+            auto m = currentMode(modeRamp.next());
+            if (attackPower != 1.0f)
+                m[attack] = std::pow(m[attack], attackPower);
             const float a = amount.next(), direction = downUp.next(), blend = mix.next(), separation = bands.next();
             const bool multiband = a > 0 && separation > 0;
             auto& fullDetector = detectors[0];
@@ -266,6 +276,7 @@ private:
     std::array<Controls, pressConstants::modes.size()> preparedModes {};
     Controls modeFrom {}, modeTo {};
     size_t mode = 0;
+    float attackPower = 1;
     std::array<float, 2> evenDc {};
     float dcPole = 0;
     static_assert(std::atomic<float>::is_always_lock_free);

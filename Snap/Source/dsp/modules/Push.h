@@ -72,6 +72,7 @@ public:
         using namespace pushConstants;
         const juce::ScopedNoDenormals noDenormals;
         tfm.begin(io, n);
+        inMeter = addedMeter = 0.0f;
         for (int i = 0; i < n; ++i)
         {
             const float a = amount.next(), high = std::exp2(toneOctaves * tone.next());
@@ -94,8 +95,9 @@ public:
                         y = runStage(stages[static_cast<size_t>(c)][static_cast<size_t>(stage)], y, a, high, shelf, inverse, drive, makeup);
                     delta += w[k] * (y - x);
                 }
+                inMeter = std::max(inMeter, std::abs(x));
                 if (a > 0.0f)
-                    io.setSample(c, i, x + delta);
+                    io.setSample(c, i, x + delta), addedMeter = std::max(addedMeter, std::abs(delta));
             }
         }
         tfm.end(io, n);
@@ -106,8 +108,11 @@ public:
         limitMeter.store(amount.targetValue() > 0.0f ? juce::Decibels::gainToDecibels(deepest, -60.0f) : 0.0f, std::memory_order_relaxed);
     }
     float limitDb() const { return limitMeter.load(std::memory_order_relaxed); } // display: the deepest limiter reduction (<= 0)
+    float inPeak() const { return inMeter; }       // audio thread: the last process call's largest input sample
+    float addedPeak() const { return addedMeter; } // and the largest change push made to it (before mix, target, focus)
 
 private:
+    float inMeter = 0, addedMeter = 0;
     struct Stage
     {
         EnvelopeFollower reference, limiter;

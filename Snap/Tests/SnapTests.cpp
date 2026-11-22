@@ -4,6 +4,7 @@
 //   SnapTests --editor             the editor tests alone
 //   SnapTests --bench              CPU benchmark
 //   SnapTests --render <dir>       render the synthetic loops through a few settings to WAV files
+//   SnapTests --render-file in.f32 out.f32 [--preset name] [--order ...] [id=value ...]   raw stereo render (site tools)
 #include "PluginProcessor.h"
 #include "ui/Braille.h"
 #include "ui/PresetBrowser.h"
@@ -317,7 +318,7 @@ static void testIdentity() // (4)
     CHECK(juce::String(JUCE_STRINGIFY(JucePlugin_AUMainType)) == "'aufx'");
     CHECK(juce::String(JUCE_STRINGIFY(JucePlugin_CFBundleIdentifier)) == "com.dripworks.snap");
     CHECK(juce::String(JucePlugin_Name) == "snap" && juce::String(JucePlugin_Manufacturer) == "daveydidit");
-    CHECK(juce::String(JucePlugin_VersionString) == "0.4.0");
+    CHECK(juce::String(JucePlugin_VersionString) == "0.5.0");
     // The wrappers derive the VST3 class IDs and the AU/VST3 numeric parameter IDs from the codes and IDs only under these settings.
     static_assert(JUCE_VST3_CAN_REPLACE_VST2 == 0 && JUCE_FORCE_USE_LEGACY_PARAM_IDS == 0, "frozen host-facing IDs");
     CHECK(!JucePlugin_IsSynth && !JucePlugin_WantsMidiInput);
@@ -330,10 +331,10 @@ static void testIdentity() // (4)
     for (auto* param : p.getParameters())
     {
         auto* withId = dynamic_cast<juce::AudioProcessorParameterWithID*>(param);
-        CHECK(withId != nullptr && withId->getVersionHint() == (withId->paramID == "attack" || withId->paramID == "sustain" ? 1 : 2));
+        CHECK(withId != nullptr && withId->getVersionHint() == (withId->paramID == "attack" || withId->paramID == "sustain" ? 1 : withId->paramID == "press_attack" ? 3 : 2));
         found.add(withId->paramID);
     }
-    CHECK(found == expected && found.size() == 86 && !found.contains("mix") && !found.contains("output"));
+    CHECK(found == expected && found.size() == 87 && found[86] == "press_attack" && !found.contains("mix") && !found.contains("output"));
     auto unique = found;
     unique.removeDuplicates(false);
     CHECK(unique == found);
@@ -689,6 +690,236 @@ static void testRiso()
         return false;
     };
     CHECK(glow(132) && glow(1072) && !glow(1307));
+    // The glow ends at the dial ring's outer edge: no ink in the box outside that circle.
+    for (const int cx : { 132, 367, 602, 837, 1072 })
+    {
+        bool outside = false;
+        for (int y = 492; y < 612; ++y)
+            for (int x = cx - 60; x < cx + 60; ++x)
+                if (const auto c = riso::backdrop().getPixelAt(x, y); c.getBlue() != c.getRed() && std::hypot(x - cx + 0.5, y - 552 + 0.5) > riso::dialGlowEdge + 1)
+                    outside = true;
+        CHECK(!outside);
+    }
+}
+
+
+// Each module's on/off switch: switched off mid-render, the output ramps (no step larger than the material's own) and
+// within 50 ms matches the module never having been on; the editor dims the column and stills its visualizer.
+static void testModuleSwitches()
+{
+    const std::pair<const char*, std::vector<std::pair<const char*, float>>> cases[] = {
+        { "subhiss_on", { { "sub_amt", 70 }, { "hiss_amt", 70 } } }, { "shift_on", { { "shift_amt", 60 } } },
+        { "space_on", { { "space_amt", 60 } } }, { "press_on", { { "press_amt", 80 } } },
+        { "drive_on", { { "drive_amt", 80 } } }, { "push_on", { { "push_amt", 80 } } } };
+    const double fs = 48000;
+    const int block = 256, total = (int) fs, at = (int) (0.5 * fs) / block * block;
+    for (auto& [onId, values] : cases)
+    {
+        auto render = [&](bool switching, bool on) {
+            Proc p;
+            for (auto& [id, v] : values)
+                set(p, id, v);
+            set(p, onId, on ? 1.0f : 0.0f);
+            prepare(p, fs, block, 2);
+            juce::AudioBuffer<float> b(2, block);
+            juce::MidiBuffer midi;
+            std::vector<float> out;
+            for (int start = 0; start < total; start += block)
+            {
+                if (switching && start == at)
+                    set(p, onId, 0);
+                for (int i = 0; i < block; ++i)
+                    b.setSample(0, i, drum(start + i, fs)), b.setSample(1, i, -0.7f * drum(start + i, fs));
+                p.processBlock(b, midi);
+                for (int i = 0; i < block; ++i)
+                    out.push_back(b.getSample(0, i));
+            }
+            return out;
+        };
+        const auto switched = render(true, true), off = render(false, false), on = render(false, true);
+        const size_t settled = (size_t) (at + 0.05 * fs + 2 * 2685);
+        float after = 0, step = 0, own = 0;
+        for (size_t i = settled; i < switched.size(); ++i)
+            after = std::max(after, std::abs(switched[i] - off[i]));
+        for (size_t i = 1; i < switched.size(); ++i)
+            step = std::max(step, std::abs(switched[i] - switched[i - 1])), own = std::max({ own, std::abs(on[i] - on[i - 1]), std::abs(off[i] - off[i - 1]) });
+        if (!(after < 1.0e-4f && step <= own * 1.05f))
+            std::printf("switch %s: after %.3g, step %.3g vs %.3g\n", onId, after, step, own);
+        CHECK(after < 1.0e-4f);
+        CHECK(step <= own * 1.05f);
+        CHECK(maxDiff(on, off) > 1.0e-3f); // the module was doing something to switch off
+    }
+}
+
+
+// Audibility (snap 0.5): every control on the editor must make a clearly audible change on drums. Each control's
+// min, mid and max (every choice, both toggle states) are rendered on the synthetic kit loop with its module at a typical
+// amount; the widest change between any two (for a selector: the weakest choice against the default) must reach 2 dB on
+// the largest of: level, the three one-third-octave bands that moved most (within 50 dB of the loudest), the 5 ms
+// envelope (within 40 dB of its peak), half the side/mid width change, half the left/right balance change. The same
+// measure and contexts as the site's tools/snap-audit.mjs (on the site's drum loop), which writes snap-audit.md.
+namespace audibility
+{
+struct Measure { double rms = 0, mid = 0, side = 0, left = 0, right = 0; std::vector<double> bands, env; };
+static Measure analyse(const juce::AudioBuffer<float>& y)
+{
+    constexpr int N = 4096, skip = 9600;
+    const int n = y.getNumSamples();
+    Measure m;
+    std::vector<double> mid((size_t) n);
+    for (int i = 0; i < n; ++i)
+    {
+        const double l = y.getSample(0, i), r = y.getSample(1, i);
+        mid[(size_t) i] = 0.5 * (l + r);
+        if (i >= skip)
+            m.mid += 0.25 * (l + r) * (l + r), m.side += 0.25 * (l - r) * (l - r), m.left += l * l, m.right += r * r;
+    }
+    m.rms = std::sqrt((m.left + m.right) / (2.0 * (n - skip)));
+    std::vector<double> bandHz;
+    for (double f = 40; f <= 16000; f *= std::pow(2.0, 1.0 / 3))
+        bandHz.push_back(f);
+    m.bands.assign(bandHz.size(), 0.0);
+    juce::dsp::FFT fft(12);
+    std::vector<float> buf(2 * N);
+    for (int s = skip; s + N <= n; s += N / 2)
+    {
+        for (int i = 0; i < N; ++i)
+            buf[(size_t) i] = (float) (mid[(size_t) (s + i)] * (0.5 - 0.5 * std::cos(2 * juce::MathConstants<double>::pi * i / N)));
+        std::fill(buf.begin() + N, buf.end(), 0.0f);
+        fft.performFrequencyOnlyForwardTransform(buf.data());
+        for (int k = 1; k < N / 2; ++k)
+            if (const int b = (int) std::floor(std::log2(k * 48000.0 / N / 40 * std::pow(2.0, 1.0 / 6)) * 3); b >= 0 && b < (int) bandHz.size())
+                m.bands[(size_t) b] += (double) buf[(size_t) k] * buf[(size_t) k];
+    }
+    for (int s = skip; s + 240 <= n; s += 240)
+    {
+        double q = 0;
+        for (int i = s; i < s + 240; ++i)
+            q += (double) y.getSample(0, i) * y.getSample(0, i) + (double) y.getSample(1, i) * y.getSample(1, i);
+        m.env.push_back(10 * std::log10(q / 480 + 1e-12));
+    }
+    return m;
+}
+static double effect(const juce::AudioBuffer<float>& ya, const juce::AudioBuffer<float>& yr)
+{
+    const auto a = analyse(ya), r = analyse(yr);
+    const auto dB = [](double x) { return 10 * std::log10(x + 1e-20); };
+    const double level = std::abs(20 * std::log10((a.rms + 1e-12) / (r.rms + 1e-12)));
+    double top = 0;
+    for (size_t b = 0; b < r.bands.size(); ++b)
+        top = std::max({ top, r.bands[b], a.bands[b] });
+    std::vector<double> changes;
+    for (size_t b = 0; b < r.bands.size(); ++b)
+        if (std::max(r.bands[b], a.bands[b]) > top * 1e-5)
+            changes.push_back(std::abs(dB(a.bands[b]) - dB(r.bands[b])));
+    std::sort(changes.rbegin(), changes.rend());
+    double spectrum = 0;
+    for (size_t k = 0; k < std::min<size_t>(3, changes.size()); ++k)
+        spectrum += changes[k] / (double) std::min<size_t>(3, changes.size());
+    double peak = -1e9, es = 0;
+    int ec = 0;
+    for (double v : r.env) peak = std::max(peak, v);
+    for (double v : a.env) peak = std::max(peak, v);
+    for (size_t k = 0; k < std::min(a.env.size(), r.env.size()); ++k)
+        if (std::max(a.env[k], r.env[k]) > peak - 40)
+            es += std::abs(std::max(a.env[k], peak - 60) - std::max(r.env[k], peak - 60)), ++ec;
+    const double envelope = ec ? es / ec : 0;
+    const double width = std::abs(std::max(-40.0, dB(a.side / a.mid)) - std::max(-40.0, dB(r.side / r.mid)));
+    const double balance = std::abs(dB(a.left / a.right) - dB(r.left / r.right));
+    return std::max({ level, spectrum, envelope, width / 2, balance / 2 });
+}
+} // namespace audibility
+
+static void testAudibility()
+{
+#if defined(__SANITIZE_ADDRESS__)
+    return; // minutes of renders: the Release suite covers it
+#else
+    using Values = std::vector<std::pair<const char*, float>>;
+    const Values sub { { "sub_amt", 70 } }, hiss { { "hiss_amt", 70 } }, shift { { "shift_amt", 80 } }, space { { "space_amt", 50 } },
+        press { { "press_amt", 70 } }, drive { { "drive_amt", 70 } }, push { { "push_amt", 70 } };
+    const auto with = [](Values a, const Values& b) { a.insert(a.end(), b.begin(), b.end()); return a; };
+    const std::vector<std::pair<const char*, Values>> controls = {
+        { "magnitude", {} }, { "bypass", {} }, { "subhiss_on", with(sub, hiss) }, { "sub_amt", {} }, { "hiss_amt", {} }, { "sub_sens", sub },
+        { "hiss_sens", hiss }, { "sub_det_lo", sub }, { "sub_det_hi", sub }, { "hiss_det_lo", hiss }, { "hiss_det_hi", hiss }, { "sub_pitch", sub },
+        { "sub_decay", sub }, { "hiss_decay", hiss }, { "sub_duck", sub }, { "hiss_duck", hiss }, { "sub_stereo", sub }, { "sub_color", sub },
+        { "sub_acid", sub }, { "hiss_type", hiss }, { "hiss_pitch", hiss }, { "hiss_tone", hiss }, { "hiss_env", hiss }, { "hiss_res", hiss },
+        { "sub_solo", sub }, { "sub_post", with(sub, { { "drive_amt", 80 }, { "press_amt", 80 } }) }, { "hiss_solo", hiss },
+        { "hiss_post", with(hiss, { { "shift_amt", 80 }, { "space_amt", 50 } }) }, { "shift_on", shift }, { "shift_amt", {} },
+        { "shift_balance", shift }, { "shift_invert", with(shift, { { "shift_balance", 0 } }) }, { "shift_stereo", shift },
+        { "shift_stretch", shift }, { "shift_fmix", shift }, { "shift_target", shift }, { "shift_focus_lo", shift }, { "shift_focus_hi", shift },
+        { "space_on", space }, { "space_amt", {} }, { "space_type", space }, { "space_decay", space }, { "space_stretch", space },
+        { "space_predelay", space }, { "space_duck", space }, { "space_pan", space }, { "space_width", space }, { "space_focus_lo", space },
+        { "space_focus_hi", space }, { "press_on", press }, { "press_amt", {} }, { "press_mode", press }, { "press_downup", press },
+        { "press_mix", press }, { "press_bands", press }, { "press_attack", press }, { "drive_on", drive }, { "drive_amt", {} },
+        { "drive_mode", drive }, { "drive_flavor", drive }, { "drive_mix", drive }, { "drive_target", drive }, { "drive_focus_lo", drive },
+        { "drive_focus_hi", drive }, { "push_on", push }, { "push_amt", {} }, { "push_mult", push }, { "push_tone", push }, { "push_mix", push },
+        { "push_target", push }, { "push_focus_lo", push }, { "push_focus_hi", push }, { "in_gain", {} }, { "out_gain", {} },
+        { "eq_on", { { "cut_lo", 150 }, { "tone", 60 } } }, { "cut_lo", {} }, { "cut_hi", {} }, { "lc_shape", { { "cut_lo", 200 } } },
+        { "hc_shape", { { "cut_hi", 4000 } } }, { "tone", {} }, { "tone_shape", { { "tone", 60 } } }, { "air", {} }, { "attack", {} },
+        { "sustain", {} }, { "clip_on", { { "in_gain", 12 } } } };
+    const auto dry = loops::make(2, 48000, 6);
+    const snap::PresetStore presets(juce::File::getSpecialLocation(juce::File::tempDirectory).getChildFile("snap-audibility-no-user-presets"));
+    const auto* hitHard = presets.find(juce::String("factory/") + snap::defaultPresetName);
+    const auto render = [&](const Values& values, bool preset) {
+        Proc p;
+        if (preset && hitHard != nullptr)
+            snap::loadPresetXml(p, hitHard->xml);
+        for (auto& [id, v] : values)
+            set(p, id, v);
+        prepare(p, 48000, 512, 2);
+        auto wet = dry;
+        juce::MidiBuffer midi;
+        for (int start = 0; start < wet.getNumSamples(); start += 512)
+        {
+            juce::AudioBuffer<float> block(wet.getArrayOfWritePointers(), 2, start, std::min(512, wet.getNumSamples() - start));
+            p.processBlock(block, midi);
+        }
+        return wet;
+    };
+    int weak = 0;
+    for (auto& [id, context] : controls)
+    {
+        const auto& s = snap::spec(id);
+        const bool preset = std::string_view(id) == "magnitude" || std::string_view(id) == "bypass";
+        std::vector<float> values;
+        if (s.unit == snap::Unit::toggle)
+            values = { 0, 1 };
+        else if (s.unit == snap::Unit::choice)
+            for (size_t k = 0; k < s.choices.size(); ++k)
+                values.push_back((float) k);
+        else
+        {
+            float lo = s.lo, hi = s.hi;
+            if (std::string_view(id).starts_with("sub_det") || std::string_view(id).starts_with("hiss_det")) // up to the other edge's default
+            {
+                const auto other = juce::String(id).endsWith("_lo") ? juce::String(id).replace("_lo", "_hi") : juce::String(id).replace("_hi", "_lo");
+                (juce::String(id).endsWith("_lo") ? hi : lo) = snap::spec(other.toStdString()).def;
+            }
+            const float mid = s.logScale() ? std::sqrt(lo * hi) : 0.5f * (lo + hi);
+            values = { lo, s.unit == snap::Unit::note ? std::round(mid) : mid, hi };
+        }
+        std::vector<juce::AudioBuffer<float>> out;
+        for (float v : values)
+            out.push_back(render(with(context, { { id, v } }), preset));
+        double best = 0;
+        if (s.unit == snap::Unit::choice) // the weakest choice against the default
+        {
+            best = 1e9;
+            for (size_t k = 0; k < values.size(); ++k)
+                if (k != (size_t) s.def)
+                    best = std::min(best, audibility::effect(out[k], out[(size_t) s.def]));
+        }
+        else
+            for (size_t a = 0; a < out.size(); ++a)
+                for (size_t b = a + 1; b < out.size(); ++b)
+                    best = std::max(best, audibility::effect(out[b], out[a]));
+        if (best < 2.0)
+            ++weak, std::printf("audibility: %s changes the kit loop by %.2f dB\n", id, best);
+        CHECK(best >= 2.0);
+    }
+    std::printf("audibility: %d of %d controls under 2 dB\n", weak, (int) controls.size());
+#endif
 }
 
 static void testEditor()
@@ -742,6 +973,44 @@ static void testEditor()
     };
     count(ed);
     CHECK(controls >= 50);
+
+    // A pointer reaches every visible key and control: the component under the middle of each (and of each quarter,
+    // for the wide ones) is that widget or one of its children, at 100 % and at the 75 % and 150 % scales.
+    ed.setVisible(true);
+    for (const int width : { 1440, 1080, 2160 })
+    {
+        ed.setSize(width, width * 840 / 1440);
+        tick(ed);
+        int widgets = 0, missed = 0;
+        std::function<void(juce::Component&)> probe = [&](juce::Component& c) {
+            if (!c.isVisible())
+                return;
+            if (dynamic_cast<snap::ui::Key*>(&c) != nullptr || dynamic_cast<snap::ui::Control*>(&c) != nullptr)
+            {
+                ++widgets;
+                const auto b = c.getLocalBounds().toFloat();
+                for (const float fx : { 0.5f, 0.25f, 0.75f })
+                {
+                    const auto at = ed.getLocalPoint(&c, juce::Point<float>(b.getX() + b.getWidth() * fx, b.getCentreY())).roundToInt();
+                    auto* under = ed.getComponentAt(at);
+                    if (under != &c && !c.isParentOf(under))
+                    {
+                        ++missed;
+                        std::printf("  hit miss at %d px: %s (%s) at %d,%d -> %s\n", width, c.getTitle().toRawUTF8(), c.getComponentID().toRawUTF8(), at.x, at.y,
+                                    under != nullptr ? (under->getTitle() + " / " + under->getComponentID()).toRawUTF8() : "nothing");
+                        break;
+                    }
+                }
+            }
+            for (auto* child : c.getChildren())
+                probe(*child);
+        };
+        for (auto* child : ed.getChildren())
+            probe(*child);
+        std::printf("  hit test at %d px: %d widgets, %d missed\n", width, widgets, missed);
+        CHECK(widgets >= 90 && missed == 0);
+    }
+    ed.setVisible(false), ed.setSize(1440, 840);
     using snap::ui::parse;
     CHECK(parse(snap::spec("out_gain"), juce::String::fromUTF8("\xe2\x88\x92" "5.3 dB")) == -5.3f);
     CHECK(parse(snap::spec("space_predelay"), "0.012 s") == 12.0f);
@@ -870,6 +1139,26 @@ static void testEditor()
         CHECK(p.redo() && p.apvts.state.getProperty("preset").toString() == chosen);
         click(ed, "preset browser"), click(ed, "preset browser"); // the name key closes it like ok
         CHECK(!browser->isVisible());
+    }
+
+    // The preset stepper keeps its place: < and > stay put whatever the name, and the box fits the longest factory name.
+    {
+        auto *prev = find<snap::ui::Key>(ed, "previous preset"), *next = find<snap::ui::Key>(ed, "next preset"), *name = find<snap::ui::Key>(ed, "preset browser");
+        CHECK(prev != nullptr && next != nullptr && name != nullptr);
+        if (prev != nullptr && next != nullptr && name != nullptr)
+        {
+            const auto prevAt = prev->getBounds(), nextAt = next->getBounds();
+            int longest = 0;
+            for (int i = 0; i < 60; ++i)
+            {
+                click(ed, "next preset"), tick(ed);
+                CHECK(prev->getBounds() == prevAt && next->getBounds() == nextAt);
+                const snap::PresetStore names;
+                if (const auto* now = names.find(p.apvts.state.getProperty("preset").toString()))
+                    longest = std::max(longest, now->name.length());
+            }
+            CHECK(longest >= 20 && (float) name->getWidth() >= snap::ui::textWidth(juce::String::repeatedString("x", longest)));
+        }
     }
 
     // Automation from the audio thread with the editor open: no allocation (the editor polls, it never listens).
@@ -1111,13 +1400,89 @@ static int render(const juce::File& dir)
     return ok ? 0 : 1;
 }
 
+
+// Offline render of a raw file for the site's fidelity and audit tools: interleaved stereo float32 in, the same out
+// (latency not removed), 48 kHz unless --rate, 128-sample blocks unless --block. Options: --preset <name>,
+// --order shift,space,press,drive, and id=value pairs in host units, applied in order after the preset.
+static int renderFile(int argc, char** argv)
+{
+    juce::File in(juce::File::getCurrentWorkingDirectory().getChildFile(argv[2])), out(juce::File::getCurrentWorkingDirectory().getChildFile(argv[3]));
+    juce::MemoryBlock data;
+    if (!in.loadFileAsData(data))
+        return 2;
+    double fs = 48000;
+    int block = 128;
+    Proc p;
+    snap::PresetStore store(juce::File::getSpecialLocation(juce::File::tempDirectory).getChildFile("snap-render-no-user-presets"));
+    for (auto& preset : store.presets()) // a fresh instance starts on the default preset; --preset or neutral replaces it
+        if (preset.factory && preset.name == "init")
+            snap::loadPresetXml(p, preset.xml);
+    for (auto& s : snap::parameterTable())
+        if (!snap::isSessionToggle(s.id))
+            set(p, s.id, s.def);
+    for (int i = 4; i < argc; ++i)
+    {
+        const juce::String a(argv[i]);
+        if (a == "--rate" && i + 1 < argc)
+            fs = juce::String(argv[++i]).getDoubleValue();
+        else if (a == "--block" && i + 1 < argc)
+            block = juce::String(argv[++i]).getIntValue();
+        else if (a == "--preset" && i + 1 < argc)
+        {
+            const juce::String name(argv[++i]);
+            bool found = false;
+            for (auto& preset : store.presets())
+                if (preset.factory && preset.name == name)
+                    found = snap::loadPresetXml(p, preset.xml);
+            if (!found)
+                return std::fprintf(stderr, "no preset %s\n", name.toRawUTF8()), 3;
+        }
+        else if (a == "--order" && i + 1 < argc)
+        {
+            const auto o = snap::parseChainOrder(argv[++i]);
+            if (!o)
+                return 4;
+            p.setOrder(*o);
+        }
+        else if (a.containsChar('='))
+        {
+            const auto id = a.upToFirstOccurrenceOf("=", false, false);
+            if (p.apvts.getParameter(id) == nullptr)
+                return std::fprintf(stderr, "no parameter %s\n", id.toRawUTF8()), 5;
+            set(p, id.toStdString(), a.fromFirstOccurrenceOf("=", false, false).getFloatValue());
+        }
+    }
+    prepare(p, fs, block, 2);
+    const auto* x = static_cast<const float*>(data.getData());
+    const int n = (int) (data.getSize() / (2 * sizeof(float)));
+    std::vector<float> y((size_t) n * 2);
+    juce::AudioBuffer<float> b(2, block);
+    juce::MidiBuffer midi;
+    for (int start = 0; start < n; start += block)
+    {
+        const int len = std::min(block, n - start);
+        b.setSize(2, len, false, false, true);
+        for (int i = 0; i < len; ++i)
+            b.setSample(0, i, x[2 * (start + i)]), b.setSample(1, i, x[2 * (start + i) + 1]);
+        p.processBlock(b, midi);
+        for (int i = 0; i < len; ++i)
+            y[2 * (size_t) (start + i)] = b.getSample(0, i), y[2 * (size_t) (start + i) + 1] = b.getSample(1, i);
+    }
+    out.deleteFile();
+    return out.replaceWithData(y.data(), y.size() * sizeof(float)) ? 0 : 1;
+}
+
 int main(int argc, char** argv)
 {
     const juce::ScopedJuceInitialiser_GUI gui;
+    if (argc >= 4 && juce::String(argv[1]) == "--render-file")
+        return renderFile(argc, argv);
     if (argc == 3 && (juce::String(argv[1]) == "--screenshot" || juce::String(argv[1]) == "--screenshot-browser"))
         return screenshot(juce::File::getCurrentWorkingDirectory().getChildFile(argv[2]), juce::String(argv[1]) == "--screenshot-browser");
     if (argc == 2 && juce::String(argv[1]) == "--bench")
         return benchmark();
+    if (argc == 2 && juce::String(argv[1]) == "--audibility") // the control audibility check on its own
+        return testAudibility(), failures == 0 ? 0 : 1;
     if (argc == 2 && juce::String(argv[1]) == "--editor") // the editor tests on their own
         testBraille(), testRiso(), testEditor();
     else
@@ -1146,6 +1511,8 @@ int main(int argc, char** argv)
     testBraille();
     testRiso();
     testEditor();
+    testModuleSwitches();
+    testAudibility();
     testDsp();
     testPress();
     testDrive();

@@ -361,7 +361,7 @@ std::array<float, 2> SubHiss::renderSub(float velocity) noexcept
     const float center = subGain * (body - subDc);
     const float harmonic = stereoHighpass.processSample(0, harmonics + oldHarmonics);
     const float delayed = stereoDelay.next(0, harmonic);
-    const float side = subGain * stereoGain * stereo * std::max(color, acid) * (harmonic - delayed);
+    const float side = subGain * stereoGain * stereo * std::lerp(stereoFloor, 1.0f, std::max(color, acid)) * (harmonic - delayed);
     return { center, side };
 }
 
@@ -386,9 +386,9 @@ float SubHiss::renderHiss(float velocity, bool updateFilters) noexcept
         hissVoices.trigger(velocity, hissType);
     const float increment = hissPitch.next(), tone = hissTone.next(), env = hissEnv.next(), res = hissRes.next();
     const float decay = hiss.decayRate.next(), fade = hissVoices.previousGain;
+    const float sweep = std::lerp(hissVoices.current.sweep, hissVoices.previous.sweep, fade);
     if (updateFilters)
     {
-        const float sweep = std::lerp(hissVoices.current.sweep, hissVoices.previous.sweep, fade);
         const float cutoff = hissOpenHz * std::exp2(-env * hissClosedOctaves * (1.0f - sweep));
         hissLowpass.setCutoffFrequency(std::min(cutoff, highestHz));
         hissLowpass.setResonance(std::lerp(juce::MathConstants<float>::sqrt2 * 0.5f, hissMaxResonance, res));
@@ -396,7 +396,8 @@ float SubHiss::renderHiss(float velocity, bool updateFilters) noexcept
     const float current = playNoise(hissVoices.current, increment, decay);
     const float previous = fade > 0.0f ? playNoise(hissVoices.previous, increment, decay) : 0.0f;
     hissVoices.previousGain = std::max(0.0f, fade - hissVoices.fadeStep);
-    const float dry = std::lerp(current, previous, fade);
+    // Env also shapes the level: the same envelope that closes the filter pulls the tail down, so more env is a snappier hit.
+    const float dry = std::lerp(current, previous, fade) * std::lerp(1.0f, sweep * sweep, env * hissEnvLevel);
     hissTiltLow += toneAlpha * (dry - hissTiltLow);
     const float tilted = dry + hissTilt * tone * (dry - 2.0f * hissTiltLow);
     return hissGain * hissLowpass.processSample(0, tilted);

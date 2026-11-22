@@ -92,6 +92,7 @@ void testResponses()
     for (size_t index = 0; index < responses.size(); ++index)
     {
         const auto& type = responses[index];
+        const double trim = std::pow(10.0, levelTrimDb[index] / 20.0); // each response's level trim (0.5)
         if (index < choices.size())
             CHECK(type.name == choices[index]);
         auto s = fullyWet();
@@ -123,9 +124,9 @@ void testResponses()
             for (int c = 0; c < 2; ++c)
             {
                 const float actual = wet.getSample(c, i);
-                const float expected = i < length ? source.getSample(c, i) * envelope : 0.0f;
-                error = std::max(error, (double) std::abs(actual - expected));
-                energy += (double) actual * actual;
+                const float expected = i < length ? (float) (trim * source.getSample(c, i) * envelope) : 0.0f;
+                error = std::max(error, (double) std::abs(actual - expected) / trim);
+                energy += (double) actual * actual / (trim * trim);
             }
             stereoDifference += std::abs(wet.getSample(0, i) - wet.getSample(1, i));
         }
@@ -184,7 +185,7 @@ void testControls()
     const auto shortTail = impulse(s, rate);
     s.decay = 100;
     const auto longTail = impulse(s, rate);
-    CHECK(shortTail.getRMSLevel(0, rate / 2, rate / 2) < 1.0e-7f);
+    CHECK(shortTail.getRMSLevel(0, rate / 2, rate / 2) < 1.0e-7f * (float) std::pow(10.0, levelTrimDb[5] / 20.0));
     CHECK(longTail.getRMSLevel(0, rate / 2, rate / 2) > 3.0e-5f);
 
     s = fullyWet();
@@ -242,7 +243,7 @@ void testRebuild()
         if (i < 200)
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
-    CHECK(maximumStep < 0.002f);
+    CHECK(maximumStep < 0.002f * (float) std::pow(10.0, levelTrimDb[4] / 20.0)); // the louder of the two rooms (0.5 trims)
     CHECK(std::abs(previous - before) > 0.0005f);
 
     Space reference;
