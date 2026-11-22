@@ -1499,6 +1499,14 @@ static void testEditor()
             movePointer(point(*find(e,"lock:2")));
             pumpUntil([&]{timer.timerCallback();return e.getHelpText().startsWith("tone");});
             CHECK(e.getHelpText().contains("one grain per period of the played note"));
+            if(!e.getHelpText().contains("one grain per period of the played note"))
+            {
+                auto* lock2=find(e,"lock:2");auto& source=juce::Desktop::getInstance().getMainMouseSource();auto* under=source.getComponentUnderMouse();
+                std::cout<<"  hover: help '"<<e.getHelpText()<<"', under "<<(under?under->getComponentID()+" "+under->getTitle():juce::String("none"))
+                         <<", lock:2 at "<<e.getLocalArea(lock2,lock2->getLocalBounds()).toString()<<", editor "<<e.getScreenBounds().toString()
+                         <<", mouse "<<source.getScreenPosition().toString()<<", lock:2 screen "<<lock2->getScreenBounds().toString()
+                         <<", display "<<juce::Desktop::getInstance().getDisplays().getPrimaryDisplay()->userArea.toString()<<"\n";
+            }
             set(p,"trigger",1);movePointer(point(*density));timer.timerCallback();
             CHECK(e.getHelpText().contains("idle while trigger = transient"));
             const auto densityArea=e.getLocalArea(density,density->getLocalBounds());
