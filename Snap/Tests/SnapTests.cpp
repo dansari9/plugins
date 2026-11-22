@@ -1216,6 +1216,20 @@ static void testEditor()
     CHECK(!snap::loadPresetXml(q, "<NOPE/>"));
 }
 
+// The display feed carries the modules' own levels for their visualizers (space's wet, drive's and push's input and change).
+static void testDisplayFeed()
+{
+    Proc p;
+    for (auto [id, v] : { std::pair { "space_amt", 50.0f }, { "drive_amt", 70.0f }, { "push_amt", 70.0f } })
+        set(p, id, v);
+    prepare(p, 48000, 512, 2);
+    run(p, 48000, 512, 2, 1.0);
+    auto& d = p.display;
+    const float wet = d.spaceWet.exchange(0), in = d.driveIn.exchange(0), added = d.driveAdded.exchange(0), pin = d.pushIn.exchange(0), padded = d.pushAdded.exchange(0);
+    std::printf("display feed: space wet %.3f, drive in %.3f added %.3f, push in %.3f added %.3f\n", wet, in, added, pin, padded);
+    CHECK(wet > 0.01f && in > 0.1f && added > 0.01f && pin > 0.1f && padded > 0.01f);
+}
+
 static int screenshot(const juce::File& file, bool browser)
 {
     Proc p;
@@ -1481,6 +1495,8 @@ int main(int argc, char** argv)
         return screenshot(juce::File::getCurrentWorkingDirectory().getChildFile(argv[2]), juce::String(argv[1]) == "--screenshot-browser");
     if (argc == 2 && juce::String(argv[1]) == "--bench")
         return benchmark();
+    if (argc == 2 && juce::String(argv[1]) == "--feed")
+        return testDisplayFeed(), failures == 0 ? 0 : 1;
     if (argc == 2 && juce::String(argv[1]) == "--audibility") // the control audibility check on its own
         return testAudibility(), failures == 0 ? 0 : 1;
     if (argc == 2 && juce::String(argv[1]) == "--editor") // the editor tests on their own
@@ -1512,6 +1528,7 @@ int main(int argc, char** argv)
     testRiso();
     testEditor();
     testModuleSwitches();
+    testDisplayFeed();
     testAudibility();
     testDsp();
     testPress();

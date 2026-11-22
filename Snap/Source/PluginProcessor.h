@@ -80,6 +80,7 @@ public:
         // Linear peaks since the editor last took them: space's wet, drive's input and what it added, push's likewise.
         std::atomic<float> spaceWet { 0 }, driveIn { 0 }, driveAdded { 0 }, pushIn { 0 }, pushAdded { 0 };
         std::array<std::atomic<int>, 2> hits {};             // sub and hiss detector hits so far
+        std::atomic<unsigned> blocks { 0 };                  // processBlock calls so far (the editor's "audio is flowing")
     } display;
 
 private:

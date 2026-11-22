@@ -304,6 +304,7 @@ void SnapProcessor::processBlock(AudioBuffer<float>& buffer, MidiBuffer&)
         display.inPeak.store(jmax(level, display.inPeak.load(std::memory_order_relaxed)), std::memory_order_relaxed);
         display.outPeak.store(jmax(outLevel, display.outPeak.load(std::memory_order_relaxed)), std::memory_order_relaxed);
     }
+    display.blocks.fetch_add(1, std::memory_order_relaxed);
     const auto& press = middle.current().press;
     display.pressDownDb.store(press.downwardDb(), std::memory_order_relaxed);
     display.pressUpDb.store(press.upwardDb(), std::memory_order_relaxed);

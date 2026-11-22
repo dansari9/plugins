@@ -155,7 +155,8 @@ struct Editor : AudioProcessorEditor, Timer
     std::vector<float> drawnParams;
     String tip = defaultTip, notice, drawnState;
     uint32 noticeUntil = 0;
-    int tab = 0, snapshot = 0, dragging = -1, lastScopeWrite = -1;
+    int tab = 0, snapshot = 0, dragging = -1;
+    unsigned lastBlocks = ~0u;
     float lufsIn = -100, lufsOut = -100, meterIn = 0, meterOut = 0;
     Component::SafePointer<Component> hovered;
     std::unique_ptr<AlertWindow> saveDialog;
@@ -878,9 +879,9 @@ struct Editor : AudioProcessorEditor, Timer
     {
         auto& d = proc.display;
         // No audio flowing (the host stopped, or silence): every visualizer settles and stops.
-        const int write = d.scopeWrite.load(std::memory_order_relaxed);
-        const bool flowing = write != lastScopeWrite;
-        lastScopeWrite = write;
+        const unsigned blocks = d.blocks.load(std::memory_order_relaxed);
+        const bool flowing = blocks != lastBlocks;
+        lastBlocks = blocks;
         Levels levels { d.inPeak.exchange(0), d.outPeak.exchange(0), d.spaceWet.exchange(0), d.driveIn.exchange(0), d.driveAdded.exchange(0),
                         d.pushIn.exchange(0), d.pushAdded.exchange(0), flowing };
         if (!flowing)
