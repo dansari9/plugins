@@ -1497,7 +1497,8 @@ static void testEditor()
             CHECK(key(mix,KeyPress::escapeKey) && !e.hasKeyboardFocus(true));pairs(0);
 
             movePointer(point(*find(e,"lock:2")));
-            pumpUntil([&]{timer.timerCallback();return e.getHelpText().startsWith("tone");});
+            // macOS can deliver the warp's own move after ours, leaving the source on the last pressed key: move again while waiting
+            pumpUntil([&]{pointer(point(*find(e,"lock:2")));timer.timerCallback();return e.getHelpText().startsWith("tone");});
             CHECK(e.getHelpText().contains("one grain per period of the played note"));
             if(!e.getHelpText().contains("one grain per period of the played note"))
             {
