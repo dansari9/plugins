@@ -1,6 +1,6 @@
 # snap
 
-A one-screen drum multi-FX by daveydidit. Version 0.5.0. Mono or stereo.
+A one-screen drum multi-FX by daveydidit. Version 0.5.1. Mono or stereo.
 
 The 0.2 chain is six modules plus a master section, with one **Magnitude** macro that scales the
 module amounts and the master's continuous controls toward neutral:
@@ -27,10 +27,22 @@ samples.
 
 The editor is one screen (1440 x 840 at 100 %, resizable 75–200 % from the corner or the ≡ menu): the top bar
 (presets, dice, save, Magnitude, menu), six module columns in chain order (drag a middle column's ⋮⋮ grip to
-reorder), the amount row (on/off, the big dial, hover for the lock), the master strip, and the bottom bar (undo /
-redo, the help line, snapshots A–D, bypass). Every dial and fader: drag (Shift finer), Alt/Cmd-click resets,
+reorder), the amount row (on/off, the big dial, hover for the lock), and the master strip, one group under each column (0.5.1: no bottom bar; snapshots A–D sit in the top bar). Every dial and fader: drag (Shift finer), Alt/Cmd-click resets,
 double-click types a value with units, the wheel nudges, right-click opens a menu. The preset name opens the
 browser over the module columns; click a row to audition, ok keeps it, cancel goes back.
+
+## 0.5.1
+
+David's notes on the Logic window (the window is 1440 x 808 now):
+- Top bar as silt's: `snap < preset > A B C D randomize save undo redo`, the word randomize in place of the dice; the
+  text sits midway between the window's top and the rule; a gap between magnitude and its fader.
+- The help line and its bar are gone (snapshots A–D moved to the top bar; the bypass parameter stays, reached from
+  the host). The master strip puts one group under each module column on the columns' own dial slots.
+- The lower bands (sens / detect, target / focus, attack) are full-width bars with their name and value above them,
+  each a 32 px grab; centred fader lines (balance, down/up, bands, flavor) sit midway in their column; the sub/hiss
+  toggles are one row apart.
+- Every module's visualizer draws every one of its controls (a change redraws the still picture); a test changes each
+  of the 70 and checks the picture changes. The amount dials print in their column's one ink.
 
 ## 0.5.0
 

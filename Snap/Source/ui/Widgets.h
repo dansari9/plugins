@@ -35,6 +35,8 @@ public:
     juce::String label, hint;    // label: a dial's name (drawn by small dials)
     bool centred = false, dim = false;
     float knob = 44;                      // a dial's arc size: 44, or 72 for master in / out
+    bool heavy = false;                   // a lower band's bar: its name row above, the bar in the bottom 16 px
+    juce::Colour arcInk {};               // an amount dial's one ink (its column's)
     int active = 0;                       // the parameter a drag, wheel or typed value moves (range: nearest handle)
     std::function<void(int)> onPick;      // amount with two rings: a click picked ring 0 (inner) or 1 (outer)
     std::function<juce::String()> valueText; // optional replacement for the value under a small dial

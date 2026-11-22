@@ -1,9 +1,10 @@
-// snap's one-screen editor (approved v3 layout, 1440 x 840 logical, scaled 75-200 %). Coordinates are the mockup's:
-// top bar, six module columns in chain order on one shared band grid (Layout.h), the amount row, the master strip of
-// seven groups on one centre line, and the bottom bar; the preset browser overlays the columns only. Controls draw
+// snap's one-screen editor (approved v3 layout, 1440 x 808 logical, scaled 75-200 %). Coordinates are the mockup's:
+// top bar, six module columns in chain order on one shared band grid (Layout.h), the amount row and the master strip,
+// one group under each column; the preset browser overlays the columns only. Controls draw
 // themselves; each zone paints its own labels and readouts. A 30 Hz timer feeds the visualizers and meters and
 // repaints the static layer only when something it shows has changed.
 #include "../PluginProcessor.h"
+#include "../dsp/modules/DriveConstants.h"
 #include "../dsp/modules/ShiftConstants.h"
 #include "Braille.h"
 #include "Layout.h"
@@ -20,9 +21,12 @@ namespace
 {
 using namespace colours;
 using namespace layout;
-constexpr int W = 1440, H = 840;
+constexpr int W = layout::width, H = layout::height;
 constexpr float CW = colW, YK = bandKnobs, YD = bandDetail, Yc = masterYc;
 const String defaultTip = u("magnitude scales all six modules and master at once \xc2\xb7 alt-click any dial to reset, double-click to type");
+String aboutText() { return u("snap " JucePlugin_VersionString " \xc2\xb7 drum multi-fx \xc2\xb7 daveydidit"); }
+// The lower bands' target value: which part of each hit the module works on.
+String targetText(float v) { return std::abs(v) < 0.005f ? String("both") : (v < 0 ? "trans " : "sust ") + String(roundToInt(std::abs(v) * 100)) + "%"; }
 
 // A component that paints through a lambda: the fixed zones and the amount cells.
 struct Canvas : Component
@@ -150,11 +154,11 @@ struct Editor : AudioProcessorEditor, Timer
     Canvas layer;
     std::array<Column, 6> columns;
     std::array<Canvas, 6> cells; // the amount row
+    std::array<Control*, 6> amounts {};
     OwnedArray<Component> parts;    // layer-level widgets
     PresetBrowser browser;
     std::vector<float> drawnParams;
-    String tip = defaultTip, notice, drawnState;
-    uint32 noticeUntil = 0;
+    String tip = defaultTip, drawnState;
     int tab = 0, snapshot = 0, dragging = -1;
     unsigned lastBlocks = ~0u;
     float lufsIn = -100, lufsOut = -100, meterIn = 0, meterOut = 0;
@@ -170,9 +174,8 @@ struct Editor : AudioProcessorEditor, Timer
         for (int m = 0; m < 6; ++m)
             buildColumn((Module) m), buildAmount((Module) m);
         buildMaster();
-        buildBottomBar();
         layer.draw = [this](Graphics& g) { paintLayer(g); };
-        layer.addChildComponent(browser), browser.setBounds(24, 58, 1392, 434);
+        layer.addChildComponent(browser), browser.setBounds(24, 58, 1392, (int) columnH + 2);
         browser.onClose = [this] { browser.setVisible(false), repaintAll(); };
         place();
         const double scale = jlimit(0.75, 2.0, (double) proc.apvts.state.getProperty("ui_scale", 1.0));
@@ -298,34 +301,47 @@ struct Editor : AudioProcessorEditor, Timer
         box(g, { 0, y, CW, cellH }, dimmed(rule, d));
         centred(g, name, 0, y + 3, CW, dimmed(primary, d), 12, true);
     }
-    // A fader line (Layout.h): name at x 0, optional end labels, the fader between them.
-    Control& line(Column& c, Control::Kind kind, const char* id, float y, const char* name, const char* endL, const char* endR, bool centredValue = false,
-                  const char* second = nullptr)
+    // A centred fader line: its end words at the column's edges, the fader between them with equal margins (Layout.h).
+    Control& line(Column& c, const char* id, float y, const String& endL, const String& endR, bool centredValue, int chars = 0)
     {
-        c.caption(name, 0, y);
-        if (endL != nullptr)
-            c.caption(endL, faderX, y);
-        if (endR != nullptr)
-            c.caption(endR, faderRightX + 4, y, CW - faderRightX - 4);
-        const float x0 = endL != nullptr ? faderEndX : faderX, x1 = endR != nullptr ? faderRightX : CW;
-        return control(c, kind, id, { x0, y + 2, x1 - x0, 12 }, centredValue, second);
+        if (endL.isNotEmpty())
+            c.caption(endL, 0, y), c.caption(endR, 0, y, CW);
+        const float m = lineMargin(jmax(chars, endL.length()), endR.length());
+        return control(c, Control::Kind::fader, id, { m, y + 2, CW - 2 * m, 12 }, centredValue);
+    }
+    // A lower band: the name and its value on one row (painted by the column), the bar the column's width under it; the
+    // two rows are one 32 px grab.
+    Control& band(Column& c, Control::Kind kind, const char* id, float y, const char* second = nullptr, bool centredValue = false)
+    {
+        auto& k = control(c, kind, id, { 0, y, CW, 32 }, centredValue, second);
+        k.heavy = true;
+        return k;
+    }
+    static void bandText(Graphics& g, const String& name, const String& value, float y, bool d)
+    {
+        text(g, name, 0, y, dimmed(muted, d), 11), right(g, value, 0, y, CW, dimmed(primary, d), 12, true);
     }
     void targetLine(Column& c, const char* id)
     {
-        line(c, Control::Kind::fader, id, bandTarget, "target", "trans", "sust", true).hint = u("target \xc2\xb7 left: transients only, right: sustain only");
+        band(c, Control::Kind::fader, id, bandLow, nullptr, true).hint = u("target \xc2\xb7 left: transients only, right: sustain only");
     }
     void focusLine(Column& c, const char* lo, const char* hi)
     {
-        line(c, Control::Kind::range, lo, bandFocus, "focus", nullptr, nullptr, false, hi).hint = u("focus \xc2\xb7 the band the module works on; drag either end");
+        band(c, Control::Kind::range, lo, bandLow2, hi).hint = u("focus \xc2\xb7 the band the module works on; drag either end");
     }
-    // Toggles in the third slot of the detail band, 20 px apart, centred on the dials' arc centre.
+    void targetFocusText(Graphics& g, const char* prefix, bool d) const
+    {
+        const String p(prefix);
+        bandText(g, "target", targetText(raw((p + "_target").toRawUTF8())), bandLow, d);
+        bandText(g, "focus", focusText((p + "_focus_lo").toRawUTF8(), (p + "_focus_hi").toRawUTF8()), bandLow2, d);
+    }
+    // Toggles in the third slot of the detail band, one 16 px row each (the site's lattice rows), centred on YD + 28.
     void slotToggles(Column& c, std::initializer_list<std::pair<const char*, const char*>> toggles)
     {
-        float y = YD + 33 - 10 * (float) (toggles.size() - 1);
+        float y = YD + 28 - 8 * (float) (toggles.size() - 1);
         for (auto [id, label] : toggles)
-            toggleKey(c, id, label, slotX[2] + 4, y), y += 20;
+            toggleKey(c, id, label, slotX[2] + 4, y), y += 16;
     }
-    static void readout(Graphics& g, bool d, const String& range) { right(g, range, faderX, bandReadout, CW - faderX, dimmed(muted, d), 11); }
     static void caption(Graphics& g, const String& s, bool d) { centred(g, s, 0, bandSelector + 28, CW, dimmed(colours::dim, d), 11); }
     // A meter slot: a dial slot's label and value; the caller draws the meter at (x + 29, y + 18).
     static void meterSlot(Graphics& g, float x, float y, const String& label, const String& value, bool d)
@@ -381,23 +397,27 @@ struct Editor : AudioProcessorEditor, Timer
                                     }),
                                     false);
     }
-    void say(const String& s) { notice = s, noticeUntil = Time::getMillisecondCounter() + 3000; }
+    void say(const String& s) { setHelpText(s); } // for screen readers: the window has no help line
 
     // ---- top bar --------------------------------------------------------------------------------------------------
-    Key *nameKey = nullptr, *prevKey = nullptr, *nextKey = nullptr, *diceKey = nullptr, *saveKey = nullptr, *undoKey = nullptr, *redoKey = nullptr;
+    // As silt's: snap < preset > A B C D randomize, then save / undo / redo; magnitude, the menu and the maker at the
+    // right. Every text's centre is on y 24, as far over the rule at y 48 as the window's top is above it.
+    Key *nameKey = nullptr, *prevKey = nullptr, *nextKey = nullptr, *randomKey = nullptr, *saveKey = nullptr, *undoKey = nullptr, *redoKey = nullptr;
+    std::array<Key*, 4> snapKeys {};
     String presetName() const
     {
         const auto* p = store.find(currentKey());
         return p != nullptr ? p->name : String("init");
     }
+    void about() { AlertWindow::showMessageBoxAsync(MessageBoxIconType::NoIcon, "snap", aboutText(), {}, this); }
     void buildTopBar()
     {
-        key(layer, "about snap", { 24, 16, 48, 22 }, [](Graphics& g, Key&) { text(g, "snap", 0, 2, primary, 15, true); },
-            [this](const ModifierKeys&) { say(u("snap " JucePlugin_VersionString " \xc2\xb7 drum multi-fx \xc2\xb7 daveydidit")); })
+        key(layer, "about snap", { 24, 12, 48, 24 }, [](Graphics& g, Key&) { text(g, "snap", 0, 2, primary, 15, true); },
+            [this](const ModifierKeys&) { about(); })
             .hint = "about snap";
-        prevKey = &key(layer, "previous preset", { 88, 18, 16, 18 }, [](Graphics& g, Key& k) { text(g, "<", 4, 2, k.isMouseOver() ? primary : muted); },
+        prevKey = &key(layer, "previous preset", { 88, 14, 16, 20 }, [](Graphics& g, Key& k) { text(g, "<", 4, 2, k.isMouseOver() ? primary : muted); },
                        [this](const ModifierKeys&) { step(-1); });
-        nameKey = &key(layer, "preset browser", { 104, 16, 80, 22 },
+        nameKey = &key(layer, "preset browser", { 104, 12, 80, 24 },
                        [this](Graphics& g, Key& k) {
                            if (browser.isVisible())
                                g.setColour(tag), g.fillRect(k.getLocalBounds().toFloat().withTrimmedLeft(-20).withTrimmedRight(-20));
@@ -407,27 +427,52 @@ struct Editor : AudioProcessorEditor, Timer
                            centred(g, name, 0, 4, (float) k.getWidth(), primary, 12, true);
                        },
                        [this](const ModifierKeys&) { toggleBrowser(); });
-        nextKey = &key(layer, "next preset", { 184, 18, 16, 18 }, [](Graphics& g, Key& k) { text(g, ">", 4, 2, k.isMouseOver() ? primary : muted); },
+        nextKey = &key(layer, "next preset", { 184, 14, 16, 20 }, [](Graphics& g, Key& k) { text(g, ">", 4, 2, k.isMouseOver() ? primary : muted); },
                        [this](const ModifierKeys&) { step(1); });
-        diceKey = &key(layer, "random preset", { 216, 20, 14, 14 }, [](Graphics& g, Key& k) { dice(g, 0, 0, k.isMouseOver() ? primary : muted); },
-                       [this](const ModifierKeys&) { randomPreset(); });
-        saveKey = &key(layer, "save preset", { 242, 18, 40, 18 }, [](Graphics& g, Key& k) { text(g, "save", 4, 2, k.isMouseOver() ? primary : muted); },
+        // Snapshots, as silt's A / B: the current one inverted; a click recalls (stores when empty), a right-click stores.
+        for (int i = 0; i < 4; ++i)
+        {
+            const String label = String::charToString((juce_wchar) ('A' + i));
+            snapKeys[(size_t) i] = &key(layer, "snapshot " + label, { 0, 14, 14, 20 },
+                                        [this, i, label](Graphics& g, Key& k) {
+                                            const bool current = i == snapshot;
+                                            if (current)
+                                                riso::use(g, primary), g.fillRect(Rectangle<float>(1, 1, 12, 18));
+                                            const auto c = current ? bg : k.isMouseOver() ? primary : !proc.hasSnapshot(i) ? colours::dim : muted;
+                                            centred(g, label, 0, 2, 14, c, 12, current);
+                                        },
+                                        [this, i](const ModifierKeys& m) {
+                                            if (m.isPopupMenu() || !proc.hasSnapshot(i))
+                                                proc.storeSnapshot(i), say("stored snapshot " + String::charToString((juce_wchar) ('A' + i)));
+                                            else
+                                                proc.recallSnapshot(i);
+                                            snapshot = i;
+                                            repaintAll();
+                                        },
+                                        Key::Role::radio);
+            snapKeys[(size_t) i]->on = [this, i] { return snapshot == i; };
+            snapKeys[(size_t) i]->hint = u("snapshot \xc2\xb7 click recalls (stores when empty), right-click stores");
+        }
+        randomKey = &key(layer, "random preset", { 0, 14, textWidth("randomize") + 8, 20 },
+                         [](Graphics& g, Key& k) { text(g, "randomize", 4, 2, k.isMouseOver() ? primary : muted); },
+                         [this](const ModifierKeys&) { randomPreset(); });
+        saveKey = &key(layer, "save preset", { 0, 14, 40, 20 }, [](Graphics& g, Key& k) { text(g, "save", 4, 2, k.isMouseOver() ? primary : muted); },
                        [this](const ModifierKeys&) { savePreset(); });
-        undoKey = &key(layer, "undo", { 287, 18, 40, 18 }, [this](Graphics& g, Key& k) { text(g, "undo", 4, 2, proc.undoManager.canUndo() && k.isMouseOver() ? primary : muted); },
+        undoKey = &key(layer, "undo", { 0, 14, 40, 20 }, [this](Graphics& g, Key& k) { text(g, "undo", 4, 2, proc.undoManager.canUndo() && k.isMouseOver() ? primary : muted); },
                        [this](const ModifierKeys&) { proc.undo(); });
-        redoKey = &key(layer, "redo", { 332, 18, 40, 18 }, [this](Graphics& g, Key& k) { text(g, "redo", 4, 2, proc.undoManager.canRedo() && k.isMouseOver() ? primary : muted); },
+        redoKey = &key(layer, "redo", { 0, 14, 40, 20 }, [this](Graphics& g, Key& k) { text(g, "redo", 4, 2, proc.undoManager.canRedo() && k.isMouseOver() ? primary : muted); },
                        [this](const ModifierKeys&) { proc.redo(); });
         nameKey->hint = "open the preset browser", prevKey->hint = "previous preset", nextKey->hint = "next preset";
-        diceKey->hint = "load a random preset", saveKey->hint = "save the current sound as a user preset";
+        randomKey->hint = "load a random preset", saveKey->hint = "save the current sound as a user preset";
         undoKey->hint = "undo the last change", redoKey->hint = "redo";
-        control(layer, Control::Kind::fader, "magnitude", { 945, 22, 300, 12 }).hint = defaultTip;
-        key(layer, "menu", { 1296, 18, 22, 20 }, [](Graphics& g, Key& k) { menuIcon(g, 4, 5, k.isMouseOver() ? primary : muted); },
+        control(layer, Control::Kind::fader, "magnitude", { 945, 18, 300, 12 }).hint = defaultTip;
+        key(layer, "menu", { 1296, 14, 22, 20 }, [](Graphics& g, Key& k) { menuIcon(g, 4, 5, k.isMouseOver() ? primary : muted); },
             [this](const ModifierKeys&) { showMenu(); })
             .hint = "low latency mode, oversampling, scale, about";
         layoutTopBar();
     }
     // The name box is as wide as the longest factory preset name (the name centred in it), so < and > never move; a longer
-    // user preset name is cut to fit. Save, undo and redo follow 16 px apart.
+    // user preset name is cut to fit. The snapshots follow 32 px after >, 16 px apart, then randomize, save, undo, redo.
     float nameWidth() const
     {
         int longest = 4; // "init"
@@ -438,13 +483,14 @@ struct Editor : AudioProcessorEditor, Timer
     }
     void layoutTopBar()
     {
-        const float w = nameWidth();
-        nameKey->setBounds(Rectangle<float>(104, 16, w, 22).toNearestInt());
-        nextKey->setTopLeftPosition(roundToInt(104 + w), 18);
-        diceKey->setTopLeftPosition(jmax(216, roundToInt(104 + w + 28)), 20);
-        float x = (float) diceKey->getRight() + 12;
-        for (auto* k : { saveKey, undoKey, redoKey })
-            k->setTopLeftPosition(roundToInt(x), 18), x += textWidth("save") + 16;
+        const float w = nameWidth(), next = 104 + w;
+        nameKey->setBounds(Rectangle<float>(104, 12, w, 24).toNearestInt());
+        nextKey->setTopLeftPosition(roundToInt(next), 14);
+        for (int i = 0; i < 4; ++i)
+            snapKeys[(size_t) i]->setTopLeftPosition(roundToInt(next + 30 + 16 * (float) i), 14);
+        float x = next + 108;
+        for (auto* k : { randomKey, saveKey, undoKey, redoKey })
+            k->setTopLeftPosition(roundToInt(x), 14), x += (float) k->getWidth() + 8;
     }
     void toggleBrowser()
     {
@@ -471,7 +517,7 @@ struct Editor : AudioProcessorEditor, Timer
             else if (r == 2)
                 self->setParam("oversampling", self->on("oversampling") ? 0.0f : 1.0f);
             else if (r == 3)
-                self->say(u("snap " JucePlugin_VersionString " \xc2\xb7 drum multi-fx \xc2\xb7 daveydidit"));
+                self->about();
             else if (r > 100)
                 self->setSize(W * (r - 100) / 100, H * (r - 100) / 100);
         });
@@ -523,8 +569,8 @@ struct Editor : AudioProcessorEditor, Timer
             if (hiss)
             {
                 dial(c, "hiss_tone", "tone", slotX[0], YD, true), dial(c, "hiss_env", "env", slotX[1], YD);
-                toggleKey(c, "hiss_solo", "solo", slotX[2] + 4, YD + 13), toggleKey(c, "hiss_post", "post", slotX[2] + 4, YD + 33); // res is the third row
-                control(c, Control::Kind::fader, "hiss_res", { faderRightX, YD + 55, CW - faderRightX, 12 }).hint = "hiss resonance";
+                toggleKey(c, "hiss_solo", "solo", slotX[2] + 4, YD + 12), toggleKey(c, "hiss_post", "post", slotX[2] + 4, YD + 28); // res is the third row
+                control(c, Control::Kind::fader, "hiss_res", { slotX[2] + 36, YD + 46, CW - slotX[2] - 36, 12 }).hint = "hiss resonance";
                 selector(c, "hiss_type", "hiss type", rowB);
             }
             else
@@ -532,9 +578,8 @@ struct Editor : AudioProcessorEditor, Timer
                 dial(c, "sub_stereo", "stereo", slotX[0], YD), dial(c, "sub_color", "color", slotX[1], YD);
                 slotToggles(c, { { "sub_acid", "acid" }, { "sub_solo", "solo" }, { "sub_post", "post" } });
             }
-            line(c, Control::Kind::fader, hiss ? "hiss_sens" : "sub_sens", bandTarget, "sens", nullptr, nullptr).hint
-                = u("sensitivity \xc2\xb7 higher triggers on quieter hits");
-            line(c, Control::Kind::range, hiss ? "hiss_det_lo" : "sub_det_lo", bandFocus, "detect", nullptr, nullptr, false, hiss ? "hiss_det_hi" : "sub_det_hi").hint
+            band(c, Control::Kind::fader, hiss ? "hiss_sens" : "sub_sens", bandLow).hint = u("sensitivity \xc2\xb7 higher triggers on quieter hits");
+            band(c, Control::Kind::range, hiss ? "hiss_det_lo" : "sub_det_lo", bandLow2, hiss ? "hiss_det_hi" : "sub_det_hi").hint
                 = u("detect \xc2\xb7 the band the trigger listens to");
             for (int i = first; i < c.parts.size(); ++i)
                 layerParts[(size_t) t].push_back(c.parts[i]);
@@ -544,8 +589,9 @@ struct Editor : AudioProcessorEditor, Timer
             if (tab == 0)
                 caption(g, "generated layers", d);
             else
-                selectorBox(g, show("hiss_type"), rowB, d), text(g, "res", slotX[2] + 4, YD + 53, dimmed(muted, d), 11);
-            readout(g, d, show(subOrHiss("sub_det_lo", "hiss_det_lo")) + " - " + show(subOrHiss("sub_det_hi", "hiss_det_hi")));
+                selectorBox(g, show("hiss_type"), rowB, d), text(g, "res", slotX[2] + 4, YD + 44, dimmed(muted, d), 11);
+            bandText(g, "sens", show(subOrHiss("sub_sens", "hiss_sens")), bandLow, d);
+            bandText(g, "detect", show(subOrHiss("sub_det_lo", "hiss_det_lo")) + " - " + show(subOrHiss("sub_det_hi", "hiss_det_hi")), bandLow2, d);
         };
         setTab(0);
     }
@@ -560,7 +606,7 @@ struct Editor : AudioProcessorEditor, Timer
     }
     void buildShift(Column& c)
     {
-        line(c, Control::Kind::fader, "shift_balance", bandSelector + 4, "freq", nullptr, "form", true).hint = u("balance \xc2\xb7 left: pitch only, right: formant only");
+        line(c, "shift_balance", bandSelector + 3, "freq", "form", true).hint = u("balance \xc2\xb7 left: pitch only, right: formant only");
         dial(c, "shift_stereo", "stereo", slotX[0], YK, true), dial(c, "shift_stretch", "stretch", slotX[1], YK, true), dial(c, "shift_fmix", "mix", slotX[2], YK);
         slotToggles(c, { { "shift_invert", "invert" } });
         targetLine(c, "shift_target"), focusLine(c, "shift_focus_lo", "shift_focus_hi");
@@ -573,7 +619,7 @@ struct Editor : AudioProcessorEditor, Timer
             const auto st = [](float v) { return format(spec("hiss_pitch"), std::abs(v) < 0.05f ? 0.0f : v); };
             meterSlot(g, slotX[0], YD, "freq", st(freq), d), vbipolar(g, slotX[0] + 29, YD + 18, freq / shiftConstants::maxSemitones, accent, d);
             meterSlot(g, slotX[1], YD, "form", st(form), d), vbipolar(g, slotX[1] + 29, YD + 18, form / shiftConstants::maxSemitones, accent, d);
-            readout(g, d, focusText("shift_focus_lo", "shift_focus_hi"));
+            targetFocusText(g, "shift", d);
         };
     }
     void buildSpace(Column& c)
@@ -592,7 +638,7 @@ struct Editor : AudioProcessorEditor, Timer
             const int pan = roundToInt(raw("space_pan"));
             centred(g, (pan == 0 ? String("c") : (pan < 0 ? "l" : "r") + String(std::abs(pan))) + u(" \xc2\xb7 ") + show("space_width"), slotX[1], YD + 58,
                     CW - slotX[1], dimmed(primary, d), 12, true);
-            readout(g, d, focusText("space_focus_lo", "space_focus_hi"));
+            bandText(g, "focus", focusText("space_focus_lo", "space_focus_hi"), bandLow2, d);
         };
     }
     void modeGrid(Column& c, const char* id, const StringArray& labels) // 3 x 2 equal cells in the selector band
@@ -604,14 +650,14 @@ struct Editor : AudioProcessorEditor, Timer
     {
         modeGrid(c, "press_mode", { "punch", "glue", "slam", "warm", "smooth", "multi" });
         dial(c, "press_mix", "mix", slotX[0], YK);
-        line(c, Control::Kind::fader, "press_downup", YD + 18, "down", nullptr, "up", true).hint = u("down/up \xc2\xb7 downward to upward compression");
-        line(c, Control::Kind::fader, "press_bands", YD + 46, "bands", "i", "iii").hint = u("bands \xc2\xb7 single band to multiband");
-        line(c, Control::Kind::fader, "press_attack", bandTarget, "attack", "slow", "fast", true).hint
+        line(c, "press_downup", YD + 18, "down", "up", true).hint = u("down/up \xc2\xb7 downward to upward compression");
+        line(c, "press_bands", YD + 46, "bands i", "iii", false).hint = u("bands \xc2\xb7 single band to multiband");
+        band(c, Control::Kind::fader, "press_attack", bandLow, nullptr, true).hint
             = u("attack \xc2\xb7 slow lets each hit through before press clamps, fast holds it down");
         c.body = [this, &c](Graphics& g) {
             const bool d = c.dim;
             const float ms = Press::attackMs(roundToInt(raw("press_mode")), raw("press_attack"));
-            readout(g, d, "attack " + (ms < 10 ? String(ms, 1) : String(roundToInt(ms))) + " ms");
+            bandText(g, "attack", (ms < 10 ? String(ms, 1) : String(roundToInt(ms))) + " ms", bandLow, d);
             const float down = proc.display.pressDownDb.load(), up = proc.display.pressUpDb.load();
             meterSlot(g, slotX[1], YK, "down", format(spec("in_gain"), down), d), vmeter(g, slotX[1] + 29, YK + 18, 10, -down / 12, true, accent, d);
             meterSlot(g, slotX[2], YK, "up", format(spec("in_gain"), up), d), vmeter(g, slotX[2] + 29, YK + 18, 10, up / 6, false, primary, d);
@@ -621,9 +667,14 @@ struct Editor : AudioProcessorEditor, Timer
     {
         modeGrid(c, "drive_mode", { "desk", "cassette", "tape", "tube", "bits", "ring" });
         dial(c, "drive_flavor", "flavor", slot2X[0], YK, true), dial(c, "drive_mix", "mix", slot2X[1], YK);
-        line(c, Control::Kind::fader, "drive_flavor", YD + 32, "dark", nullptr, "open", true).hint = u("flavor \xc2\xb7 dark to open");
+        line(c, "drive_flavor", YD + 32, {}, {}, true, 7).hint = u("flavor \xc2\xb7 one mode's two sides"); // its words follow the mode
         targetLine(c, "drive_target"), focusLine(c, "drive_focus_lo", "drive_focus_hi");
-        c.body = [this, &c](Graphics& g) { readout(g, c.dim, focusText("drive_focus_lo", "drive_focus_hi")); };
+        c.body = [this, &c](Graphics& g) {
+            const bool d = c.dim;
+            const auto& words = driveConstants::flavorLabels[(size_t) jlimit(0, 5, roundToInt(raw("drive_mode")))];
+            text(g, words[0], 0, YD + 32, dimmed(muted, d), 11), right(g, words[1], 0, YD + 32, CW, dimmed(muted, d), 11);
+            targetFocusText(g, "drive", d);
+        };
     }
     void buildPush(Column& c)
     {
@@ -638,7 +689,7 @@ struct Editor : AudioProcessorEditor, Timer
             fader(g, faderX, YD + 34, 104, FaderKind::meter, -limit / 12, 0, accent, d);
             led(g, { 162, YD + 35, 6, 6 }, dimmed(limit < -0.1f ? accent : colours::dim, d));
             right(g, format(spec("in_gain"), limit), 168, YD + 32, CW - 168, dimmed(primary, d), 11, true);
-            readout(g, d, focusText("push_focus_lo", "push_focus_hi"));
+            targetFocusText(g, "push", d);
         };
     }
 
@@ -658,6 +709,8 @@ struct Editor : AudioProcessorEditor, Timer
         {
             columns[(size_t) m].setBounds(Rectangle<float>(colX(shown[(size_t) m]), columnTop, CW, columnH).toNearestInt());
             cells[(size_t) m].setBounds(Rectangle<float>(colX(shown[(size_t) m]), amountTop, CW, 126).toNearestInt());
+            if (amounts[(size_t) m] != nullptr) // the dial prints in its column's one ink (the field's edges dither between inks)
+                amounts[(size_t) m]->arcInk = riso::inks[(size_t) shown[(size_t) m]];
         }
     }
     void dragColumn(Module m, float dx)
@@ -716,6 +769,7 @@ struct Editor : AudioProcessorEditor, Timer
         const bool two = m == Module::subHiss;
         auto& amount = control(cell, Control::Kind::amount, info.amountIds[0].data(), { 64, 6, 88, arcHeight(88) }, m == Module::shift,
                                two ? info.amountIds[1].data() : nullptr);
+        amounts[(size_t) m] = &amount;
         amount.hint = two ? u("sub/hiss amounts \xc2\xb7 inner ring sub, outer ring hiss; click a ring to pick it")
                           : String(info.name.data()) + u(" amount \xc2\xb7 the big one");
         if (two)
@@ -751,9 +805,9 @@ struct Editor : AudioProcessorEditor, Timer
     }
 
     // ---- master ---------------------------------------------------------------------------------------------------
-    // Seven groups on one centre line, 28 px apart with a rule in each gutter: input | eq / cut | tone / shape | air |
-    // attack, sustain | clip | output, match and meters.
-    static constexpr float groupX[] { 24, 132, 460, 668, 760, 928, 1016 };
+    // One group under each module column, on the columns' own slots: in | eq and cut | tone and shape | air, attack,
+    // sustain | clip and out | the meters; the big dials centred as the amount dials above them.
+    static float mx(int column) { return colX(column); }
     Control& bigDial(const char* id, const char* label, float x)
     {
         auto& c = dial(layer, id, label, x, Yc - 54, true);
@@ -762,25 +816,25 @@ struct Editor : AudioProcessorEditor, Timer
     }
     void buildMaster()
     {
-        bigDial("in_gain", "in", groupX[0]);
-        toggleKey(layer, "eq_on", "eq", groupX[1], Yc - 6);
+        bigDial("in_gain", "in", mx(0) + 68);
+        toggleKey(layer, "eq_on", "eq", mx(1), Yc - 40);
         auto shapeKey = [&](const char* id, int value, Slope s, float x) {
             key(layer, String(id) + (value ? " steep" : " gentle"), { x, Yc - 8, 14, 16 },
                 [this, id, value, s](Graphics& g, Key& k) { slope(g, s, 0, 3, roundToInt(raw(id)) == value || k.isMouseOver() ? primary : colours::dim); },
                 [this, id, value](const ModifierKeys&) { setParam(id, (float) value); }, Key::Role::radio)
                 .on = [this, id, value] { return roundToInt(raw(id)) == value; };
         };
-        shapeKey("lc_shape", 0, Slope::lowGentle, 176), shapeKey("lc_shape", 1, Slope::lowSteep, 194);
-        shapeKey("hc_shape", 0, Slope::highGentle, 400), shapeKey("hc_shape", 1, Slope::highSteep, 418);
-        control(layer, Control::Kind::range, "cut_lo", { 216, Yc - 6, 176, 12 }, false, "cut_hi").hint = u("cut \xc2\xb7 low and high cut; drag either end");
-        dial(layer, "tone", "tone", groupX[2], Yc - 40, true);
-        choiceCells(layer, "tone_shape", "tone shape", { "tilt", "bump" }, 0, groupX[2] + 80, groupX[2] + 180, Yc - 22, 4, primary);
-        choiceCells(layer, "tone_shape", "tone shape", { "mid", "focus" }, 2, groupX[2] + 80, groupX[2] + 180, Yc + 2, 4, primary);
-        dial(layer, "air", "air", groupX[3], Yc - 40);
-        dial(layer, "attack", "attack", groupX[4], Yc - 40, true), dial(layer, "sustain", "sustain", groupX[4] + 76, Yc - 40, true);
-        toggleKey(layer, "clip_on", "clip", groupX[5] + 4, Yc - 6);
-        bigDial("out_gain", "out", groupX[6]);
-        key(layer, "loudness match", { groupX[6] + 100, Yc - 10, 72, 20 },
+        shapeKey("lc_shape", 0, Slope::lowGentle, mx(1)), shapeKey("lc_shape", 1, Slope::lowSteep, mx(1) + 16);
+        shapeKey("hc_shape", 0, Slope::highGentle, mx(1) + 184), shapeKey("hc_shape", 1, Slope::highSteep, mx(1) + 200);
+        control(layer, Control::Kind::range, "cut_lo", { mx(1) + 32, Yc - 6, 152, 12 }, false, "cut_hi").hint = u("cut \xc2\xb7 low and high cut; drag either end");
+        dial(layer, "tone", "tone", mx(2), Yc - 40, true);
+        choiceCells(layer, "tone_shape", "tone shape", { "tilt", "bump" }, 0, mx(2) + 80, mx(2) + 216, Yc - 22, 8, primary);
+        choiceCells(layer, "tone_shape", "tone shape", { "mid", "focus" }, 2, mx(2) + 80, mx(2) + 216, Yc + 2, 8, primary);
+        dial(layer, "air", "air", mx(3) + slotX[0], Yc - 40);
+        dial(layer, "attack", "attack", mx(3) + slotX[1], Yc - 40, true), dial(layer, "sustain", "sustain", mx(3) + slotX[2], Yc - 40, true);
+        toggleKey(layer, "clip_on", "clip", mx(4), Yc - 6);
+        bigDial("out_gain", "out", mx(4) + 68);
+        key(layer, "loudness match", { mx(5) + CW - 72, Yc - 44, 72, 20 },
             [](Graphics& g, Key& k) {
                 g.setColour(tag), g.fillRect(k.getLocalBounds());
                 swapArrows(g, 8, 2, accent), text(g, "match", 24, 2, k.isMouseOver() ? primary : muted);
@@ -795,19 +849,19 @@ struct Editor : AudioProcessorEditor, Timer
     void paintMaster(Graphics& g)
     {
         text(g, "master", 24, masterTop, muted), hline(g, 84, masterTop + 8, 1310);
-        for (int i = 1; i < 7; ++i)
-            vline(g, groupX[i] - masterGutter / 2, Yc - 44, 88);
-        centred(g, "cut", 216, Yc - 40, 176, muted, 11);
-        text(g, show("cut_lo"), 216, Yc + 12, muted, 11), right(g, show("cut_hi"), 292, Yc + 12, 100, muted, 11);
-        centred(g, "shape", groupX[2] + 80, Yc - 40, 100, muted, 11);
-        led(g, { groupX[5] + 50, Yc - 3.5f, 7, 7 }, proc.clipping() && on("clip_on") ? accent : colours::dim);
+        for (int i = 1; i < 6; ++i)
+            vline(g, colX(i) - 9, Yc - 44, 88);
+        centred(g, "cut", mx(1) + 32, Yc - 40, 152, muted, 11);
+        text(g, show("cut_lo"), mx(1) + 32, Yc + 12, muted, 11), right(g, show("cut_hi"), mx(1) + 32, Yc + 12, 152, muted, 11);
+        centred(g, "shape", mx(2) + 80, Yc - 40, 136, muted, 11);
+        led(g, { mx(4) + 50, Yc - 3.5f, 7, 7 }, proc.clipping() && on("clip_on") ? accent : colours::dim);
         paintMeters(g);
     }
-    static constexpr float metersX = 1208; // the meters run flush to the right margin
-    Rectangle<int> metersArea() const { return { (int) metersX - 4, (int) Yc - 44, 1420 - (int) metersX, 84 }; }
+    static constexpr float metersX = margin + 5 * (colW + colGap); // the sixth column
+    Rectangle<int> metersArea() const { return { (int) metersX - 4, (int) Yc - 44, (int) (CW + 8), 84 }; }
     void paintMeters(Graphics& g)
     {
-        const float x = metersX, valueX = 1416 - 44;
+        const float x = metersX, valueX = metersX + CW - 44;
         text(g, "in/out", x, Yc - 40, muted, 11);
         text(g, "in", x, Yc - 20, muted, 11), fader(g, x + 28, Yc - 18, 128, FaderKind::meter, meterIn, 0, secondary);
         right(g, lufs(lufsIn), valueX, Yc - 20, 44, primary, 11);
@@ -815,58 +869,20 @@ struct Editor : AudioProcessorEditor, Timer
         right(g, lufs(lufsOut), valueX, Yc - 2, 44, primary, 11);
         text(g, "diff", x, Yc + 18, muted, 11);
         const bool both = lufsIn > LoudnessMeter::silence && lufsOut > LoudnessMeter::silence;
-        right(g, both ? format(spec("in_gain"), lufsOut - lufsIn) : String("-"), 1316, Yc + 17, 100, primary, 12, true);
+        right(g, both ? format(spec("in_gain"), lufsOut - lufsIn) : String("-"), x + CW - 100, Yc + 17, 100, primary, 12, true);
     }
-
-    // ---- bottom bar -----------------------------------------------------------------------------------------------
-    void buildBottomBar()
-    {
-        const float y = bottomTop + 26;
-        for (int i = 0; i < 5; ++i)
-        {
-            const String label = i < 4 ? String::charToString((juce_wchar) ('A' + i)) : String("+");
-            key(layer, i < 4 ? "snapshot " + label : String("store snapshot"), { 1150.0f + 24 * (float) i, y - 2, 18, 18 },
-                [this, i, label](Graphics& g, Key& k) {
-                    const bool current = i == snapshot;
-                    if (current)
-                        riso::use(g, primary), g.fillRect(k.getLocalBounds());
-                    const auto c = current ? bg : k.isMouseOver() ? primary : i < 4 && !proc.hasSnapshot(i) ? colours::dim : muted;
-                    centred(g, label, 0, 2, 18, c, 12, current);
-                },
-                [this, i](const ModifierKeys& m) {
-                    if (i == 4 || m.isPopupMenu() || !proc.hasSnapshot(i))
-                        proc.storeSnapshot(i == 4 ? snapshot : i), say("stored snapshot " + String::charToString((juce_wchar) ('A' + (i == 4 ? snapshot : i))));
-                    else
-                        proc.recallSnapshot(i);
-                    if (i < 4)
-                        snapshot = i;
-                    repaintAll();
-                },
-                i < 4 ? Key::Role::radio : Key::Role::button)
-                .hint = i < 4 ? u("snapshot \xc2\xb7 click recalls (stores when empty), right-click stores") : String("store the current sound in the selected snapshot");
-        }
-        toggleKey(layer, "bypass", "bypass", 1336, y);
-    }
-    void paintBottomBar(Graphics& g)
-    {
-        hline(g, 24, bottomTop + 8, 1392);
-        text(g, "?", 24, bottomTop + 26, accent, 12, true);
-        const auto line = Time::getMillisecondCounter() < noticeUntil ? notice : tip;
-        text(g, line.substring(0, 150), 42, bottomTop + 26, muted, 12, false, 1100);
-    }
-    Rectangle<int> tipArea() const { return { 20, (int) bottomTop + 20, 1126, 28 }; }
 
     // ---- paint, timer -------------------------------------------------------------------------------------------
     void paint(Graphics& g) override { g.fillAll(bg); }
     void paintLayer(Graphics& g)
     {
         g.setImageResamplingQuality(Graphics::lowResamplingQuality), g.drawImageAt(riso::backdrop(), 0, 0);
-        text(g, "magnitude", 869, 20, muted), text(g, show("magnitude"), 1255, 20, primary, 12, true);
-        text(g, "daveydidit", 1344, 20, colours::dim), hline(g, 24, 50, 1392);
+        text(g, "magnitude", 856, 16, muted), text(g, show("magnitude"), 1255, 16, primary, 12, true);
+        text(g, "daveydidit", 1344, 16, colours::dim), hline(g, 24, 48, 1392);
         for (int i = 1; i < 6; ++i)
-            arrow(g, colX(i) - 14, 70), vline(g, colX(i) - 9, 100, 388);
-        hline(g, 24, 496, 1392);
-        paintMaster(g), paintBottomBar(g);
+            arrow(g, colX(i) - 14, 70), vline(g, colX(i) - 9, 100, columnH - 44);
+        hline(g, 24, columnTop + columnH, 1392);
+        paintMaster(g);
     }
     void resized() override
     {
@@ -896,7 +912,7 @@ struct Editor : AudioProcessorEditor, Timer
         if (std::abs(in - lufsIn) >= 0.05f || std::abs(out - lufsOut) >= 0.05f)
             lufsIn = in, lufsOut = out, meterIn = norm(in), meterOut = norm(out), layer.repaint(metersArea());
 
-        // Help line: the hovered control's tip, or a notice.
+        // The hovered control's tip, for screen readers (the window has no help line).
         auto* under = Desktop::getInstance().getMainMouseSource().getComponentUnderMouse();
         if (under != nullptr && !layer.isParentOf(under))
             under = nullptr;
@@ -917,14 +933,8 @@ struct Editor : AudioProcessorEditor, Timer
                 break;
             }
         }
-        if (line != tip || (noticeUntil != 0 && Time::getMillisecondCounter() >= noticeUntil))
-        {
-            if (Time::getMillisecondCounter() >= noticeUntil)
-                noticeUntil = 0;
-            tip = line, setHelpText(line), layer.repaint(tipArea());
-        }
-        if (noticeUntil != 0)
-            layer.repaint(tipArea());
+        if (line != tip)
+            tip = line, setHelpText(line);
 
         // Everything else repaints when what it shows changes.
         String state;

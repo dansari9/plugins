@@ -54,6 +54,7 @@ struct Arc
     bool centred = false, dim = false;
     float inner = -1;
     bool needleInner = false;
+    juce::Colour ink {}; // set: the lit arcs print in this one ink (the amount dials, one per column), not the field
 };
 void arc(juce::Graphics&, float x, float y, float size, const Arc&);
 inline float arcHeight(float size) // the box the mockup gives a dial of this size
@@ -63,9 +64,11 @@ inline float arcHeight(float size) // the box the mockup gives a dial of this si
     return std::ceil(r + dr + 0.5f + r * 0.7072f + dr + 1);
 }
 
-// A row of dots every 4 px, 12 px tall, at (x, y), w wide.
+// A row of dots every 4 px, 12 px tall, at (x, y), w wide. Heavy: the lower bands' bar, a two-dot track and a handle the
+// full 16 px row.
 enum class FaderKind { value, centred, meter, range };
-void fader(juce::Graphics&, float x, float y, float w, FaderKind, float a, float b = 0, juce::Colour on = colours::accent, bool dim = false);
+void fader(juce::Graphics&, float x, float y, float w, FaderKind, float a, float b = 0, juce::Colour on = colours::accent, bool dim = false,
+           bool heavy = false);
 inline int faderDots(float w) { return (int) std::floor((w - 2) / 4) + 1; }
 
 // A vertical meter, n dots 4 px apart, 6 px wide, lit from the top (downward) or the bottom.

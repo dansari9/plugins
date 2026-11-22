@@ -8,7 +8,9 @@
 #include "PluginProcessor.h"
 #include "ui/Braille.h"
 #include "ui/PresetBrowser.h"
+#include "ui/Layout.h"
 #include "ui/Riso.h"
+#include "ui/Visualizers.h"
 #include "ui/Widgets.h"
 #include "presets/PresetStore.h"
 #include "presets/StateIO.h"
@@ -318,7 +320,7 @@ static void testIdentity() // (4)
     CHECK(juce::String(JUCE_STRINGIFY(JucePlugin_AUMainType)) == "'aufx'");
     CHECK(juce::String(JUCE_STRINGIFY(JucePlugin_CFBundleIdentifier)) == "com.dripworks.snap");
     CHECK(juce::String(JucePlugin_Name) == "snap" && juce::String(JucePlugin_Manufacturer) == "daveydidit");
-    CHECK(juce::String(JucePlugin_VersionString) == "0.5.0");
+    CHECK(juce::String(JucePlugin_VersionString) == "0.5.1");
     // The wrappers derive the VST3 class IDs and the AU/VST3 numeric parameter IDs from the codes and IDs only under these settings.
     static_assert(JUCE_VST3_CAN_REPLACE_VST2 == 0 && JUCE_FORCE_USE_LEGACY_PARAM_IDS == 0, "frozen host-facing IDs");
     CHECK(!JucePlugin_IsSynth && !JucePlugin_WantsMidiInput);
@@ -655,7 +657,7 @@ static void testBraille()
 static void testRiso()
 {
     using namespace snap::ui;
-    CHECK(riso::field().getWidth() == 1440 && riso::field().getHeight() == 840 && riso::backdrop().getWidth() == 1440);
+    CHECK(riso::field().getWidth() == 1440 && riso::field().getHeight() == 840 && riso::backdrop().getWidth() == 1440 && riso::backdrop().getHeight() == 808);
     CHECK(riso::ink(colours::accent, { 700, 300 }) == riso::ink(colours::accent, { 700, 300 }));
     const auto nearest = [](juce::Colour c) { // the ink this pixel was printed from (the field dims inks by up to 12 %)
         int best = 0;
@@ -682,8 +684,9 @@ static void testRiso()
     CHECK(riso::ink(colours::accent.withAlpha(0.5f), { 10, 10 }).getAlpha() == colours::accent.withAlpha(0.5f).getAlpha());
     CHECK(riso::ink(colours::primary, { 10, 10 }) == riso::paper);
     CHECK(riso::ink(colours::muted, { 10, 10 }) == colours::muted && riso::ink(colours::dim, { 10, 10 }) == colours::dim);
-    const auto glow = [](int x0) { // any ink in the 120 px glow box behind a column's amount dial
-        for (int y = 492; y < 612; ++y)
+    const int gy = (int) snap::ui::layout::amountTop + 50; // the amount dials' centre line
+    const auto glow = [gy](int x0) { // any ink in the 120 px glow box behind a column's amount dial
+        for (int y = gy - 60; y < gy + 60; ++y)
             for (int x = x0 - 60; x < x0 + 60; ++x)
                 if (const auto c = riso::backdrop().getPixelAt(x, y); c.getBlue() != c.getRed())
                     return true;
@@ -694,9 +697,9 @@ static void testRiso()
     for (const int cx : { 132, 367, 602, 837, 1072 })
     {
         bool outside = false;
-        for (int y = 492; y < 612; ++y)
+        for (int y = gy - 60; y < gy + 60; ++y)
             for (int x = cx - 60; x < cx + 60; ++x)
-                if (const auto c = riso::backdrop().getPixelAt(x, y); c.getBlue() != c.getRed() && std::hypot(x - cx + 0.5, y - 552 + 0.5) > riso::dialGlowEdge + 1)
+                if (const auto c = riso::backdrop().getPixelAt(x, y); c.getBlue() != c.getRed() && std::hypot(x - cx + 0.5, y - gy + 0.5) > riso::dialGlowEdge + 1)
                     outside = true;
         CHECK(!outside);
     }
@@ -942,7 +945,7 @@ static void testEditor()
     for (int n = 0; n < 8; ++n)
     {
         std::unique_ptr<juce::AudioProcessorEditor> e(p.createEditor());
-        CHECK(e != nullptr && e->getWidth() == 1440 && e->getHeight() == 840);
+        CHECK(e != nullptr && e->getWidth() == 1440 && e->getHeight() == 808);
         set(p, "attack", (float) (n * 8 - 100)), set(p, "press_amt", (float) n * 10);
         for (int t = 0; t < 10; ++t)
             tick(*e), juce::Thread::sleep(3);
@@ -954,15 +957,15 @@ static void testEditor()
 
     std::unique_ptr<juce::AudioProcessorEditor> e(p.createEditor());
     auto& ed = *e;
-    for (const auto& [w, h] : { std::pair { 1080, 630 }, std::pair { 2880, 1680 } })
+    for (const auto& [w, h] : { std::pair { 1080, 606 }, std::pair { 2880, 1616 } })
     {
         ed.setSize(w, h);
         CHECK(ed.getWidth() == w && ed.getHeight() == h);
         CHECK(ed.createComponentSnapshot(ed.getLocalBounds()).isValid());
     }
     ed.setBoundsConstrained({ 0, 0, 500, 500 }); // the constrainer keeps the limits and the aspect
-    CHECK(ed.getWidth() >= 1080 && std::abs(ed.getWidth() * 840 - ed.getHeight() * 1440) <= 1440);
-    ed.setSize(1440, 840);
+    CHECK(ed.getWidth() >= 1080 && std::abs(ed.getWidth() * 808 - ed.getHeight() * 1440) <= 1440);
+    ed.setSize(1440, 808);
 
     // Every parameter but the session toggles has a widget; dials parse typed text with units.
     int controls = 0;
@@ -979,7 +982,7 @@ static void testEditor()
     ed.setVisible(true);
     for (const int width : { 1440, 1080, 2160 })
     {
-        ed.setSize(width, width * 840 / 1440);
+        ed.setSize(width, width * 808 / 1440);
         tick(ed);
         int widgets = 0, missed = 0;
         std::function<void(juce::Component&)> probe = [&](juce::Component& c) {
@@ -1010,7 +1013,7 @@ static void testEditor()
         std::printf("  hit test at %d px: %d widgets, %d missed\n", width, widgets, missed);
         CHECK(widgets >= 90 && missed == 0);
     }
-    ed.setVisible(false), ed.setSize(1440, 840);
+    ed.setVisible(false), ed.setSize(1440, 808);
     using snap::ui::parse;
     CHECK(parse(snap::spec("out_gain"), juce::String::fromUTF8("\xe2\x88\x92" "5.3 dB")) == -5.3f);
     CHECK(parse(snap::spec("space_predelay"), "0.012 s") == 12.0f);
@@ -1055,16 +1058,24 @@ static void testEditor()
     click(ed, "tone shape mid");
     CHECK(p.apvts.getRawParameterValue("tone_shape")->load() == 2);
 
-    // v3 layout: undo / redo follow save in the top bar, magnitude sits by the menu, master in / out are the big dials,
-    // segmented choices step with the arrow keys (clamped) and the `< >` selectors wrap.
+    // v3 layout, 0.5.1 top bar (as silt's): < preset > A B C D randomize save undo redo on one row, magnitude by the menu,
+    // master in / out are the big dials, segmented choices step with the arrow keys (clamped) and the `< >` selectors wrap.
     {
         using snap::ui::Key;
         auto *save = find<Key>(ed, "save preset"), *undo = find<Key>(ed, "undo"), *redo = find<Key>(ed, "redo"), *menu = find<Key>(ed, "menu");
+        auto *next = find<Key>(ed, "next preset"), *a = find<Key>(ed, "snapshot A"), *d = find<Key>(ed, "snapshot D"), *random = find<Key>(ed, "random preset");
         auto* magnitude = find<snap::ui::Control>(ed, "magnitude");
-        CHECK(save != nullptr && undo != nullptr && redo != nullptr && menu != nullptr && magnitude != nullptr);
-        if (save != nullptr && undo != nullptr && redo != nullptr && menu != nullptr && magnitude != nullptr)
-            CHECK(undo->getY() == save->getY() && redo->getY() == save->getY() && undo->getX() >= save->getRight() && redo->getX() >= undo->getRight()
-                  && magnitude->getX() > undo->getRight() + 400 && menu->getX() - magnitude->getRight() < 64);
+        CHECK(save != nullptr && undo != nullptr && redo != nullptr && menu != nullptr && magnitude != nullptr && next != nullptr && a != nullptr && d != nullptr
+              && random != nullptr);
+        if (save != nullptr && undo != nullptr && redo != nullptr && menu != nullptr && magnitude != nullptr && next != nullptr && a != nullptr && d != nullptr
+            && random != nullptr)
+        {
+            CHECK(undo->getY() == save->getY() && redo->getY() == save->getY() && a->getY() == save->getY() && random->getY() == save->getY());
+            CHECK(a->getX() > next->getRight() && d->getX() > a->getRight() && random->getX() > d->getRight() && save->getX() > random->getRight()
+                  && undo->getX() >= save->getRight() && redo->getX() >= undo->getRight());
+            CHECK(magnitude->getX() > redo->getRight() + 300 && menu->getX() - magnitude->getRight() < 64);
+        }
+        CHECK(find<Key>(ed, "bypass") == nullptr && find<Key>(ed, "store snapshot") == nullptr); // the help line's bar is gone
         for (const char* id : { "in_gain", "out_gain" })
         {
             auto* big = find<snap::ui::Control>(ed, id);
@@ -1102,7 +1113,7 @@ static void testEditor()
     auto* browser = find<snap::ui::PresetBrowser>(ed, "preset browser");
     CHECK(browser != nullptr && !browser->isVisible());
     click(ed, "preset browser");
-    CHECK(browser != nullptr && browser->isVisible() && browser->getBounds() == juce::Rectangle<int>(24, 58, 1392, 434));
+    CHECK(browser != nullptr && browser->isVisible() && browser->getBounds() == juce::Rectangle<int>(24, 58, 1392, (int) snap::ui::layout::columnH + 2));
     if (browser != nullptr)
         browser->keyPressed(juce::KeyPress(juce::KeyPress::escapeKey));
     CHECK(browser != nullptr && !browser->isVisible());
@@ -1214,6 +1225,74 @@ static void testEditor()
     CHECK(q.apvts.getRawParameterValue("air")->load() == 25 && q.order()[0] == snap::Module::shift);
     CHECK(q.apvts.getRawParameterValue("press_amt")->load() == 33 && q.apvts.getRawParameterValue("bypass")->load() > 0.5f); // lock + session toggle kept
     CHECK(!snap::loadPresetXml(q, "<NOPE/>"));
+}
+
+// Every module's visualizer shows every one of its controls (0.5.1, David's note 6): with no audio running, changing any
+// control of the module (its amount dial and switch included) redraws the module's still picture differently.
+static void testVisualizerControls()
+{
+    Proc p;
+    std::unique_ptr<juce::AudioProcessorEditor> e(p.createEditor());
+    auto& ed = *e;
+    tick(ed);
+    const auto viz = [&](const char* column) -> juce::Component* {
+        if (auto* c = find<juce::Component>(ed, column))
+            for (auto* child : c->getChildren())
+                if (dynamic_cast<snap::ui::Visualizer*>(child) != nullptr)
+                    return child;
+        return nullptr;
+    };
+    const auto picture = [&](juce::Component& v) {
+        tick(ed), tick(ed);
+        return v.createComponentSnapshot(v.getLocalBounds(), true, 1.0f);
+    };
+    const auto same = [](const juce::Image& a, const juce::Image& b) {
+        for (int y = 0; y < a.getHeight(); ++y)
+            for (int x = 0; x < a.getWidth(); ++x)
+                if (a.getPixelAt(x, y) != b.getPixelAt(x, y))
+                    return false;
+        return true;
+    };
+    const std::pair<const char*, std::vector<const char*>> modules[] = {
+        { "sub/hiss", { "subhiss_on", "sub_amt", "sub_sens", "sub_det_lo", "sub_det_hi", "sub_pitch", "sub_decay", "sub_duck", "sub_stereo", "sub_color", "sub_acid",
+                        "sub_solo", "sub_post", "|hiss", "hiss_amt", "hiss_sens", "hiss_det_lo", "hiss_det_hi", "hiss_pitch", "hiss_decay", "hiss_duck", "hiss_type",
+                        "hiss_tone", "hiss_env", "hiss_res", "hiss_solo", "hiss_post" } },
+        { "shift", { "shift_on", "shift_amt", "shift_balance", "shift_invert", "shift_stereo", "shift_stretch", "shift_fmix", "shift_target", "shift_focus_lo",
+                     "shift_focus_hi" } },
+        { "space", { "space_on", "space_amt", "space_type", "space_decay", "space_stretch", "space_predelay", "space_duck", "space_pan", "space_width",
+                     "space_focus_lo", "space_focus_hi" } },
+        { "press", { "press_on", "press_amt", "press_mode", "press_downup", "press_mix", "press_bands", "press_attack" } },
+        { "drive", { "drive_on", "drive_amt", "drive_mode", "drive_flavor", "drive_mix", "drive_target", "drive_focus_lo", "drive_focus_hi" } },
+        { "push", { "push_on", "push_amt", "push_mult", "push_tone", "push_mix", "push_target", "push_focus_lo", "push_focus_hi" } } };
+    int tested = 0, still = 0;
+    for (auto& [column, ids] : modules)
+    {
+        auto* v = viz(column);
+        CHECK(v != nullptr);
+        if (v == nullptr)
+            continue;
+        for (const char* id : ids)
+        {
+            if (id[0] == '|') // the hiss tab: the column shows the hiss layer's controls
+            {
+                click(ed, "hiss tab");
+                continue;
+            }
+            auto* q = p.apvts.getParameter(id);
+            const float was = q->getValue();
+            const auto before = picture(*v);
+            const int steps = q->getNumSteps();
+            const float to = steps > 1 && steps < 64 ? (float) ((juce::roundToInt(was * (float) (steps - 1)) + 1) % steps) / (float) (steps - 1) : was < 0.5f ? 0.85f : 0.15f;
+            q->setValueNotifyingHost(to);
+            const auto after = picture(*v);
+            ++tested;
+            if (same(before, after))
+                ++still, std::printf("visualizer %s does not show %s\n", column, id);
+            q->setValueNotifyingHost(was);
+        }
+    }
+    std::printf("visualizers: %d controls changed, %d left a picture unchanged\n", tested, still);
+    CHECK(tested == 70 && still == 0);
 }
 
 // The display feed carries the modules' own levels for their visualizers (space's wet, drive's and push's input and change).
@@ -1500,7 +1579,7 @@ int main(int argc, char** argv)
     if (argc == 2 && juce::String(argv[1]) == "--audibility") // the control audibility check on its own
         return testAudibility(), failures == 0 ? 0 : 1;
     if (argc == 2 && juce::String(argv[1]) == "--editor") // the editor tests on their own
-        testBraille(), testRiso(), testEditor();
+        testBraille(), testRiso(), testEditor(), testVisualizerControls();
     else
     if (argc == 3 && juce::String(argv[1]) == "--render")
         return render(juce::File::getCurrentWorkingDirectory().getChildFile(argv[2]));
@@ -1527,6 +1606,7 @@ int main(int argc, char** argv)
     testBraille();
     testRiso();
     testEditor();
+    testVisualizerControls();
     testModuleSwitches();
     testDisplayFeed();
     testAudibility();

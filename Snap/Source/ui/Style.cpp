@@ -28,7 +28,7 @@ void arc(Graphics& g, float x, float y, float size, const Arc& a)
     using namespace colours;
     const bool big = size > 60;
     const float dr = big ? 2 : 1.4f, step = big ? 7.5f : 11.25f, r = size / 2 - dr - 0.5f, cx = x + size / 2, cy = y + r + dr + 0.5f;
-    const Colour off = a.dim ? rule : colours::dim, on = a.dim ? colours::dim : accent;
+    const Colour off = a.dim ? rule : colours::dim, on = a.dim ? colours::dim : a.ink.isTransparent() ? accent : a.ink;
     Braille b(g);
     auto ring = [&](float radius, float value, bool centred, float st) {
         const float v = 270 * jlimit(0.0f, 1.0f, value);
@@ -53,14 +53,14 @@ void arc(Graphics& g, float x, float y, float size, const Arc& a)
         b.dot(cx + len * std::sin(angle) * (float) k / (float) n, cy - len * std::cos(angle) * (float) k / (float) n, a.dim ? muted : primary, Mode::over);
 }
 
-void fader(Graphics& g, float x, float y, float w, FaderKind kind, float a, float b, Colour on, bool dim)
+void fader(Graphics& g, float x, float y, float w, FaderKind kind, float a, float b, Colour on, bool dim, bool heavy)
 {
     const int n = faderDots(w);
     const auto index = [n](float v) { return roundToInt(jlimit(0.0f, 1.0f, v) * (float) (n - 1)); };
     const int vi = index(a), ci = kind == FaderKind::centred ? roundToInt((float) (n - 1) / 2) : 0;
     const int lo = kind == FaderKind::range ? index(a) : jmin(ci, vi), hi = kind == FaderKind::range ? index(b) : jmax(ci, vi);
     const auto handleAt = [&](int i) { return kind != FaderKind::meter && (i == lo || i == hi) && (kind == FaderKind::range || i == vi); };
-    const auto lit = [&](int i) { return kind == FaderKind::meter ? i <= vi && a > 0 : i >= lo && i <= hi; };
+    const auto lit = [&](int i) { return kind == FaderKind::meter || kind == FaderKind::value ? i <= vi && a > 0 : i >= lo && i <= hi; };
     Braille dots(g);
     for (int pass = 0; pass < 3; ++pass, dots.stroke()) // unlit, lit, handles
         for (int i = 0; i < n; ++i)
@@ -68,9 +68,10 @@ void fader(Graphics& g, float x, float y, float w, FaderKind kind, float a, floa
             const float px = x + 2 + 4.0f * (float) i;
             if (handleAt(i) && pass == 2)
                 for (int j = 0; j < 4; ++j)
-                    dots.dot(px, y + 1.5f + 3.0f * (float) j, dimmed(colours::primary, dim), Mode::over);
+                    dots.dot(px, y + (heavy ? 2.0f + 4.0f * (float) j : 1.5f + 3.0f * (float) j), dimmed(colours::primary, dim), Mode::over);
             else if (!handleAt(i) && pass == (lit(i) ? 1 : 0))
-                dots.dot(px, y + 6, dimmed(pass == 1 ? on : colours::dim, dim));
+                for (int row = 0; row < (heavy ? 2 : 1); ++row)
+                    dots.dot(px, y + 6 + 4.0f * (float) row, dimmed(pass == 1 ? on : colours::dim, dim));
         }
 }
 

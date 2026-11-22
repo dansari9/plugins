@@ -137,12 +137,14 @@ void Control::paint(Graphics& g)
         }
         case Kind::amount:
             if (params.size() == 2)
-                arc(g, 0, 0, w, { norm(1), false, dim, norm(0), active == 0 });
+                arc(g, 0, 0, w, { norm(1), false, dim, norm(0), active == 0, arcInk });
             else
-                arc(g, 0, 0, w, { norm(), centred, dim });
+                arc(g, 0, 0, w, { norm(), centred, dim, -1, false, arcInk });
             break;
-        case Kind::fader: fader(g, 0, 0, w, centred ? FaderKind::centred : FaderKind::value, norm(), 0, accent, dim); break;
-        case Kind::range: fader(g, 0, 0, w, FaderKind::range, norm(0), norm(1), accent, dim); break;
+        case Kind::fader:
+            fader(g, 0, heavy ? (float) getHeight() - 16 : 0.0f, w, centred ? FaderKind::centred : FaderKind::value, norm(), 0, accent, dim, heavy);
+            break;
+        case Kind::range: fader(g, 0, heavy ? (float) getHeight() - 16 : 0.0f, w, FaderKind::range, norm(0), norm(1), accent, dim, heavy); break;
     }
     if (focused && kind != Kind::dial)
         box(g, getLocalBounds().toFloat(), accent.withAlpha(0.5f));

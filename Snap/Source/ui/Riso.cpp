@@ -73,7 +73,7 @@ void use(Graphics& g, Colour c)
 const Image& backdrop()
 {
     static const Image image = [] {
-        Image im(Image::RGB, 1440, 840, false);
+        Image im(Image::RGB, layout::width, layout::height, false);
         im.clear(im.getBounds(), colours::bg);
         Image::BitmapData d(im, Image::BitmapData::readWrite);
         // Tactile grain: a sparse ordered-dither / hash pick of background pixels, lifted a few levels.
