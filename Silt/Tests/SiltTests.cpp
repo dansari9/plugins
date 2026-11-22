@@ -163,7 +163,7 @@ static void testContract()
     CHECK(juce::String(JUCE_STRINGIFY(JucePlugin_AUMainType))=="'aumf'");
     CHECK(juce::String(JUCE_STRINGIFY(JucePlugin_CFBundleIdentifier))=="com.dripworks.silt");
     CHECK(juce::String(JucePlugin_Name)=="silt" && juce::String(JucePlugin_Manufacturer)=="daveydidit");
-    CHECK(juce::String(JucePlugin_VersionString)=="0.4.0" && juce::String(JucePlugin_Vst3Category)=="Fx");
+    CHECK(juce::String(JucePlugin_VersionString)=="0.4.1" && juce::String(JucePlugin_Vst3Category)=="Fx");
     CHECK(!JucePlugin_IsSynth && JucePlugin_WantsMidiInput && !JucePlugin_ProducesMidiOutput);
     Proc p;
     CHECK(p.getParameters().size()==(int)std::size(contract) && p.stateVersion==2 && p.getNumPrograms()==20);
@@ -1206,7 +1206,7 @@ static void testEditor()
         Proc p(folder);prepare(p);run(p,48000);
         std::unique_ptr<juce::AudioProcessorEditor> editor(p.createEditor());
         auto& e=*editor;auto& timer=dynamic_cast<juce::Timer&>(e);timer.stopTimer();
-        constexpr int w=905,h=836;
+        constexpr int w=905,h=819; // 0.4.1: the macro row is gone
         const int width=juce::roundToInt(w*percent/100.0),height=h*percent/100;
         CHECK(e.getWidth()==w && e.getHeight()==h);
         e.setSize(width,height),e.setVisible(true);
@@ -1251,7 +1251,8 @@ static void testEditor()
             }
             timer.timerCallback();
         };
-        CHECK(find(e,"group:macros")->isVisible());
+        CHECK(find(e,"group:macros")==nullptr); // 0.4.1: the macro row is gone; its parameters stay (hidden, automatable, saved)
+        for(const auto* id:{"motion","texture","bloom","chaos"})CHECK(find(e,id)==nullptr && p.apvts.getParameter(id)!=nullptr);
         const auto time=juce::Time::getCurrentTime();
         const auto mouse=[&](juce::Component* c,juce::Point<float> pos,juce::Point<float> down,int clicks=1,int flags=0)
         {
@@ -1266,12 +1267,14 @@ static void testEditor()
         for(const auto& spec:contract)
         {
             auto* param=p.apvts.getParameter(spec.id);
+            const bool macro=juce::String(spec.id)=="motion" || juce::String(spec.id)=="texture" || juce::String(spec.id)=="bloom" || juce::String(spec.id)=="chaos";
+            if(macro)continue;
             if(dynamic_cast<juce::AudioParameterFloat*>(param))
             {
                 auto* dial=find(e,spec.id);CHECK(dial && dial->isVisible());
                 if(!dial)continue;
                 auto* field=fieldOf(dial);CHECK(field && !field->isVisible());
-                const bool fader=juce::String(spec.id)=="motion" || juce::String(spec.id)=="texture" || juce::String(spec.id)=="bloom" || juce::String(spec.id)=="chaos";
+                const bool fader=false;
                 const float px=1/juce::Component::getApproximateScaleFactorForComponent(dial);
                 const auto grab=fader?juce::Point<float>(20,8):dial->getLocalBounds().toFloat().getCentre();
                 CHECK(e.getComponentAt(e.getLocalPoint(dial,grab).roundToInt())==dial);
@@ -1365,7 +1368,7 @@ static void testEditor()
                 set(p,spec.id,0);press(spec.id);CHECK(get(p,spec.id)==1);press(spec.id);CHECK(get(p,spec.id)==0);
             }
         }
-        // Tab / ⇧Tab commit and open the next / previous field in signal-flow order (macros first), wrapping.
+        // Tab / ⇧Tab commit and open the next / previous field in signal-flow order, wrapping.
         const auto field=[&](const char* id){return fieldOf(find(e,id));};
         const auto open=[&](const char* id){auto* d=find(e,id);d->mouseDoubleClick(mouse(d,{5,5},{5,5},2));return field(id);};
         set(p,"size",100);set(p,"sizeSync",1);
@@ -1377,8 +1380,8 @@ static void testEditor()
         key(open("width"),juce::KeyPress::tabKey);CHECK(field("reverb")->isVisible());
         key(field("reverb"),juce::KeyPress::escapeKey);
         key(open("mix"),juce::KeyPress::tabKey);CHECK(field("output")->isVisible());
-        key(field("output"),juce::KeyPress::tabKey);CHECK(field("motion")->isVisible()); // wraps to the top row
-        key(field("motion"),juce::KeyPress::tabKey,juce::ModifierKeys::shiftModifier);CHECK(field("output")->isVisible());
+        key(field("output"),juce::KeyPress::tabKey);CHECK(field("size")->isVisible()); // wraps to the first dial
+        key(field("size"),juce::KeyPress::tabKey,juce::ModifierKeys::shiftModifier);CHECK(field("output")->isVisible());
         key(field("output"),juce::KeyPress::escapeKey);
         // A click elsewhere commits (one inside the field doesn't; invalid text is dropped); so does a resize. Each commit is one gesture.
         gestures={};
@@ -1409,7 +1412,7 @@ static void testEditor()
         freezeControl->mouseUp(mouse(freezeControl,{8,8},{8,8},1,juce::ModifierKeys::shiftModifier));CHECK(get(p,"freeze")==0);pairs(1);
         // Compare hit areas across the whole editor, including controls in different groups.
         std::vector<std::pair<juce::String,juce::Rectangle<int>>> hits;
-        for(const auto* id:{"tier1","tier2","macros","header","cloud"})
+        for(const auto* id:{"tier1","tier2","header","cloud"})
         {
             auto* group=find(e,juce::String("group:")+id);CHECK(group);
             for(auto* control:group->getChildren())
@@ -1442,7 +1445,7 @@ static void testEditor()
             press("oversample:1");CHECK(oversample->hasKeyboardFocus(false));
             CHECK(peer.handleKeyPress(KeyPress(KeyPress::tabKey)) && find(e,"oversample:2")->hasKeyboardFocus(false));
             find(e,"oversample:3")->grabKeyboardFocus();
-            CHECK(peer.handleKeyPress(KeyPress(KeyPress::tabKey)) && find(e,"motion")->hasKeyboardFocus(false));
+            CHECK(peer.handleKeyPress(KeyPress(KeyPress::tabKey)) && find(e,"freeze")->hasKeyboardFocus(false)); // the macros are gone: the cloud's freeze is next
             find(e,"width")->grabKeyboardFocus();
             CHECK(peer.handleKeyPress(KeyPress(KeyPress::tabKey)) && find(e,"reverb")->hasKeyboardFocus(false));
             press("save");const auto saved=p.presetName();
@@ -1533,7 +1536,7 @@ static void testEditor()
         juce::MemoryBlock bytes;juce::AudioProcessor::copyXmlToBinary(legacy,bytes);
         Proc old;load(old,bytes);std::unique_ptr<juce::AudioProcessorEditor> migrated(old.createEditor());
         CHECK(migrated->getWidth()==width && migrated->getHeight()==reopened->getHeight());
-        CHECK(find(*migrated,"group:macros")->isVisible());
+        CHECK(find(*migrated,"group:macros")==nullptr);
     }
     folder.deleteRecursively();
 }
@@ -1560,10 +1563,10 @@ static juce::Image snapshot(int percent=100,bool freeze=false,float scale=2,bool
     std::unique_ptr<juce::AudioProcessorEditor> editor(p.createEditor());
     if(v6)
     {
-        editor->setSize(juce::roundToInt(1024.0/120*106*scale),juce::roundToInt(1024.0/60*49*scale));
+        editor->setSize(juce::roundToInt(1024.0/120*106*scale),juce::roundToInt(1024.0/60*48*scale));
         scale=1;
     }
-    else editor->setSize(juce::roundToInt(905*percent/100.0),836*percent/100);
+    else editor->setSize(juce::roundToInt(905*percent/100.0),819*percent/100);
     return editor->createComponentSnapshot(editor->getLocalBounds(),true,scale);
 }
 // 0.3's riso skin at 2x (family.py silt02): each region's accent is its ink, bright text cream, greys stay grey.
@@ -1572,6 +1575,7 @@ static void testSkin()
     const auto shot=snapshot();
     const auto has=[&](int x,int y,int w,int h,juce::uint32 argb) {
         const double cell=1024.0/60; // 2x pixels per cell across; a cell is twice as tall
+        if(y>3)--y; // 0.4.1: the grid's rows under the deleted macro row (row 3) show one row up
         for(int py=juce::roundToInt(2*cell*y);py<juce::roundToInt(2*cell*(y+h));++py)
             for(int px=juce::roundToInt(cell*x);px<juce::roundToInt(cell*(x+w));++px)
                 if(shot.getPixelAt(px,py).getARGB()==argb)return true;
@@ -1582,7 +1586,7 @@ static void testSkin()
     CHECK(has(3,20,7,1,0xff7a7a7a));                                           // trigger's label stays grey
     CHECK(has(3,21,5,1,cobalt) && has(20,20,11,5,aqua) && has(94,21,8,3,sand)); // input, grain, the window glyph
     CHECK(has(6,44,1,1,lilac) && has(83,36,1,1,coral));                        // heads 1, the reverb switch
-    CHECK(!has(0,0,106,49,red));                                               // no 0.2 red anywhere
+    CHECK(!has(0,0,106,48,red));                                               // no 0.2 red anywhere
 }
 // The golden render: a playing host, a note with a mod-wheel move, then its release.
 static Audio goldenRun(Proc& p,int samples)
@@ -1642,7 +1646,7 @@ static void testGoldens(bool record=false)
     const bool ci=std::getenv("GITHUB_ACTIONS")!=nullptr;
     const char* expectedEnvironment="14.2.0/Release/07adb83962bd7f372226ea055bca705c159534fa4a19d3279488b12cd95eea5c", *expectedRenderer="506141d22f79fb1886eb4dec6e8e40da3c3c48e3df63f1f3d60e979dd78361b5";
     const char* expectedSound="c84295f77b28dd4228a7fe471bf7e41937303f55ff5663e927482f9dca5907da";
-    const char* expectedShots[]{"403fbe5747b4a7328cdea437ebb3830b086d7afdfffe1b7fd202ca05c9fde30b","f584fb949cc906f95de05e8a9872ac4304097af1bcac0d3feca5a77211ef9647","1ff0096dc94cb858963d8d71180d448c629c574e0c98a2005f695a856464a980"}; // 0.4: the fixed-width preset name
+    const char* expectedShots[]{"2487f5646c244b5c269ef9dcd96feffa0fc840ab64cef024d5064ab3f12c71a0","21008e9df554483ddd2c485e623f888f48374b847409c1c85d94b817e6154f9a","942ca13617dda69ac217f407afeff2bda2dc94ff87e218808abeef0c23d8b3b1"}; // 0.4.1: the macro row deleted
     std::cout<<"Golden environment: "<<environment<<"\nGolden renderer: "<<renderer<<"\n";
     if(record || (!ci && environment==expectedEnvironment))
     {

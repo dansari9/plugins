@@ -1,13 +1,17 @@
 // silt 0.2's v6 editor: one cell grid (0.1.0's cell, 106 x 49) drawn into a device-pixel backing image.
 // Coordinates are the v6 mockup's cells (gui/v6/v6.py); each group owns its hit cells, and only changed cells repaint.
 // 0.3 reskins it riso: each drawn cell is recoloured pixel by pixel (sediment, below). Nothing moves.
+// 0.4.1 deletes the macro row (grid row 3): the window shows the other 48 rows, everything under it one row up, and the
+// motion / texture / bloom / chaos parameters stay (hidden, automatable, saved, at 0 they do nothing).
 #include "BinaryData.h"
 #include "Silt.h"
 #include <tuple>
 using namespace juce;
 namespace
 {
-constexpr int C = 106, R = 49, W = 905, H = 836; // 905 x 836 px at 100%
+constexpr int C = 106, R = 49, W = 905, H = 819; // 905 x 819 px at 100%
+constexpr int gone = 3, RS = R - 1; // the deleted macro row; the rows shown
+constexpr int shownRow(int y) { return y > gone ? y - 1 : y; } // a grid row's place in the window
 constexpr double designCell = 1024.0 / 120;
 constexpr float cw = (float) designCell, ch = cw * 2;
 const Colour page { 0xff0d0d0d }, white { 0xffececec }, grey { 0xff7a7a7a }, light { 0xffbcbcbc }, rule { 0xff2a2a2a }, dark { 0xff454545 }, red { 0xffff3d1f };
@@ -855,7 +859,6 @@ struct Editor : AudioProcessorEditor, Timer
     SiltProcessor& proc;
     Component layer;
     Header header;
-    Controls macros;
     Cloud cloud;
     Controls tier1, tier2;
     std::unique_ptr<Grid> next { new Grid }, shown { new Grid };
@@ -871,7 +874,6 @@ struct Editor : AudioProcessorEditor, Timer
     double pixelCell = designCell;
     Font fonts[2] { mono(1, false), mono(1, true) };
     explicit Editor(SiltProcessor& p) : AudioProcessorEditor(p), proc(p), header(p),
-        macros(p, "macros", { { "motion", "motion", 3, 3 }, { "texture", "texture", 29, 3 }, { "bloom", "bloom", 55, 3 }, { "chaos", "chaos", 81, 3 } }, {}, true),
         cloud(p),
         tier1(p, "tier1", { { "size", "size", 20, 20 }, { "density", "density", 31, 20, false, [this] { return tier1.value("trigger") > .5f ? String("idle while trigger = ") + (tier1.value("trigger") > 1.5f ? "sidechain" : "transient") : String(); } },
                               { "position", "position", 20, 27 }, { "scan", "scan", 31, 27, true }, { "scatter", "scatter", 42, 27 },
@@ -920,10 +922,24 @@ struct Editor : AudioProcessorEditor, Timer
         };
         setFocusContainerType(FocusContainerType::keyboardFocusContainer);
         setOpaque(true), addAndMakeVisible(layer), addMouseListener(this, true), layer.setBounds(0, 0, W, H);
-        for (auto* group : std::array<Group*, 5> { &header, &macros, &cloud, &tier1, &tier2 })
+        for (auto* group : std::array<Group*, 4> { &header, &cloud, &tier1, &tier2 })
         {
             layer.addAndMakeVisible(group);
             group->setExplicitFocusOrder(layer.getNumChildComponents());
+        }
+        // The macro row is gone: every key and dial under it, and the cloud, sit one row up.
+        for (auto* group : layer.getChildren())
+        {
+            const auto up = [](Rectangle<int> b) { // the same cells, one row up, rounded as cells() rounds them
+                const int top = roundToInt((float) b.getY() / ch), bottom = roundToInt((float) b.getBottom() / ch);
+                return Rectangle<int>::leftTopRightBottom(b.getX(), roundToInt(ch * (float) shownRow(top)), b.getRight(), roundToInt(ch * (float) shownRow(bottom)));
+            };
+            if (group->getY() >= roundToInt(ch * (gone + 1)))
+                group->setBounds(up(group->getBounds()));
+            else
+                for (auto* c : group->getChildren())
+                    if (c->getY() >= roundToInt(ch * (gone + 1)))
+                        c->setBounds(up(c->getBounds()));
         }
         // Stepped wheels: pitch by a semitone, size in sync by a note value.
         auto& pitch = *dial("pitch");
@@ -938,7 +954,7 @@ struct Editor : AudioProcessorEditor, Timer
         const int width = stored > 0 ? jlimit(W / 2, W * 2, roundToInt(stored * (double) W / 1024)) : W;
         setSize(width, roundToInt((double) width * H / W)), timerCallback(), startTimerHz(30);
     }
-    std::array<Controls*, 3> controls() { return { &macros, &tier1, &tier2 }; }
+    std::array<Controls*, 2> controls() { return { &tier1, &tier2 }; }
     Dial* dial(const char* id) { for (auto* c : controls()) for (auto* d : c->dials) if (d->getComponentID() == id) return d; return nullptr; }
     // A click anywhere but in the open field, or a resize, commits it.
     void commitFields(const Component* except = nullptr) { for (auto* c : controls()) for (auto* d : c->dials) if (except != &d->field && !d->field.isParentOf(except)) d->commit(true); }
@@ -1030,8 +1046,6 @@ struct Editor : AudioProcessorEditor, Timer
         }
         const int note = f.note;
         const bool held = f.held;
-        if (changed || interactionChanged(macros))
-            g.clear(0, 3, C, 1), macros.draw(g), show(0, 3, C, 1);
         const bool drawTiers = changed || interactionChanged(tier1) || interactionChanged(tier2);
         drawnFocus = focused, drawnUnder = under;
         if (drawTiers)
@@ -1068,10 +1082,10 @@ struct Editor : AudioProcessorEditor, Timer
     // Redraw and invalidate only the changed cells.
     void show(int x, int y, int w, int h)
     {
-        const double sx = (double) getWidth() / C, sy = (double) getHeight() / R;
+        const double sx = (double) getWidth() / C, sy = (double) getHeight() / RS;
         std::optional<Graphics> graphics;
         for (int j = y; j < y + h; ++j)
-            for (int i = x, first = -1, last = -1; i <= x + w; ++i)
+            for (int i = x, first = -1, last = -1; i <= x + w && j != gone; ++i)
             {
                 if (i < x + w && next->at[j][i] != shown->at[j][i])
                 {
@@ -1080,12 +1094,12 @@ struct Editor : AudioProcessorEditor, Timer
                     {
                         // Opening a new context invalidates the native image's cached CoreGraphics copy.
                         if (!graphics) graphics.emplace(image);
-                        skin(drawCell(*graphics, i, j));
+                        skin(drawCell(*graphics, i, j), j);
                     }
                 }
                 else if (first >= 0 && (i == x + w || i - last > 8))
                 {
-                    repaint(Rectangle<double>(sx * first, sy * j, sx * (last + 1 - first), sy).getSmallestIntegerContainer().expanded(1));
+                    repaint(Rectangle<double>(sx * first, sy * shownRow(j), sx * (last + 1 - first), sy).getSmallestIntegerContainer().expanded(1));
                     first = -1;
                 }
             }
@@ -1100,13 +1114,13 @@ struct Editor : AudioProcessorEditor, Timer
             Graphics graphics(image);
             pixelCell = (double) iw / C;
             for (const double zoom : { 1.0, 2.0, 4.0 })
-                if (std::abs(iw - zoom * C * designCell) <= 1 && std::abs(ih - zoom * R * 2 * designCell) <= 1)
+                if (std::abs(iw - zoom * C * designCell) <= 1 && std::abs(ih - zoom * RS * 2 * designCell) <= 1)
                     pixelCell = zoom * designCell;
             const float em = (float) std::round(pixelCell / .6) * 1.02f;
             fonts[0] = mono(em, false), fonts[1] = mono(em, true);
             for (int j = 0; j < R; ++j)
-                for (int i = 0; i < C; ++i)
-                    skin(drawCell(graphics, i, j));
+                for (int i = 0; i < C && j != gone; ++i)
+                    skin(drawCell(graphics, i, j), j);
         }
         g.drawImageTransformed(image, AffineTransform::scale((float) getWidth() / (float) iw, (float) getHeight() / (float) ih));
     }
@@ -1114,19 +1128,20 @@ struct Editor : AudioProcessorEditor, Timer
     {
         const auto& c = shown->at[j][i];
         const double w = pixelCell, h = 2 * w;
-        const auto r = Rectangle<int>::leftTopRightBottom(py(i * w), py(j * h),
-            i == C - 1 ? image.getWidth() : py((i + 1) * w), j == R - 1 ? image.getHeight() : py((j + 1) * h));
+        const int shown_ = shownRow(j);
+        const auto r = Rectangle<int>::leftTopRightBottom(py(i * w), py(shown_ * h),
+            i == C - 1 ? image.getWidth() : py((i + 1) * w), j == R - 1 ? image.getHeight() : py((shown_ + 1) * h));
         g.setColour(c.bg.isTransparent() ? page : c.bg), g.fillRect(r);
         if (c.line)
         {
             g.setColour(rule);
-            g.fillRect(r.getX(), py((j + .5) * h), r.getWidth(), jmax(1, (int) (w / (2 * cw))));
+            g.fillRect(r.getX(), py((shown_ + .5) * h), r.getWidth(), jmax(1, (int) (w / (2 * cw))));
         }
         for (size_t k = 0; k < c.dots.size(); ++k)
             if (const auto d = c.dots[k])
             {
                 const double radius = jmax(.6, w * (double) (d >> 24) / 100);
-                const double x = (2 * i + (double) (k % 2) + .5) * w / 2, y = (4 * j + (double) (k / 2) + .5) * h / 4;
+                const double x = (2 * i + (double) (k % 2) + .5) * w / 2, y = (4 * shown_ + (double) (k / 2) + .5) * h / 4;
                 const int x0 = (int) std::floor(x - radius), x1 = (int) std::floor(x + radius);
                 const int y0 = (int) std::floor(y - radius), y1 = (int) std::floor(y + radius);
                 g.setColour(Colour(0xff000000 | (d & 0xffffff)));
@@ -1153,7 +1168,7 @@ struct Editor : AudioProcessorEditor, Timer
         if (c.c == ' ') return r;
         Graphics::ScopedSaveState state(g);
         g.reduceClipRegion(r), g.setColour(c.fg);
-        const float fw = (float) w, fh = (float) h, cx = (float) ((i + .5) * w), cy = (float) ((j + .55) * h), lw = jmax(1.0f, fw * .12f);
+        const float fw = (float) w, fh = (float) h, cx = (float) ((i + .5) * w), cy = (float) ((shown_ + .55) * h), lw = jmax(1.0f, fw * .12f);
         if (c.c == 0x25cf)
             g.fillEllipse(Rectangle<float>(.92f * fw, .92f * fw).withCentre({ cx, cy - .03f * fh }));
         else if (c.c == 0x25a0 || c.c == 0x25a1)
@@ -1165,7 +1180,7 @@ struct Editor : AudioProcessorEditor, Timer
         }
         else if (c.c == 0x25b2)
         {
-            const int top = py((j + .41) * h), size = jmax(1, py(.94 * w)), x = py((i + .5) * w);
+            const int top = py((shown_ + .41) * h), size = jmax(1, py(.94 * w)), x = py((i + .5) * w);
             for (int row = 0; row < size; ++row)
             {
                 const int half = (row * size / (2 * jmax(1, size - 1)));
@@ -1187,7 +1202,7 @@ struct Editor : AudioProcessorEditor, Timer
             // Geist Mono: advance 0.6 em, ascent 1.005 + descent 0.295 em; centred as the mockup's (0.55 of the cell, measured).
             const float size = std::round(fw / 0.6f);
             const uint16_t index = (uint16_t) *id;
-            const Point<float> at { (float) i * fw + (fw - .6f * size) / 2, ((float) j + .55f) * fh + .355f * size };
+            const Point<float> at { (float) i * fw + (fw - .6f * size) / 2, ((float) shown_ + .55f) * fh + .355f * size };
             g.setFont(fonts[c.bold ? 1 : 0]);
             g.getInternalContext().drawGlyphs({ &index, 1 }, { &at, 1 }, {});
         }
@@ -1195,14 +1210,15 @@ struct Editor : AudioProcessorEditor, Timer
     }
     // Recolour one freshly drawn cell (family.py recolor and texture): accents by region, bright neutrals cream, the cloud
     // timeline-tinted (30% cream) over strata. The page elsewhere stays #0d0d0d.
-    void skin(Rectangle<int> r)
+    void skin(Rectangle<int> r, int j) // j: the grid row, so the print is the one under the cell in the 49-row design
     {
         const auto& map = sediment();
+        const int down = j > gone ? image.getHeight() / RS : 0, designHeight = image.getHeight() * R / RS;
         Image::BitmapData d(image, r.getX(), r.getY(), r.getWidth(), r.getHeight(), Image::BitmapData::readWrite);
         for (int y = 0; y < d.height; ++y)
             for (int x = 0; x < d.width; ++x)
             {
-                const int x2 = (r.getX() + x) * SW / image.getWidth(), y2 = (r.getY() + y) * SH / image.getHeight();
+                const int x2 = (r.getX() + x) * SW / image.getWidth(), y2 = jmin(SH - 1, (r.getY() + y + down) * SH / designHeight);
                 const auto bits = map[(size_t) (y2 * SW + x2)];
                 const auto c = d.getPixelColour(x, y);
                 const int r8 = c.getRed(), g8 = c.getGreen(), b8 = c.getBlue(), texture = bits >> 6;
