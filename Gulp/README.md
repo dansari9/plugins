@@ -1,6 +1,6 @@
 # gulp
 
-Sidechain pumping and ducking for dance music, by daveydidit. Version 0.4.0. Zero latency unless audio-trigger lookahead
+Sidechain pumping and ducking for dance music, by daveydidit. Version 0.4.1. Zero latency unless audio-trigger lookahead
 is on (5 ms), mono or stereo, with an optional mono or stereo sidechain input. One screen, no menus: 12 curves, 10 factory presets, user
 presets and A/B.
 
@@ -12,6 +12,11 @@ does with the mode: **vol** (level), **lows** / **highs** (only below / above th
 channels, the mid or the side. **soothe** rounds the curve's hard corners (the same blur in the graph and the audio), so
 the attack eases in; MIDI/audio envelopes also taper to full level at the cycle boundaries. Changes to a soothed
 shape crossfade over 20 ms to avoid automation steps; soothe at zero preserves the original DSP.
+
+## 0.4.1
+
+- trigger and stereo are `‹ name ›` cyclers (David's note): the arrows step through host / midi / audio and both / mid /
+  side and wrap; the wheel and the arrow keys step too. Same parameters and values; the sound is unchanged.
 
 ## 0.4.0
 

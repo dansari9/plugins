@@ -182,7 +182,7 @@ static void testIdentity()
     CHECK(JucePlugin_ManufacturerCode == 0x44776b73); // 'Dwks'
     CHECK(juce::String(JUCE_STRINGIFY(JucePlugin_AUMainType)) == "'aumf'");
     CHECK(juce::String(JUCE_STRINGIFY(JucePlugin_CFBundleIdentifier)) == "com.dripworks.gulp");
-    CHECK(juce::String(JucePlugin_Name) == "gulp" && juce::String(JucePlugin_Manufacturer) == "daveydidit" && juce::String(JucePlugin_VersionString) == "0.4.0");
+    CHECK(juce::String(JucePlugin_Name) == "gulp" && juce::String(JucePlugin_Manufacturer) == "daveydidit" && juce::String(JucePlugin_VersionString) == "0.4.1");
     static_assert(JUCE_VST3_CAN_REPLACE_VST2 == 0 && JUCE_FORCE_USE_LEGACY_PARAM_IDS == 0, "frozen host-facing IDs");
     CHECK(!JucePlugin_IsSynth && JucePlugin_WantsMidiInput && !JucePlugin_ProducesMidiOutput);
     // Golden: id -> range and default (floats), item list and default (choices), default (switches).
@@ -1280,8 +1280,8 @@ static void testInteraction()
         press("sync");
         CHECK(dynamic_cast<juce::Button*>(find(*e, "sync"))->getToggleState() && !dynamic_cast<juce::Button*>(find(*e, "free"))->getToggleState());
         CHECK(find(*e, "sync")->getBounds() == cellArea(85, 3, 4, 2) && find(*e, "free")->getBounds() == cellArea(91, 3, 4, 2));
-        CHECK(find(*e, "loop")->getBounds() == cellArea(25, 29, 6, 1) && find(*e, "loop")->getX() == find(*e, "trigger host")->getX());
-        CHECK(find(*e, "lookahead")->getBounds() == cellArea(35, 29, 11, 1) && find(*e, "lookahead")->getX() == find(*e, "trigger audio")->getX());
+        CHECK(find(*e, "loop")->getBounds() == cellArea(25, 29, 6, 1) && find(*e, "loop")->getX() == find(*e, "trigger-")->getX());
+        CHECK(find(*e, "lookahead")->getBounds() == cellArea(35, 29, 11, 1));
 
         // The held peak: click the number to zero it.
         p.feed.held = 0.6f, timer.timerCallback();
@@ -1295,10 +1295,28 @@ static void testInteraction()
             CHECK(std::abs(find(*e, "color " + modes[k])->getX() - find(*e, "color " + modes[k - 1])->getRight() - cellArea(0, 0, 5, 1).getWidth()) <= 1);
         const std::pair<const char*, juce::StringArray> choices[] = {
             { "curve", { "classic", "tight", "punch", "round", "long", "slam", "sub", "sub long", "trim", "suck", "wave", "double" } },
-            { "color", modes }, { "stereo", { "both", "mid", "side" } }, { "trigger", { "host", "midi", "audio" } } };
+            { "color", modes } };
         for (auto& [id, items] : choices)
             for (int k = items.size(); --k >= 0;)
                 press(juce::String(id) + " " + items[k]), CHECK(get(p, id) == (float) k);
+        // 0.4.1 (David's note 9): trigger and stereo are ‹ name › cyclers across their old word rows; the arrows step
+        // through the three choices in order and wrap at both ends, by click, wheel and arrow keys.
+        for (auto [id, x, w] : { std::tuple { "trigger", 25, 15 }, std::tuple { "stereo", 44, 13 } })
+        {
+            const juce::String before = juce::String(id) + "-", after = juce::String(id) + "+";
+            CHECK(find(*e, before)->getBounds() == cellArea(x, 27, 2, 2) && find(*e, after)->getBounds() == cellArea(x + w - 2, 27, 2, 2));
+            CHECK(find(*e, juce::String(id) + " host") == nullptr && find(*e, juce::String(id) + " both") == nullptr);
+            set(p, id, 0), timer.timerCallback();
+            for (int k = 1; k <= 3; ++k) press(after), CHECK(get(p, id) == (float) (k % 3));
+            press(before), CHECK(get(p, id) == 2);
+            press(before), press(before), CHECK(get(p, id) == 0);
+            auto* key = find(*e, after);
+            key->keyPressed(juce::KeyPress(juce::KeyPress::rightKey)), CHECK(get(p, id) == 1);
+            const auto now = juce::Time::getCurrentTime();
+            key->mouseWheelMove(juce::MouseEvent(juce::Desktop::getInstance().getMainMouseSource(), {}, {}, 0, 0, 0, 0, 0, key, key, now, {}, now, 1, false),
+                                { 0, -1, false, false, false });
+            CHECK(get(p, id) == 0);
+        }
         CHECK(find(*e, "curve double")->getBottom() == cellArea(0, 0, 1, 31).getBottom() && find(*e, "curve classic")->getY() == cellArea(0, 5, 1, 1).getY());
         for (auto* id : { "invert", "loop", "lookahead" })
             press(id), CHECK(get(p, id) == 1), press(id), CHECK(get(p, id) == 0);
@@ -1367,8 +1385,7 @@ static void testDisplayNames()
 
     // "host": the trigger row's word and the host's text for index 0; the saved value is the index, unchanged.
     set(p, "trigger", 0), timer.timerCallback();
-    auto* host = dynamic_cast<juce::Button*>(find(*e, "trigger host"));
-    CHECK(host != nullptr && host->getToggleState() && find(*e, "trigger sync") == nullptr && host->getBounds() == cellArea(25, 27, 4, 2));
+    CHECK(find(*e, "trigger-") != nullptr && find(*e, "trigger sync") == nullptr && find(*e, "trigger-")->getBounds() == cellArea(25, 27, 2, 2));
     CHECK(p.apvts.getParameter("trigger")->getCurrentValueAsText() == "host" && get(p, "trigger") == 0);
     const auto xml = juce::AudioProcessor::getXmlFromBinary(save(p).getData(), (int) save(p).getSize());
     CHECK(xml != nullptr && xml->getChildByAttribute("id", "trigger") != nullptr && xml->getChildByAttribute("id", "trigger")->getStringAttribute("value") == "0.0");
@@ -1421,7 +1438,7 @@ static void testInks()
     const auto all = colours({ 0, 0, 1024, 576 });
     CHECK(all.count(0xffff3d1f) == 0 && all.count(0xffececec) == 0 && all.count(grain) == 1);
     CHECK(has(cellArea(2, 5, 19, 1), pink) && has(cellArea(2, 1, 4, 1), cream));
-    CHECK(has(cellArea(25, 22, 70, 2), tang) && !has(cellArea(25, 22, 70, 2), pink) && has(cellArea(25, 27, 4, 2), tang));
+    CHECK(has(cellArea(25, 22, 70, 2), tang) && !has(cellArea(25, 22, 70, 2), pink) && has(cellArea(30, 27, 6, 2), tang)); // the trigger cycler's chosen name
     CHECK(has(cellArea(105, 4, 8, 4), pink) && has(cellArea(105, 13, 8, 4), tang) && has(cellArea(105, 22, 8, 4), sun) && has(cellArea(85, 5, 10, 1), sun));
     const auto field = [](juce::uint32 ink) { return juce::Colour(page).interpolatedWith(juce::Colour(ink), 0.55f).getARGB(); };
     CHECK(has(cellArea(26, 6, 68, 12), field(0xffa98bff)) && has(cellArea(26, 6, 68, 12), field(0xff5b7cff)));
@@ -1475,10 +1492,10 @@ static const Golden sounds[] = {
     { 0, 6, "03605e6dfe815adbeedede492bfc2cfe1c00a676c6571bcc58ebd23c2e0c87a3" },
     { 0, 7, "f3ef30e486df5dfa2c033e2e2bb9cc182a3cf82a373247bb2527928ee56863f7" },
 };
-struct Shot { int percent; const char* hash; }; // the editor's pixels: 0.4.0 (the knob glows end at their rings)
-static const Shot shots[] = { { 100, "d2f55431fe91d4cbf6259925b597a6025c1c269f722d20e24bf3e8c9a03fdc1e" },
-                              { 50, "4ccb5cc4d5213015220a4b616ba52701c58c3c1a3704aab2841a1f20c6c59b8e" },
-                              { 200, "939c0e22bd6ccadf2d99e54e34b74442cbf82896411cad36ef24013474f1d2bf" } };
+struct Shot { int percent; const char* hash; }; // the editor's pixels: 0.4.1 (trigger and stereo are cyclers)
+static const Shot shots[] = { { 100, "07fe1a9b2ea32b22f94fd17d8b0f2a806ef5b72741fdc7fa5467d5945ee7947f" },
+                              { 50, "072d4edb7110989fad1fc67853a260129b27c3fbbfe93127b0ecd433eee25d71" },
+                              { 200, "dc92efb59c2007f85ed4afb3fa84f0db65cf3cbbedbd41e45440370e538b4f07" } };
 static void testGoldens()
 {
     CHECK(render(0, 0) == render(0, 0) && pixels(snapshot(100)) == pixels(snapshot(100)));

@@ -37,6 +37,7 @@ Font mono(float size, bool bold)
     return Font(FontOptions(faces[bold ? 1 : 0]).withPointHeight(size));
 }
 const StringArray triggerWords { "host", "midi", "audio" }, stereoWords { "both", "mid", "side" };
+const int triggerW = triggerWords.joinIntoString(" ").length(), stereoW = stereoWords.joinIntoString(" ").length(); // the cyclers' spans
 const StringArray curveWords(gulp::curveNames, gulp::numCurves), colourWords(gulp::colorNames, gulp::numColors);
 const int modeGap = (AW - colourWords.joinIntoString("").length()) / (gulp::numColors - 1); // first to last: the graph
 
@@ -93,6 +94,13 @@ struct Grid
             if (k == sel) put(x, y + 1, String::repeatedString(u("▔"), items[k].length()), red);
         }
     }
+    // An option cycler, snap's `< name >` in gulp's colours: ‹ and › at the span's edges (white under the pointer), the
+    // chosen name centred between them, red and underlined.
+    void cycler(int x, int w, int y, const String& name, int hover)
+    {
+        put(x, y, u("‹"), hover < 0 ? white : grey), put(x + w - 1, y, u("›"), hover > 0 ? white : grey);
+        centre(x + 1, w - 2, y, name, red, true), centre(x + 1, w - 2, y + 1, String::repeatedString(u("▔"), name.length()), red);
+    }
     void toggle(int x, int y, const String& label, bool on, bool dim = false)
     {
         put(x, y, u(on ? "■" : "□"), dim ? dark : on ? red : grey), put(x + 2, y, label, dim ? dark : on ? white : grey, on && !dim);
@@ -147,8 +155,23 @@ struct RateValue : Slider
 };
 struct Key : Button
 {
+    std::function<void(int)> onStep; // a cycler's arrow: the wheel and the arrow keys step too
+    float wheel = 0;
     explicit Key(const String& id) : Button(id) { setComponentID(id), setRepaintsOnMouseActivity(false); }
     void paintButton(Graphics&, bool, bool) override {}
+    void mouseWheelMove(const MouseEvent& e, const MouseWheelDetails& w) override
+    {
+        if (!onStep) return Button::mouseWheelMove(e, w);
+        wheel += (std::abs(w.deltaY) > 0 ? w.deltaY : -w.deltaX) * (w.isReversed ? -1.0f : 1.0f);
+        if (std::abs(wheel) >= 0.12f) onStep(wheel > 0 ? 1 : -1), wheel = 0;
+    }
+    bool keyPressed(const KeyPress& k) override
+    {
+        const int code = k.getKeyCode();
+        if (onStep && (code == KeyPress::upKey || code == KeyPress::rightKey || code == KeyPress::downKey || code == KeyPress::leftKey))
+            return onStep(code == KeyPress::upKey || code == KeyPress::rightKey ? 1 : -1), true;
+        return Button::keyPressed(k);
+    }
 };
 
 struct KnobSpec { const char *id, *name; int x, y; bool centred; Colour glow; };
@@ -228,7 +251,8 @@ struct Editor : AudioProcessorEditor, Timer
     RateValue freeHz;
     Handle slope;
     Key prev { "prev" }, next { "next" }, save { "save" }, slotA { "A" }, slotB { "B" }, invert { "invert" }, loop { "loop" }, ahead { "lookahead" }, free { "free" }, sync { "sync" }, down { "rate-" }, up { "rate+" }, peak { "peak" };
-    OwnedArray<Key> curves, colours, stereos, triggers;
+    Key triggerPrev { "trigger-" }, triggerNext { "trigger+" }, stereoPrev { "stereo-" }, stereoNext { "stereo+" };
+    OwnedArray<Key> curves, colours;
     // Attachments after the components they drive, so they are destroyed first.
     std::vector<std::unique_ptr<AudioProcessorValueTreeState::SliderAttachment>> sliderAtt;
     std::vector<std::unique_ptr<ParameterAttachment>> keyAtt;
@@ -293,8 +317,16 @@ struct Editor : AudioProcessorEditor, Timer
             bind(id, list);
         };
         row(curves, "curve", curveWords, 0, 0, 0);
-        row(colours, "color", colourWords, AX, CY, modeGap), row(stereos, "stereo", stereoWords, SX, wordsY);
-        row(triggers, "trigger", triggerWords, AX, wordsY);
+        row(colours, "color", colourWords, AX, CY, modeGap);
+        // trigger and stereo: ‹ name ›, as snap's selectors: the arrows step through the choices and wrap (click, wheel, keys).
+        const auto cycler = [&](const char* id, int n, Key& before, Key& after, int x, int w) {
+            auto* att = bind(id, {});
+            const auto step = [this, att, id, n](int by) { att->setValueAsCompleteGesture((float) ((index(id) + by + n) % n)); };
+            for (auto [key, by, at] : { std::tuple { &before, -1, x }, std::tuple { &after, 1, x + w - 2 } })
+                key->onClick = [step, by = by] { step(by); }, key->onStep = step, key->setBounds(cells(at, wordsY, 2, 2)), layer.addAndMakeVisible(*key);
+        };
+        cycler("trigger", triggerWords.size(), triggerPrev, triggerNext, AX, triggerW);
+        cycler("stereo", stereoWords.size(), stereoPrev, stereoNext, SX, stereoW);
         bind("invert", { &invert }), bind("loop", { &loop }), bind("lookahead", { &ahead });
         bind("tempoSync", { &free, &sync }); // explicit choices: free = 0, sync = 1, including repeated clicks
         // ‹ › step the rate up to 2 bars (an old 4 bars still steps down), or in free a ladder of round frequencies.
@@ -343,6 +375,7 @@ struct Editor : AudioProcessorEditor, Timer
             s.getProperties().set("box", b), s.setBounds(area), s.resized();
     }
 
+    static int hoverOf(const Key& before, const Key& after) { return before.isMouseOver() ? -1 : after.isMouseOver() ? 1 : 0; }
     void timerCallback() override
     {
         std::vector<float> now;
@@ -350,7 +383,8 @@ struct Editor : AudioProcessorEditor, Timer
             now.push_back(param->getValue());
         const auto& f = proc.feed;
         now.insert(now.end(), { f.phase.load(), f.duck.load(), f.held.load(), (float) f.live.load(), f.scLevel.load(), f.outLevel.load(),
-                                f.bpm.load(), (float) proc.preset.load(), (float) proc.abSlot() });
+                                f.bpm.load(), (float) proc.preset.load(), (float) proc.abSlot(), (float) hoverOf(triggerPrev, triggerNext),
+                                (float) hoverOf(stereoPrev, stereoNext) });
         for (size_t k = 0; k < gulp::Feed::bins; ++k)
             now.insert(now.end(), { f.lo[k].load(), f.hi[k].load() });
         if (now == drawnFrom && proc.presetName() == drawnName)
@@ -510,9 +544,9 @@ struct Editor : AudioProcessorEditor, Timer
         // lookahead under "audio" (dim unless the audio trigger, the only one it acts on), stereo, nudge / thresh / soothe.
         g.words(AX, CY, colourWords, colour, modeGap);
         g.put(L + 1, B - 1, String::repeatedString(u("─"), RX - L - 2), rule);
-        g.put(AX, B, "trigger", grey), g.words(AX, wordsY, triggerWords, trigger), g.toggle(AX, secondaryY, "loop", value("loop") > 0.5f, trigger == 0);
+        g.put(AX, B, "trigger", grey), g.cycler(AX, triggerW, wordsY, triggerWords[jlimit(0, 2, trigger)], hoverOf(triggerPrev, triggerNext)), g.toggle(AX, secondaryY, "loop", value("loop") > 0.5f, trigger == 0);
         g.toggle(audioX, secondaryY, "lookahead", value("lookahead") > 0.5f, trigger != 2);
-        g.put(SX, B, "stereo", grey), g.words(SX, wordsY, stereoWords, stereo);
+        g.put(SX, B, "stereo", grey), g.cycler(SX, stereoW, wordsY, stereoWords[jlimit(0, 2, stereo)], hoverOf(stereoPrev, stereoNext));
         for (const auto& k : knobSpecs)
             knob(g, k.x, k.y, proc.apvts.getParameter(k.id)->getValue(), k.name, text(k.id), k.centred,
                  (std::strcmp(k.id, "thresh") == 0 && trigger != 2) || (std::strcmp(k.id, "split") == 0 && colour != 1 && colour != 2));
