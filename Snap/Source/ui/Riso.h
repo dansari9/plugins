@@ -20,6 +20,6 @@ juce::Colour ink(juce::Colour, juce::Point<float>); // a palette colour as print
 // Sets g to draw c the riso way at the painting component's lattice origin: accent through the field pixel by pixel.
 void use(juce::Graphics&, juce::Colour);
 juce::Colour inkAt(const juce::Component&); // the accent as printed at a component's centre (carets, text selections)
-const juce::Image& backdrop();        // the background with grain and the six amount-dial glows, 1440 x 808
+const juce::Image& backdrop();        // the background with grain and the six amount-dial glows, 1440 x 784
 const juce::Image& texture(Module);   // a visualizer's 212 x 104 backdrop (transparent where empty)
 } // namespace snap::ui::riso

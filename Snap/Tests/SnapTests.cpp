@@ -657,7 +657,7 @@ static void testBraille()
 static void testRiso()
 {
     using namespace snap::ui;
-    CHECK(riso::field().getWidth() == 1440 && riso::field().getHeight() == 840 && riso::backdrop().getWidth() == 1440 && riso::backdrop().getHeight() == 808);
+    CHECK(riso::field().getWidth() == 1440 && riso::field().getHeight() == 840 && riso::backdrop().getWidth() == 1440 && riso::backdrop().getHeight() == 784);
     CHECK(riso::ink(colours::accent, { 700, 300 }) == riso::ink(colours::accent, { 700, 300 }));
     const auto nearest = [](juce::Colour c) { // the ink this pixel was printed from (the field dims inks by up to 12 %)
         int best = 0;
@@ -945,7 +945,7 @@ static void testEditor()
     for (int n = 0; n < 8; ++n)
     {
         std::unique_ptr<juce::AudioProcessorEditor> e(p.createEditor());
-        CHECK(e != nullptr && e->getWidth() == 1440 && e->getHeight() == 808);
+        CHECK(e != nullptr && e->getWidth() == 1440 && e->getHeight() == 784);
         set(p, "attack", (float) (n * 8 - 100)), set(p, "press_amt", (float) n * 10);
         for (int t = 0; t < 10; ++t)
             tick(*e), juce::Thread::sleep(3);
@@ -964,8 +964,8 @@ static void testEditor()
         CHECK(ed.createComponentSnapshot(ed.getLocalBounds()).isValid());
     }
     ed.setBoundsConstrained({ 0, 0, 500, 500 }); // the constrainer keeps the limits and the aspect
-    CHECK(ed.getWidth() >= 1080 && std::abs(ed.getWidth() * 808 - ed.getHeight() * 1440) <= 1440);
-    ed.setSize(1440, 808);
+    CHECK(ed.getWidth() >= 1080 && std::abs(ed.getWidth() * 784 - ed.getHeight() * 1440) <= 1440);
+    ed.setSize(1440, 784);
 
     // Every parameter but the session toggles has a widget; dials parse typed text with units.
     int controls = 0;
@@ -982,7 +982,7 @@ static void testEditor()
     ed.setVisible(true);
     for (const int width : { 1440, 1080, 2160 })
     {
-        ed.setSize(width, width * 808 / 1440);
+        ed.setSize(width, width * 784 / 1440);
         tick(ed);
         int widgets = 0, missed = 0;
         std::function<void(juce::Component&)> probe = [&](juce::Component& c) {
@@ -1013,7 +1013,7 @@ static void testEditor()
         std::printf("  hit test at %d px: %d widgets, %d missed\n", width, widgets, missed);
         CHECK(widgets >= 90 && missed == 0);
     }
-    ed.setVisible(false), ed.setSize(1440, 808);
+    ed.setVisible(false), ed.setSize(1440, 784);
     using snap::ui::parse;
     CHECK(parse(snap::spec("out_gain"), juce::String::fromUTF8("\xe2\x88\x92" "5.3 dB")) == -5.3f);
     CHECK(parse(snap::spec("space_predelay"), "0.012 s") == 12.0f);
@@ -1111,6 +1111,32 @@ static void testEditor()
         CHECK(width != nullptr && duck != nullptr && stretch != nullptr && find<snap::ui::Control>(ed, "space_pan") == nullptr);
         if (width != nullptr && duck != nullptr && stretch != nullptr)
             CHECK(width->getY() == duck->getY() && width->getX() == stretch->getX() && width->getBounds().getHeight() == stretch->getHeight());
+        // notes3b (addendum 12a): one selector row; every column's first dial row sits 12 px under it (the grid's gap
+        // between bands), all six on the same rows, and hiss's type shares the selector row with the sub / hiss tabs.
+        {
+            using snap::ui::layout::bandSelector, snap::ui::layout::bandKnobs, snap::ui::layout::bandDetail, snap::ui::layout::cellH;
+            CHECK(bandKnobs == bandSelector + cellH + 12 && bandDetail == bandKnobs + 88 && snap::ui::layout::height == 784);
+            for (const char* id : { "sub_pitch", "shift_stereo", "space_decay", "press_mix", "drive_flavor", "push_tone" })
+            {
+                auto* k = find<snap::ui::Control>(ed, id);
+                CHECK(k != nullptr && k->getY() == (int) bandKnobs);
+            }
+            for (const char* id : { "sub_stereo", "space_duck" })
+            {
+                auto* k = find<snap::ui::Control>(ed, id);
+                CHECK(k != nullptr && k->getY() == (int) bandDetail);
+            }
+            for (const char* what : { "press mode", "drive mode", "space type" })
+            {
+                auto* k = find<Key>(ed, juce::String("next ") + what);
+                CHECK(k != nullptr && k->getY() == (int) bandSelector && (float) k->getBottom() + 12 == bandKnobs);
+            }
+            auto *hissTab = find<Key>(ed, "hiss tab"), *hissPrev = find<Key>(ed, "previous hiss type"), *hissNext = find<Key>(ed, "next hiss type");
+            CHECK(hissTab != nullptr && hissPrev != nullptr && hissNext != nullptr);
+            if (hissTab != nullptr && hissPrev != nullptr && hissNext != nullptr)
+                CHECK(hissPrev->getY() == hissTab->getY() && hissNext->getY() == hissTab->getY() && hissPrev->getX() > hissTab->getRight()
+                      && hissNext->getRight() == (int) snap::ui::layout::colW);
+        }
         set(p, "space_type", 0);
         click(ed, "previous space type");
         CHECK(p.apvts.getRawParameterValue("space_type")->load() == 19);

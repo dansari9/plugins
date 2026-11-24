@@ -39,6 +39,9 @@ David's notes on the v2 frames:
 - The captions under sub/hiss, shift and space (generated layers, balance, 03 / 20) are gone.
 - space's pan/width pad is replaced by a width dial under stretch, beside duck. Space Pan stays a parameter (automation,
   sessions and presets keep it) with no control on the editor.
+- One selector row: the dials, faders and lower bands of all six columns sit 24 px higher, right under it, and the
+  window is 1440 x 784 (the amount row and master moved up with them). On the hiss tab, hiss's type is on the selector
+  row beside the sub / hiss tabs, which share its left half.
 
 ## 0.5.1
 

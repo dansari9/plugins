@@ -1,4 +1,4 @@
-// snap's one-screen editor (approved v3 layout, 1440 x 808 logical, scaled 75-200 %). Coordinates are the mockup's:
+// snap's one-screen editor (approved v3 layout, 1440 x 784 logical, scaled 75-200 %). Coordinates are the mockup's:
 // top bar, six module columns in chain order on one shared band grid (Layout.h), the amount row and the master strip,
 // one group under each column; the preset browser overlays the columns only. Controls draw
 // themselves; each zone paints its own labels and readouts. A 30 Hz timer feeds the visualizers and meters and
@@ -494,7 +494,8 @@ struct Editor : AudioProcessorEditor, Timer
     std::array<std::vector<Component*>, 2> layerParts;
     void buildSubHiss(Column& c)
     {
-        const float rowB = bandSelector + cellH + cellGapY, tabW = (CW - cellGapX) / 2;
+        // One selector row: the tabs share its left half, hiss's type takes the right half (on the hiss tab).
+        const float half = (CW - cellGapX) / 2, tabW = (half - cellGapX) / 2, typeX = half + cellGapX;
         for (int t = 0; t < 2; ++t)
             cell(c, t == 0 ? "sub tab" : "hiss tab", t == 0 ? "sub" : "hiss", { (float) t * (tabW + cellGapX), bandSelector, tabW, cellH },
                  [this, t] { return tab == t; }, [this, t](const ModifierKeys&) { setTab(t); })
@@ -511,7 +512,7 @@ struct Editor : AudioProcessorEditor, Timer
                 dial(c, "hiss_tone", "tone", slotX[0], YD, true), dial(c, "hiss_env", "env", slotX[1], YD);
                 toggleKey(c, "hiss_solo", "solo", slotX[2] + 4, YD + 12), toggleKey(c, "hiss_post", "post", slotX[2] + 4, YD + 28); // res is the third row
                 control(c, Control::Kind::fader, "hiss_res", { slotX[2] + 36, YD + 46, CW - slotX[2] - 36, 12 }).hint = "hiss resonance";
-                selector(c, "hiss_type", "hiss type", rowB);
+                selector(c, "hiss_type", "hiss type", bandSelector, typeX, half);
             }
             else
             {
@@ -524,10 +525,10 @@ struct Editor : AudioProcessorEditor, Timer
             for (int i = first; i < c.parts.size(); ++i)
                 layerParts[(size_t) t].push_back(c.parts[i]);
         }
-        c.body = [this, &c, rowB](Graphics& g) {
+        c.body = [this, &c, typeX, half](Graphics& g) {
             const bool d = c.dim;
             if (tab == 1)
-                selectorBox(g, show("hiss_type"), rowB, d), text(g, "res", slotX[2] + 4, YD + 44, dimmed(muted, d), 11);
+                selectorBox(g, show("hiss_type"), bandSelector, d, typeX, half), text(g, "res", slotX[2] + 4, YD + 44, dimmed(muted, d), 11);
             bandText(g, "sens", show(subOrHiss("sub_sens", "hiss_sens")), bandLow, d);
             bandText(g, "detect", show(subOrHiss("sub_det_lo", "hiss_det_lo")) + " - " + show(subOrHiss("sub_det_hi", "hiss_det_hi")), bandLow2, d);
         };
