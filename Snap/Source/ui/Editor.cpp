@@ -608,14 +608,14 @@ struct Editor : AudioProcessorEditor, Timer
     }
     void buildPush(Column& c)
     {
-        c.caption("stages", 0, bandSelector + 15);
-        selector(c, "push_mult", "push stages", bandSelector + 12, faderX, CW - faderX);
+        c.caption("stages", 0, bandSelector + 3);
+        selector(c, "push_mult", "push stages", bandSelector, faderX, CW - faderX);
         dial(c, "push_tone", "tone", slot2X[0], YK, true), dial(c, "push_mix", "mix", slot2X[1], YK);
         c.caption("limit", 0, YD + 32);
         targetLine(c, "push_target"), focusLine(c, "push_focus_lo", "push_focus_hi");
         c.body = [this, &c](Graphics& g) {
             const bool d = c.dim;
-            cyclerBox(g, "push_mult", pushNames, bandSelector + 12, d, faderX, CW - faderX);
+            cyclerBox(g, "push_mult", pushNames, bandSelector, d, faderX, CW - faderX);
             const float limit = proc.display.pushLimitDb.load();
             fader(g, faderX, YD + 34, 104, FaderKind::meter, -limit / 12, 0, accent, d);
             led(g, { 162, YD + 35, 6, 6 }, dimmed(limit < -0.1f ? accent : colours::dim, d));

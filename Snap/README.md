@@ -42,6 +42,7 @@ David's notes on the v2 frames:
 - One selector row: the dials, faders and lower bands of all six columns sit 24 px higher, right under it, and the
   window is 1440 x 784 (the amount row and master moved up with them). On the hiss tab, hiss's type is on the selector
   row beside the sub / hiss tabs, which share its left half.
+- push's stages selector sits on the selector row with the other selectors (12 px higher), 12 px above its dials.
 
 ## 0.5.1
 

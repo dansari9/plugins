@@ -1126,7 +1126,7 @@ static void testEditor()
                 auto* k = find<snap::ui::Control>(ed, id);
                 CHECK(k != nullptr && k->getY() == (int) bandDetail);
             }
-            for (const char* what : { "press mode", "drive mode", "space type" })
+            for (const char* what : { "press mode", "drive mode", "space type", "push stages" })
             {
                 auto* k = find<Key>(ed, juce::String("next ") + what);
                 CHECK(k != nullptr && k->getY() == (int) bandSelector && (float) k->getBottom() + 12 == bandKnobs);
