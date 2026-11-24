@@ -40,11 +40,14 @@ On Linux use Ninja and run `xvfb-run -a Silt/build/SiltTests`. `--core` runs DSP
 
 ## 0.4.2
 
-- **semi free** under the pitch dial (new parameter `pitchSnap`, appended, default semi). In semi, pitch resolves to whole
-  semitones everywhere: the dial lands on them when dragged and steps by one with the arrow keys, typed values round,
-  host automation is played and shown at its nearest semitone; free is continuous (0.01 st) as before. Sessions and
-  preset files saved before 0.4.2 open in free when their pitch lies between semitones (so they sound the same), else
-  in semi. **scale** is unchanged: it still snaps only the spread that detune and chaos add, per grain, to its notes.
+- **scale** now reads free · semi · chromatic · major · minor · pentatonic, semi by default. free is continuous pitch;
+  semi resolves pitch to whole semitones everywhere (the dial lands on them and steps by one with the arrow keys, typed
+  values round, host automation plays and reads at its nearest semitone); chromatic, major, minor and pentatonic keep
+  semi's whole-semitone pitch and snap the spread that detune and chaos add, per grain, as before. Underneath, scale keeps
+  its ID and values (free, chromatic, major, minor, pentatonic) and a new hidden parameter `pitchSnap` (appended, semi /
+  free) holds the pitch half: free = scale free + pitchSnap free, semi = scale free + pitchSnap semi, a scale = that
+  scale + pitchSnap semi. Sessions, preset files and A/B slots saved before 0.4.2 open with pitchSnap free when their
+  pitch lies between semitones (so they sound the same), else semi; their scale is restored as saved.
 
 ## 0.4.1
 

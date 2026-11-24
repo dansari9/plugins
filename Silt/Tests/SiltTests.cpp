@@ -386,6 +386,11 @@ static void testPitchSnap()
     CHECK(get(p,"pitchSnap")==0 && get(p,"pitch")==12);
     load(p,blob("<SILT stateVersion=\"2\"><PARAM id=\"pitch\" value=\"7.25\"/><PARAM id=\"pitchSnap\" value=\"0\"/></SILT>"));
     CHECK(get(p,"pitchSnap")==0 && get(p,"pitch")==7.25f); // saved by 0.4.2: as saved
+    // The merged scale list reads both: an old in-between pitch with a scale keeps that scale and stays free (as it sounded).
+    load(p,blob("<SILT stateVersion=\"2\"><PARAM id=\"pitch\" value=\"7.25\"/><PARAM id=\"scale\" value=\"2\"/></SILT>"));
+    CHECK(get(p,"pitchSnap")==1 && get(p,"scale")==2 && get(p,"pitch")==7.25f);
+    load(p,blob("<SILT stateVersion=\"2\"><PARAM id=\"pitch\" value=\"7\"/><PARAM id=\"scale\" value=\"3\"/></SILT>"));
+    CHECK(get(p,"pitchSnap")==0 && get(p,"scale")==3);
     {
         Proc q;set(q,{{"pitch",-2.5f},{"pitchSnap",1}});Proc r;load(r,save(q));CHECK(get(r,"pitchSnap")==1 && get(r,"pitch")==-2.5f);
         prepare(q),prepare(r);CHECK(run(q,48000)==run(r,48000));
@@ -406,25 +411,36 @@ static void testPitchSnap()
     // Every factory preset pitches on a semitone in semi; nudge keeps semi's pitch whole.
     for(int i=0;i<silt::numPresets;++i){p.setCurrentProgram(i);CHECK(get(p,"pitchSnap")==0);}
     for(int seed=1;seed<40;++seed){Proc n;set(n,"pitch",5);n.nudge(seed);CHECK(get(n,"pitch")==std::round(get(n,"pitch")));}
-    // The editor: semi / free under the pitch value; in semi the pitch dial lands on semitones, in free it is continuous.
+    // The editor (notes3b): semi / free live in the scale list, free · semi · chromatic · major · minor · pentatonic, one
+    // column under "scale"; the separate semi free row is gone. free / semi are scale free with pitchSnap free / semi, a
+    // scale sets pitchSnap semi. In semi the pitch dial lands on semitones, in free it is continuous.
     {
         Proc e;std::unique_ptr<juce::AudioProcessorEditor> editor(e.createEditor());
         auto& timer=dynamic_cast<juce::Timer&>(*editor);timer.stopTimer();
-        auto *semi=dynamic_cast<juce::Button*>(find(*editor,"pitchSnap:0")),*freeKey=dynamic_cast<juce::Button*>(find(*editor,"pitchSnap:1"));
-        auto *pitch=find(*editor,"pitch"),*mode=find(*editor,"pitchMode:1");
-        CHECK(semi && freeKey && pitch && mode);
-        if(semi && freeKey && pitch && mode)
+        CHECK(find(*editor,"pitchSnap:0")==nullptr && find(*editor,"pitchSnap:1")==nullptr);
+        std::array<juce::Button*,6> keys{};
+        for(int i=0;i<6;++i)keys[(size_t)i]=dynamic_cast<juce::Button*>(find(*editor,"scale:"+juce::String(i)));
+        auto *pitch=find(*editor,"pitch");
+        const bool all=pitch && std::all_of(keys.begin(),keys.end(),[](auto* k){return k!=nullptr;});
+        CHECK(all);
+        if(all)
         {
-            CHECK(semi->getY()>mode->getY() && semi->getX()>=pitch->getX() && freeKey->getRight()<=pitch->getRight()); // under shift / tape, in pitch's column
+            for(int i=1;i<6;++i)CHECK(keys[(size_t)i]->getX()==keys[0]->getX() && keys[(size_t)i]->getY()>keys[(size_t)i-1]->getY());
+            const auto click=[&](int i){keys[(size_t)i]->triggerClick();for(int k=0;k<20;++k)juce::MessageManager::getInstance()->runDispatchLoopUntil(5);};
+            const auto shown=[&]{return std::make_pair((int)get(e,"scale"),(int)get(e,"pitchSnap"));};
+            CHECK(shown()==std::make_pair(0,0)); // a new instance: semi
             set(e,"pitch",12);
             CHECK(pitch->keyPressed(juce::KeyPress(juce::KeyPress::upKey)) && get(e,"pitch")==13);
             CHECK(pitch->keyPressed(juce::KeyPress(juce::KeyPress::downKey)) && pitch->keyPressed(juce::KeyPress(juce::KeyPress::downKey)) && get(e,"pitch")==11);
             timer.timerCallback();
-            freeKey->triggerClick();
-            for(int k=0;k<50 && get(e,"pitchSnap")<.5f;++k)juce::MessageManager::getInstance()->runDispatchLoopUntil(5);
-            CHECK(get(e,"pitchSnap")==1);
+            click(0);CHECK(shown()==std::make_pair(0,1)); // free
             dynamic_cast<juce::Timer*>(pitch)->timerCallback();
             CHECK(pitch->keyPressed(juce::KeyPress(juce::KeyPress::upKey)) && get(e,"pitch")>11 && get(e,"pitch")<12);
+            click(3);CHECK(shown()==std::make_pair(2,0)); // major: semi pitch, major spread
+            click(2);CHECK(shown()==std::make_pair(1,0)); // chromatic
+            click(5);CHECK(shown()==std::make_pair(4,0)); // pentatonic
+            click(1);CHECK(shown()==std::make_pair(0,0)); // semi
+            click(0);CHECK(shown()==std::make_pair(0,1));
         }
     }
 }
@@ -1350,7 +1366,14 @@ static void testEditor()
         {
             auto* param=p.apvts.getParameter(spec.id);
             const bool macro=juce::String(spec.id)=="motion" || juce::String(spec.id)=="texture" || juce::String(spec.id)=="bloom" || juce::String(spec.id)=="chaos";
-            if(macro)continue;
+            if(macro || juce::String(spec.id)=="pitchSnap")continue; // pitchSnap is set from the scale list
+            if(juce::String(spec.id)=="scale")
+            {
+                // free · semi · chromatic · major · minor · pentatonic: (scale, pitchSnap)
+                const std::pair<int,int> want[]{{0,1},{0,0},{1,0},{2,0},{3,0},{4,0}};
+                for(int k=0;k<6;++k)press("scale:"+juce::String(k)),CHECK(get(p,"scale")==(float)want[k].first && get(p,"pitchSnap")==(float)want[k].second);
+                continue;
+            }
             if(dynamic_cast<juce::AudioParameterFloat*>(param))
             {
                 auto* dial=find(e,spec.id);CHECK(dial && dial->isVisible());
@@ -1737,7 +1760,7 @@ static void testGoldens(bool record=false)
     const bool ci=std::getenv("GITHUB_ACTIONS")!=nullptr;
     const char* expectedEnvironment="14.2.0/Release/07adb83962bd7f372226ea055bca705c159534fa4a19d3279488b12cd95eea5c", *expectedRenderer="506141d22f79fb1886eb4dec6e8e40da3c3c48e3df63f1f3d60e979dd78361b5";
     const char* expectedSound="c84295f77b28dd4228a7fe471bf7e41937303f55ff5663e927482f9dca5907da";
-    const char* expectedShots[]{"f85a0b50ace18d106c504dde5522c64bda007fccaa8f7041bcf711d555a53585","22c89d124c03108794bddbb40259a027ab855b28c2c713cf307fd56577efb0ca","bba890bcd6a61ccd5369d9789cc80e7f6d6df55777c75baf26b0caeb3aa8b12d"}; // 0.4.2: semi / free under pitch
+    const char* expectedShots[]{"580c90f6f7638766c519a3f7d4ed2f40cd601e61ad3c6d32931dc86fb23a7cac","2a4bb26a326eaf824bde714e84884dc1520cd5efa364da017aa8ad39bdb76a5c","7a08025a48d8ae4fa0b508475a05707cf6dec11c1b53676ca38785bd2b5c4e09"}; // 0.4.2: semi / free in the scale list
     std::cout<<"Golden environment: "<<environment<<"\nGolden renderer: "<<renderer<<"\n";
     if(record || (!ci && environment==expectedEnvironment))
     {

@@ -895,8 +895,6 @@ struct Editor : AudioProcessorEditor, Timer
                               { "reverb", "reverb", 81, 36, false, [this] { return tier2.value("reverbOn") < .5f ? String("idle while reverb is off") : String(); }, false },
                               { "feedback", "feedback", 81, 43 }, { "mix", "mix", 92, 36 }, { "output", "output", 92, 43, true } },
               { { "pitchMode", "", 3, 41, { "shift pitch at fixed grain length", "pitch sets grain playback speed" }, 1, 0, true },
-                { "pitchSnap", "", 3, 42, { "pitch moves in semitones", "pitch moves freely" }, 1, 0, true },
-                { "scale", "scale", 25, 36, { "continuous pitch", "snap to semitones", "snap to the major scale", "snap to the minor scale", "snap to the pentatonic scale" } },
                 { "heads", "heads", 6, 43, { "one read head", "share grains between two heads", "share grains between three heads", "share grains between four heads" } },
                 { "harmony", "harmony", 16, 43, { "all heads play the same pitch", "add fifths", "add octaves", "major chord", "minor chord", "one head per held MIDI note" }, 2, 9 },
                 { "space", "stereo", 71, 43, { "stereo panning", "use timing and level cues for stereo position" } } })
@@ -926,7 +924,17 @@ struct Editor : AudioProcessorEditor, Timer
             g.put(1, 34, u("↳"), grey), title(g, 3, 34, "voices", 39, ""), title(g, 42, 34, "colour", 67, "→");
             title(g, 70, 34, "space", 89, "→"), title(g, 92, 34, "out", 103, "→");
             tier2.drawToggle(g, reverbKey, "reverb", 83, 36);
+            g.put(25, 36, "scale", grey);
+            const int chosen = scaleIndex();
+            for (int i = 0; i < (int) scaleKeys.size(); ++i)
+            {
+                auto& key = *scaleKeys[(size_t) i];
+                key.active = i == chosen;
+                g.put(25, 37 + i, scaleItems[i], key.active ? red : key.isMouseOver() ? white : light, key.active);
+                if (key.hasKeyboardFocus(false)) g.underline(25, (int) strlen(scaleItems[i]), 37 + i);
+            }
         };
+        buildScale();
         setFocusContainerType(FocusContainerType::keyboardFocusContainer);
         setOpaque(true), addAndMakeVisible(layer), addMouseListener(this, true), layer.setBounds(0, 0, W, H);
         for (auto* group : std::array<Group*, 4> { &header, &cloud, &tier1, &tier2 })
@@ -961,6 +969,39 @@ struct Editor : AudioProcessorEditor, Timer
         setResizable(true, false), setResizeLimits(W / 2, H / 2, W * 2, H * 2); getConstrainer()->setFixedAspectRatio((double) W / H);
         const int width = stored > 0 ? jlimit(W / 2, W * 2, roundToInt(stored * (double) W / 1024)) : W;
         setSize(width, roundToInt((double) width * H / W)), timerCallback(), startTimerHz(30);
+    }
+    // scale with semi / free in one list (0.4.2, David's notes3b): free and semi are scale free with pitchSnap free / semi;
+    // chromatic, major, minor and pentatonic are those scales with pitchSnap semi. Both parameters stay as they were.
+    static constexpr const char* scaleItems[] { "free", "semi", "chromatic", "major", "minor", "pentatonic" };
+    static constexpr const char* scaleMeanings[] { "pitch moves freely", "pitch moves in semitones", "pitch and spread in semitones",
+                                                   "snap to the major scale", "snap to the minor scale", "snap to the pentatonic scale" };
+    std::array<Key*, 6> scaleKeys {};
+    ParameterAttachment *scaleAttachment = nullptr, *snapAttachment = nullptr;
+    int scaleIndex() const
+    {
+        const int s = roundToInt(tier2.value("scale"));
+        return s > 0 ? s + 1 : tier2.value("pitchSnap") > .5f ? 0 : 1;
+    }
+    void chooseScale(int i)
+    {
+        i = jlimit(0, 5, i);
+        snapAttachment->setValueAsCompleteGesture(i == 0 ? 1.0f : 0.0f);
+        scaleAttachment->setValueAsCompleteGesture((float) jmax(0, i - 1));
+    }
+    void buildScale()
+    {
+        scaleAttachment = &tier2.attach("scale"), snapAttachment = &tier2.attach("pitchSnap");
+        for (int i = 0; i < 6; ++i)
+        {
+            auto& k = tier2.key("scale:" + String(i), 25, 37 + i, 11, [this, i](const ModifierKeys& mods) { chooseScale(Group::resetting(mods) ? 1 : i); },
+                                String(scaleItems[i]) + u(" · ") + scaleMeanings[i] + u(" · click · wheel · alt/cmd reset"));
+            k.setTitle("Scale, " + String(scaleItems[i]) + ", " + String(i + 1) + " of 6");
+            k.setToggleable(true), k.setWantsKeyboardFocus(true), k.setMouseClickGrabsKeyboardFocus(true);
+            k.active = scaleIndex() == i;
+            k.wheel = k.choose = [this](int d) { chooseScale(scaleIndex() + d); };
+            k.setExplicitFocusOrder(tier2.getNumChildComponents());
+            scaleKeys[(size_t) i] = &k;
+        }
     }
     std::array<Controls*, 2> controls() { return { &tier1, &tier2 }; }
     Dial* dial(const char* id) { for (auto* c : controls()) for (auto* d : c->dials) if (d->getComponentID() == id) return d; return nullptr; }
