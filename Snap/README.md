@@ -1,6 +1,6 @@
 # snap
 
-A one-screen drum multi-FX by daveydidit. Version 0.5.1. Mono or stereo.
+A one-screen drum multi-FX by daveydidit. Version 0.5.2. Mono or stereo.
 
 The 0.2 chain is six modules plus a master section, with one **Magnitude** macro that scales the
 module amounts and the master's continuous controls toward neutral:
@@ -30,6 +30,15 @@ The editor is one screen (1440 x 840 at 100 %, resizable 75–200 % from the cor
 reorder), the amount row (on/off, the big dial, hover for the lock), and the master strip, one group under each column (0.5.1: no bottom bar; snapshots A–D sit in the top bar). Every dial and fader: drag (Shift finer), Alt/Cmd-click resets,
 double-click types a value with units, the wheel nudges, right-click opens a menu. The preset name opens the
 browser over the module columns; click a row to audition, ok keeps it, cancel goes back.
+
+## 0.5.2
+
+David's notes on the v2 frames:
+- press and drive modes, push's stages and the master tone shape are `< name >` selectors like space's type (the arrows
+  step and wrap; the wheel and the arrow keys step too). Same parameters, same values.
+- The captions under sub/hiss, shift and space (generated layers, balance, 03 / 20) are gone.
+- space's pan/width pad is replaced by a width dial under stretch, beside duck. Space Pan stays a parameter (automation,
+  sessions and presets keep it) with no control on the editor.
 
 ## 0.5.1
 

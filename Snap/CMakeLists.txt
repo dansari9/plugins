@@ -6,7 +6,7 @@ if(APPLE)
 endif()
 
 # Bump on every build that is handed out: Logic caches Audio Units by version.
-project(Snap VERSION 0.5.1 LANGUAGES C CXX)
+project(Snap VERSION 0.5.2 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)

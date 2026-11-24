@@ -97,56 +97,6 @@ struct Grip : Component
     }
 };
 
-// space's pan / width pad: x is pan, y is width (top +100 %).
-struct Pad : Component
-{
-    RangedAudioParameter &pan, &width;
-    SnapProcessor& proc;
-    bool dim = false, held = false;
-    Pad(SnapProcessor& p) : pan(*p.apvts.getParameter("space_pan")), width(*p.apvts.getParameter("space_width")), proc(p)
-    {
-        setTitle("space pan and width"), setMouseCursor(MouseCursor::CrosshairCursor);
-    }
-    void paint(Graphics& g) override
-    {
-        const Lattice lattice(*this);
-        {
-            Braille b(g);
-            for (float x = 3; x < 141; x += 6)
-                for (float y = 3; y < 40; y += 6)
-                    b.dot(x, y, dimmed(colours::dim, dim));
-        }
-        vline(g, 69, 0, 40), hline(g, 0, 20, 137);
-        led(g, Rectangle<float>(6, 6).withCentre({ 3 + 132 * pan.getValue(), 37 - 32 * width.getValue() }), dimmed(primary, dim));
-    }
-    void mouseDown(const MouseEvent& e) override
-    {
-        proc.beginUndoStep();
-        pan.beginChangeGesture(), width.beginChangeGesture();
-        held = !e.mods.isAltDown() && !e.mods.isCommandDown();
-        if (held)
-            return mouseDrag(e);
-        set(0, 100);
-        pan.endChangeGesture(), width.endChangeGesture();
-    }
-    void set(float panValue, float widthValue)
-    {
-        pan.setValueNotifyingHost(pan.convertTo0to1(jlimit(-100.0f, 100.0f, panValue)));
-        width.setValueNotifyingHost(width.convertTo0to1(jlimit(-100.0f, 100.0f, widthValue)));
-        repaint();
-    }
-    void mouseDrag(const MouseEvent& e) override
-    {
-        if (held)
-            set((e.position.x - 3) / 132 * 200 - 100, (37 - e.position.y) / 32 * 200 - 100);
-    }
-    void mouseUp(const MouseEvent&) override
-    {
-        if (std::exchange(held, false))
-            pan.endChangeGesture(), width.endChangeGesture();
-    }
-};
-
 struct Editor : AudioProcessorEditor, Timer
 {
     SnapProcessor& proc;
@@ -265,21 +215,6 @@ struct Editor : AudioProcessorEditor, Timer
         k.on = std::move(chosen);
         return k;
     }
-    // A parameter's choices first.. as equal cells from x0 to x1 at y; the arrow keys and the wheel step through them.
-    void choiceCells(Component& parent, const char* id, const String& prefix, const StringArray& labels, int first, float x0, float x1, float y,
-                     float gap = cellGapX, Colour activeText = accent)
-    {
-        const float w = (x1 - x0 - gap * (float) (labels.size() - 1)) / (float) labels.size();
-        for (int i = 0; i < labels.size(); ++i)
-        {
-            const int index = first + i;
-            auto& k = cell(parent, prefix + " " + labels[i], labels[i], { x0 + (float) i * (w + gap), y, w, cellH },
-                           [this, id, index] { return roundToInt(raw(id)) == index; },
-                           [this, id, index](const ModifierKeys& m) { setParam(id, resetting(m) ? defaultOf(id) : (float) index); }, activeText);
-            k.hint = labels[i] + u(" \xc2\xb7 ") + spec(id).name;
-            k.onStep = [this, id](int d) { stepChoice(id, d, false); };
-        }
-    }
     void stepChoice(const char* id, int d, bool wrap)
     {
         const auto& s = spec(id);
@@ -287,19 +222,25 @@ struct Editor : AudioProcessorEditor, Timer
         if (next != now)
             setParam(id, s.lo + (float) next);
     }
-    // The `< name >` box across a column at y (the name is the column's to paint); the arrows click, wheel and key-step round.
-    void selector(Column& c, const char* id, const String& what, float y)
+    // The `< name >` box (across a column unless given x and w; the name is the caller's to paint); the arrows click, wheel
+    // and key-step round.
+    void selector(Component& c, const char* id, const String& what, float y, float x = 0, float w = CW)
     {
         for (int d : { -1, 1 })
-            key(c, (d < 0 ? "previous " : "next ") + what, { d < 0 ? 0.0f : CW - 20, y, 20, cellH },
+            key(c, (d < 0 ? "previous " : "next ") + what, { d < 0 ? x : x + w - 20, y, 20, cellH },
                 [this, d](Graphics& g, Key& k) { text(g, d < 0 ? "<" : ">", d < 0 ? 8.0f : 4.0f, 3, dimmed(k.isMouseOver() ? primary : muted, dimOf(k))); },
                 [this, id, d](const ModifierKeys&) { stepChoice(id, d, true); })
                 .onStep = [this, id](int s) { stepChoice(id, s, true); };
     }
-    static void selectorBox(Graphics& g, const String& name, float y, bool d)
+    static void selectorBox(Graphics& g, const String& name, float y, bool d, float x = 0, float w = CW)
     {
-        box(g, { 0, y, CW, cellH }, dimmed(rule, d));
-        centred(g, name, 0, y + 3, CW, dimmed(primary, d), 12, true);
+        box(g, { x, y, w, cellH }, dimmed(rule, d));
+        centred(g, name, x, y + 3, w, dimmed(primary, d), 12, true);
+    }
+    // A choice's `< name >` box, with the editor's own names for its values.
+    void cyclerBox(Graphics& g, const char* id, const StringArray& names, float y, bool d, float x = 0, float w = CW) const
+    {
+        selectorBox(g, names[jlimit(0, names.size() - 1, roundToInt(raw(id)))], y, d, x, w);
     }
     // A centred fader line: its end words at the column's edges, the fader between them with equal margins (Layout.h).
     Control& line(Column& c, const char* id, float y, const String& endL, const String& endR, bool centredValue, int chars = 0)
@@ -342,7 +283,6 @@ struct Editor : AudioProcessorEditor, Timer
         for (auto [id, label] : toggles)
             toggleKey(c, id, label, slotX[2] + 4, y), y += 16;
     }
-    static void caption(Graphics& g, const String& s, bool d) { centred(g, s, 0, bandSelector + 28, CW, dimmed(colours::dim, d), 11); }
     // A meter slot: a dial slot's label and value; the caller draws the meter at (x + 29, y + 18).
     static void meterSlot(Graphics& g, float x, float y, const String& label, const String& value, bool d)
     {
@@ -586,9 +526,7 @@ struct Editor : AudioProcessorEditor, Timer
         }
         c.body = [this, &c, rowB](Graphics& g) {
             const bool d = c.dim;
-            if (tab == 0)
-                caption(g, "generated layers", d);
-            else
+            if (tab == 1)
                 selectorBox(g, show("hiss_type"), rowB, d), text(g, "res", slotX[2] + 4, YD + 44, dimmed(muted, d), 11);
             bandText(g, "sens", show(subOrHiss("sub_sens", "hiss_sens")), bandLow, d);
             bandText(g, "detect", show(subOrHiss("sub_det_lo", "hiss_det_lo")) + " - " + show(subOrHiss("sub_det_hi", "hiss_det_hi")), bandLow2, d);
@@ -612,7 +550,6 @@ struct Editor : AudioProcessorEditor, Timer
         targetLine(c, "shift_target"), focusLine(c, "shift_focus_lo", "shift_focus_hi");
         c.body = [this, &c](Graphics& g) {
             const bool d = c.dim;
-            caption(g, "balance " + show("shift_balance"), d);
             const float a = raw("shift_amt") * raw("magnitude") * 1.0e-4f, b = raw("shift_balance");
             const float semis = shiftConstants::maxSemitones * a * std::abs(a), sign = on("shift_invert") ? -1.0f : 1.0f;
             const float freq = semis * sign * (1 - jmax(0.0f, b)), form = semis * (1 + jmin(0.0f, b));
@@ -626,29 +563,19 @@ struct Editor : AudioProcessorEditor, Timer
     {
         selector(c, "space_type", "space type", bandSelector);
         dial(c, "space_decay", "decay", slotX[0], YK), dial(c, "space_stretch", "stretch", slotX[1], YK, true), dial(c, "space_predelay", "predelay", slotX[2], YK);
-        dial(c, "space_duck", "duck", slotX[0], YD);
-        auto& pad = add(c, new Pad(proc));
-        pad.setBounds(Rectangle<float>(slotX[1] + 2, YD + 16, 137, 40).toNearestInt());
+        dial(c, "space_duck", "duck", slotX[0], YD), dial(c, "space_width", "width", slotX[1], YD, true);
         focusLine(c, "space_focus_lo", "space_focus_hi");
         c.body = [this, &c](Graphics& g) {
             const bool d = c.dim;
             selectorBox(g, show("space_type"), bandSelector, d);
-            caption(g, String(roundToInt(raw("space_type")) + 1).paddedLeft('0', 2) + " / 20", d);
-            centred(g, "pan/width", slotX[1], YD, CW - slotX[1], dimmed(muted, d), 11);
-            const int pan = roundToInt(raw("space_pan"));
-            centred(g, (pan == 0 ? String("c") : (pan < 0 ? "l" : "r") + String(std::abs(pan))) + u(" \xc2\xb7 ") + show("space_width"), slotX[1], YD + 58,
-                    CW - slotX[1], dimmed(primary, d), 12, true);
             bandText(g, "focus", focusText("space_focus_lo", "space_focus_hi"), bandLow2, d);
         };
     }
-    void modeGrid(Column& c, const char* id, const StringArray& labels) // 3 x 2 equal cells in the selector band
-    {
-        choiceCells(c, id, id, { labels[0], labels[1], labels[2] }, 0, 0, CW, bandSelector);
-        choiceCells(c, id, id, { labels[3], labels[4], labels[5] }, 3, 0, CW, bandSelector + cellH + cellGapY);
-    }
+    const StringArray pressNames { "punch", "glue", "slam", "warm", "smooth", "multi" }, driveNames { "desk", "cassette", "tape", "tube", "bits", "ring" },
+        pushNames { "1x", "2x", "4x" }, shapeNames { "tilt", "bump", "mid", "focus" };
     void buildPress(Column& c)
     {
-        modeGrid(c, "press_mode", { "punch", "glue", "slam", "warm", "smooth", "multi" });
+        selector(c, "press_mode", "press mode", bandSelector);
         dial(c, "press_mix", "mix", slotX[0], YK);
         line(c, "press_downup", YD + 18, "down", "up", true).hint = u("down/up \xc2\xb7 downward to upward compression");
         line(c, "press_bands", YD + 46, "bands i", "iii", false).hint = u("bands \xc2\xb7 single band to multiband");
@@ -656,6 +583,7 @@ struct Editor : AudioProcessorEditor, Timer
             = u("attack \xc2\xb7 slow lets each hit through before press clamps, fast holds it down");
         c.body = [this, &c](Graphics& g) {
             const bool d = c.dim;
+            cyclerBox(g, "press_mode", pressNames, bandSelector, d);
             const float ms = Press::attackMs(roundToInt(raw("press_mode")), raw("press_attack"));
             bandText(g, "attack", (ms < 10 ? String(ms, 1) : String(roundToInt(ms))) + " ms", bandLow, d);
             const float down = proc.display.pressDownDb.load(), up = proc.display.pressUpDb.load();
@@ -665,12 +593,13 @@ struct Editor : AudioProcessorEditor, Timer
     }
     void buildDrive(Column& c)
     {
-        modeGrid(c, "drive_mode", { "desk", "cassette", "tape", "tube", "bits", "ring" });
+        selector(c, "drive_mode", "drive mode", bandSelector);
         dial(c, "drive_flavor", "flavor", slot2X[0], YK, true), dial(c, "drive_mix", "mix", slot2X[1], YK);
         line(c, "drive_flavor", YD + 32, {}, {}, true, 7).hint = u("flavor \xc2\xb7 one mode's two sides"); // its words follow the mode
         targetLine(c, "drive_target"), focusLine(c, "drive_focus_lo", "drive_focus_hi");
         c.body = [this, &c](Graphics& g) {
             const bool d = c.dim;
+            cyclerBox(g, "drive_mode", driveNames, bandSelector, d);
             const auto& words = driveConstants::flavorLabels[(size_t) jlimit(0, 5, roundToInt(raw("drive_mode")))];
             text(g, words[0], 0, YD + 32, dimmed(muted, d), 11), right(g, words[1], 0, YD + 32, CW, dimmed(muted, d), 11);
             targetFocusText(g, "drive", d);
@@ -679,12 +608,13 @@ struct Editor : AudioProcessorEditor, Timer
     void buildPush(Column& c)
     {
         c.caption("stages", 0, bandSelector + 15);
-        choiceCells(c, "push_mult", "push_mult", { "1x", "2x", "4x" }, 0, faderX, CW, bandSelector + 12);
+        selector(c, "push_mult", "push stages", bandSelector + 12, faderX, CW - faderX);
         dial(c, "push_tone", "tone", slot2X[0], YK, true), dial(c, "push_mix", "mix", slot2X[1], YK);
         c.caption("limit", 0, YD + 32);
         targetLine(c, "push_target"), focusLine(c, "push_focus_lo", "push_focus_hi");
         c.body = [this, &c](Graphics& g) {
             const bool d = c.dim;
+            cyclerBox(g, "push_mult", pushNames, bandSelector + 12, d, faderX, CW - faderX);
             const float limit = proc.display.pushLimitDb.load();
             fader(g, faderX, YD + 34, 104, FaderKind::meter, -limit / 12, 0, accent, d);
             led(g, { 162, YD + 35, 6, 6 }, dimmed(limit < -0.1f ? accent : colours::dim, d));
@@ -828,8 +758,7 @@ struct Editor : AudioProcessorEditor, Timer
         shapeKey("hc_shape", 0, Slope::highGentle, mx(1) + 184), shapeKey("hc_shape", 1, Slope::highSteep, mx(1) + 200);
         control(layer, Control::Kind::range, "cut_lo", { mx(1) + 32, Yc - 6, 152, 12 }, false, "cut_hi").hint = u("cut \xc2\xb7 low and high cut; drag either end");
         dial(layer, "tone", "tone", mx(2), Yc - 40, true);
-        choiceCells(layer, "tone_shape", "tone shape", { "tilt", "bump" }, 0, mx(2) + 80, mx(2) + 216, Yc - 22, 8, primary);
-        choiceCells(layer, "tone_shape", "tone shape", { "mid", "focus" }, 2, mx(2) + 80, mx(2) + 216, Yc + 2, 8, primary);
+        selector(layer, "tone_shape", "tone shape", Yc - 22, mx(2) + 80, 136);
         dial(layer, "air", "air", mx(3) + slotX[0], Yc - 40);
         dial(layer, "attack", "attack", mx(3) + slotX[1], Yc - 40, true), dial(layer, "sustain", "sustain", mx(3) + slotX[2], Yc - 40, true);
         toggleKey(layer, "clip_on", "clip", mx(4), Yc - 6);
@@ -854,6 +783,7 @@ struct Editor : AudioProcessorEditor, Timer
         centred(g, "cut", mx(1) + 32, Yc - 40, 152, muted, 11);
         text(g, show("cut_lo"), mx(1) + 32, Yc + 12, muted, 11), right(g, show("cut_hi"), mx(1) + 32, Yc + 12, 152, muted, 11);
         centred(g, "shape", mx(2) + 80, Yc - 40, 136, muted, 11);
+        cyclerBox(g, "tone_shape", shapeNames, Yc - 22, false, mx(2) + 80, 136);
         led(g, { mx(4) + 50, Yc - 3.5f, 7, 7 }, proc.clipping() && on("clip_on") ? accent : colours::dim);
         paintMeters(g);
     }
@@ -970,8 +900,6 @@ struct Editor : AudioProcessorEditor, Timer
             for (auto* part : c.parts)
                 if (auto* control = dynamic_cast<Control*>(part))
                     control->dim = c.dim;
-                else if (auto* pad = dynamic_cast<Pad*>(part))
-                    pad->dim = c.dim;
             for (auto* part : cells[(size_t) m].getChildren())
                 if (auto* control = dynamic_cast<Control*>(part))
                     control->dim = c.dim;

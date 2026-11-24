@@ -320,7 +320,7 @@ static void testIdentity() // (4)
     CHECK(juce::String(JUCE_STRINGIFY(JucePlugin_AUMainType)) == "'aufx'");
     CHECK(juce::String(JUCE_STRINGIFY(JucePlugin_CFBundleIdentifier)) == "com.dripworks.snap");
     CHECK(juce::String(JucePlugin_Name) == "snap" && juce::String(JucePlugin_Manufacturer) == "daveydidit");
-    CHECK(juce::String(JucePlugin_VersionString) == "0.5.1");
+    CHECK(juce::String(JucePlugin_VersionString) == "0.5.2");
     // The wrappers derive the VST3 class IDs and the AU/VST3 numeric parameter IDs from the codes and IDs only under these settings.
     static_assert(JUCE_VST3_CAN_REPLACE_VST2 == 0 && JUCE_FORCE_USE_LEGACY_PARAM_IDS == 0, "frozen host-facing IDs");
     CHECK(!JucePlugin_IsSynth && !JucePlugin_WantsMidiInput);
@@ -1047,15 +1047,15 @@ static void testEditor()
     // Keys: a toggle, a choice word, a lock, the match key, snapshots, undo.
     click(ed, "clip");
     CHECK(p.apvts.getRawParameterValue("clip_on")->load() > 0.5f);
-    click(ed, "press_mode glue");
+    click(ed, "next press mode");
     CHECK(p.apvts.getRawParameterValue("press_mode")->load() == 1);
-    click(ed, "press_mode glue", juce::ModifierKeys::altModifier); // alt resets
+    click(ed, "previous press mode");
     CHECK(p.apvts.getRawParameterValue("press_mode")->load() == 0);
     click(ed, "press lock");
     CHECK(p.locked((int) snap::Module::press));
     click(ed, "press lock");
     CHECK(!p.locked((int) snap::Module::press));
-    click(ed, "tone shape mid");
+    click(ed, "next tone shape"), click(ed, "next tone shape");
     CHECK(p.apvts.getRawParameterValue("tone_shape")->load() == 2);
 
     // v3 layout, 0.5.1 top bar (as silt's): < preset > A B C D randomize save undo redo on one row, magnitude by the menu,
@@ -1081,17 +1081,37 @@ static void testEditor()
             auto* big = find<snap::ui::Control>(ed, id);
             CHECK(big != nullptr && big->knob == 72 && big->getHeight() == 100);
         }
-        set(p, "press_mode", 1);
-        auto* glue = find<Key>(ed, "press_mode glue");
-        CHECK(glue != nullptr);
-        if (glue != nullptr)
+        // 0.5.2 (David's notes 3, 4, 6, 8): press and drive modes, push's stages and the tone shape are `< name >` selectors as
+        // space's type: the arrows step through every value in order and wrap at both ends (click and arrow keys); the old
+        // choice cells and pan pad are gone, and space has a width dial.
+        for (const auto& [id, what, n] : { std::tuple { "press_mode", "press mode", 6 }, std::tuple { "drive_mode", "drive mode", 6 },
+                                            std::tuple { "push_mult", "push stages", 3 }, std::tuple { "tone_shape", "tone shape", 4 } })
         {
-            glue->keyPressed(juce::KeyPress(juce::KeyPress::rightKey));
-            CHECK(p.apvts.getRawParameterValue("press_mode")->load() == 2);
-            set(p, "press_mode", 5), glue->keyPressed(juce::KeyPress(juce::KeyPress::rightKey)); // the last choice stays
-            CHECK(p.apvts.getRawParameterValue("press_mode")->load() == 5);
+            auto *before = find<Key>(ed, juce::String("previous ") + what), *after = find<Key>(ed, juce::String("next ") + what);
+            CHECK(before != nullptr && after != nullptr);
+            if (before == nullptr || after == nullptr)
+                continue;
+            CHECK(before->getY() == after->getY() && after->getX() > before->getRight());
+            const auto value = [&, id = id] { return juce::roundToInt(p.apvts.getRawParameterValue(id)->load()); };
+            const int was = value();
+            set(p, id, 0);
+            for (int i = 1; i <= n; ++i)
+                click(ed, juce::String("next ") + what), CHECK(value() == i % n);
+            click(ed, juce::String("previous ") + what);
+            CHECK(value() == n - 1);
+            after->keyPressed(juce::KeyPress(juce::KeyPress::rightKey));
+            CHECK(value() == 0);
+            before->keyPressed(juce::KeyPress(juce::KeyPress::leftKey));
+            CHECK(value() == n - 1);
+            set(p, id, (float) was);
         }
-        set(p, "press_mode", 0), set(p, "space_type", 0);
+        for (const char* gone : { "press_mode glue", "drive_mode tape", "push_mult 2x", "tone shape mid", "space pan and width" })
+            CHECK(find<Key>(ed, gone) == nullptr && find<juce::Component>(ed, gone) == nullptr);
+        auto *width = find<snap::ui::Control>(ed, "space_width"), *duck = find<snap::ui::Control>(ed, "space_duck"), *stretch = find<snap::ui::Control>(ed, "space_stretch");
+        CHECK(width != nullptr && duck != nullptr && stretch != nullptr && find<snap::ui::Control>(ed, "space_pan") == nullptr);
+        if (width != nullptr && duck != nullptr && stretch != nullptr)
+            CHECK(width->getY() == duck->getY() && width->getX() == stretch->getX() && width->getBounds().getHeight() == stretch->getHeight());
+        set(p, "space_type", 0);
         click(ed, "previous space type");
         CHECK(p.apvts.getRawParameterValue("space_type")->load() == 19);
         click(ed, "next space type");
