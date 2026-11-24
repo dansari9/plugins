@@ -12,11 +12,11 @@ namespace
 const char* const ids[] { "mix", "output", "size", "sizeSync", "density", "position", "scatter", "pitch",
     "pitchMode", "trigger", "reverbOn", "reverb", "oversample", "freeze", "motion", "texture", "bloom", "chaos",
     "scan", "lock", "heads", "harmony", "shape", "tilt", "reverse", "detune", "scale", "drop", "repeat", "band",
-    "centre", "spectra", "space", "width", "feedback", "filter", "sprayDir", "onset" };
+    "centre", "spectra", "space", "width", "feedback", "filter", "sprayDir", "onset", "pitchSnap" };
 enum { Mix, Output, Size, SizeSync, Density, Position, Scatter, Pitch, PitchMode, Trigger, ReverbOn, ReverbAmount,
        Oversample, Freeze, Motion, Texture, Bloom, Chaos,
        Scan, Lock, Heads, Harmony, Shape, Tilt, Reverse, Detune, Scale, Drop, Repeat, Band, Centre, Spectra, Space,
-       Width, Feedback, Filter, SprayDir, OnsetMode };
+       Width, Feedback, Filter, SprayDir, OnsetMode, PitchSnap };
 static_assert(std::size(ids) == silt::numParams);
 constexpr double pi = MathConstants<double>::pi;
 struct Travel
@@ -28,7 +28,8 @@ struct Travel
 };
 constexpr Travel sizeTravel { 0.5, 4000, 0.762, true };
 int pick(double travel, int count) { return jlimit(0, count - 1, roundToInt(travel * (count - 1))); }
-int hint(int i) { return i < silt::numParamsV1 ? 1 : 2; } // the ParameterID version: 0.1.0's, then 0.2's
+int hint(int i) { return i < silt::numParamsV1 ? 1 : i < silt::numParamsV2 ? 2 : 3; } // the ParameterID version: 0.1.0's, 0.2's, 0.4.2's
+bool whole(double st) { return std::abs(st - std::round(st)) < .005; } // a pitch on a semitone
 int syncIndex(double n) { return pick(std::pow(n, 1.6), silt::numNotes); }
 float overlapOf(float density) { return 1 + 15 * (density - 1) / 63; }
 double densityFromOverlap(double overlap) { return 1 + (overlap - 1) * 63 / 15; }
@@ -68,7 +69,9 @@ AudioProcessorValueTreeState::ParameterLayout layout(const SiltProcessor& self)
             return sync() ? String(jmax(1,roundToInt(v/2)))+"/beat" : String(v,std::abs(v-std::round(v))<.05f?0:1)+"/s"; }),
         num(Position,"Position",0,4000,1200,.1f,{},[sync,perQuarter](float v) { const int q=perQuarter(); return sync() ? String(std::round(v*q/125)*.25/q,2)+" beats" : msText(v); }),
         num(Scatter,"Scatter",0,100,45,.1f,{},percent),
-        num(Pitch,"Pitch",-48,48,12,.01f,{},[](float v) { return (v>0?"+":"")+String(v,std::abs(v-std::round(v))<.005f?0:2)+" st"; }),
+        // Pitch snap semi: the pitch plays and reads as its nearest semitone.
+        num(Pitch,"Pitch",-48,48,12,.01f,{},[&self](float v) { if (self.apvts.getRawParameterValue("pitchSnap")->load() < .5f) v = std::round(v);
+                                                                return (v>0?"+":"")+String(v,std::abs(v-std::round(v))<.005f?0:2)+" st"; }),
         choice(PitchMode,"Pitch Mode",{"shift","tape"},0),
         choice(Trigger,"Trigger",{"clock","transient","sidechain"},0),
         toggle(ReverbOn,"Reverb On",true),
@@ -95,7 +98,8 @@ AudioProcessorValueTreeState::ParameterLayout layout(const SiltProcessor& self)
         num(Width,"Width",0,200,100,.1f,{},percent),num(Feedback,"Feedback",0,95,0,.1f,{},percent),
         num(Filter,"Filter",-100,100,0,.1f,{},[bipolar](float v) { return std::abs(v)<.05f ? String("off") : bipolar(v); }),
         choice(SprayDir,"Spray",{"both","back","ahead"},0),
-        choice(OnsetMode,"Onset",{"ramp","full"},0) };
+        choice(OnsetMode,"Onset",{"ramp","full"},0),
+        choice(PitchSnap,"Pitch Snap",{"semi","free"},0) };
 }
 
 std::optional<double> number(const String& t) // the whole text is one finite number (C locale); else nothing
@@ -138,7 +142,9 @@ std::optional<float> SiltProcessor::parse(const String& id, const String& typed)
     {
         case Output: out = t == "-inf" || t == "-infdb" || t == "min" ? -24.0 : in({ { "", 1 }, { "db", 1 } }); break;
         case Pitch: case Detune:
-            out = i == Pitch && name ? *name - 36 : in({ { "", 1 }, { "st", 1 }, { "semi", 1 }, { "semis", 1 }, { "c", .01 }, { "cent", .01 }, { "cents", .01 }, { "oct", 12 } }); break; // c3 = 0
+            out = i == Pitch && name ? *name - 36 : in({ { "", 1 }, { "st", 1 }, { "semi", 1 }, { "semis", 1 }, { "c", .01 }, { "cent", .01 }, { "cents", .01 }, { "oct", 12 } }); // c3 = 0
+            if (out && i == Pitch && apvts.getRawParameterValue("pitchSnap")->load() < .5f) out = std::round(*out);
+            break;
         case Centre: out = name ? 440 * std::pow(2.0, (*name - 57) / 12) : in({ { "", 1 }, { "hz", 1 }, { "k", 1000 }, { "khz", 1000 } }); break; // a4 = 440 Hz
         case Scan: out = t == "stop" ? 0.0 : t == "normal" ? 100.0 : t == "rev" ? -100.0 : in({ { "", 1 }, { "%", 1 }, { "x", 100 } }); break;
         case Filter: out = t == "off" ? 0.0 : prefixed("lp", "hp"); break;
@@ -529,6 +535,7 @@ struct SiltProcessor::Engine
     void read()
     {
         for (size_t i = 0; i < raw.size(); ++i) v[i] = raw[i]->load(std::memory_order_relaxed);
+        if (v[PitchSnap] < .5f) v[Pitch] = std::round(v[Pitch]); // semi: whole semitones, whatever automation sends
     }
     float envelope(const Grain& g) const
     {
@@ -1207,6 +1214,8 @@ void SiltProcessor::applyParams(const XmlElement& state, bool gestures)
         const auto* e = state.getChildByAttribute("id", ids[i]);
         const auto v = number(e != nullptr ? e->getStringAttribute("value") : String());
         normalised[i] = v ? p->convertTo0to1(p->getNormalisableRange().snapToLegalValue((float) *v)) : p->getDefaultValue();
+        if (i == PitchSnap && e == nullptr) // saved before 0.4.2: a pitch between semitones stays free, so it sounds as it did
+            normalised[i] = whole(apvts.getParameter(ids[Pitch])->convertFrom0to1(normalised[Pitch])) ? 0.0f : 1.0f;
         if (!gestures) p->setValueNotifyingHost(normalised[i]); // a host restoring state: no gestures
     }
     if (gestures) setAll(normalised); // a user's choice: touch/latch automation records it like a factory preset
@@ -1228,7 +1237,9 @@ void SiltProcessor::setStateInformation(const void* data, int size)
         for (int i = 1; i < t.size() && i <= silt::numParams; ++i)
             if (const auto v = number(t[i]); v && *v >= 0 && *v <= 1) slots[k].push_back((float) *v);
         if (slots[k].size() == silt::numParamsV1) // a v1 slot: the 0.2 parameters at their defaults
-            for (int i = silt::numParamsV1; i < silt::numParams; ++i) slots[k].push_back(apvts.getParameter(ids[i])->getDefaultValue());
+            for (int i = silt::numParamsV1; i < silt::numParamsV2; ++i) slots[k].push_back(apvts.getParameter(ids[i])->getDefaultValue());
+        if (slots[k].size() == silt::numParamsV2) // before 0.4.2: pitch snap as applyParams decides it
+            slots[k].push_back(whole(apvts.getParameter(ids[Pitch])->convertFrom0to1(slots[k][Pitch])) ? 0.0f : 1.0f);
         if (slots[k].size() != silt::numParams) slots[k].clear();
     }
     ab = number(tree->getStringAttribute("ab")).value_or(0) > 0.5 ? 1 : 0;
@@ -1239,29 +1250,29 @@ void SiltProcessor::setStateInformation(const void* data, int size)
 // Values in frozen ID order. Preset 4 (tide) equals the parameter defaults.
 // All factory voicing is expressed by the parameters; no hidden preset values. 0.1.0's ten keep the 0.2 defaults.
 const silt::Preset silt::presets[] {
-    {"sub dust", {100,0,90,1,16,140,12,-12,1,0,1,12,1,0,0,25,5,0, 100,0,0,0,0,0,0,0,0,0,0,0,1200,0,0,100,0,0,0,0}},
-    {"grit",     {100,3,14,1,42,240,38,0,1,0,0,8,1,0,12,90,5,20, 100,0,0,0,0,0,0,0,0,0,0,0,1200,0,0,100,0,0,0,0}},
-    {"glass",    {100,0,85,1,28,700,30,12,0,0,1,28,1,0,5,20,15,0, 100,0,0,0,0,0,0,0,0,0,0,0,1200,0,0,100,0,0,0,0}},
-    {"halo",     {100,0,650,1,18,800,55,0,0,0,1,55,1,0,15,10,65,0, 100,0,0,0,0,0,0,0,0,0,0,0,1200,0,0,100,0,0,0,0}},
-    {"tide",     {100,0,51.78f,0,24,1200,45,12,0,0,1,30,1,0,0,0,0,0, 100,0,0,0,0,0,0,0,0,0,0,0,1200,0,0,100,0,0,0,0}},
-    {"choir",    {100,0,900,1,22,1600,32,0,0,0,1,48,1,0,20,15,45,5, 100,0,0,0,0,0,0,0,0,0,0,0,1200,0,0,100,0,0,0,0}},
-    {"tines",    {100,6,35,1,14,450,18,7,1,0,1,22,1,0,5,75,10,0, 100,0,0,0,0,0,0,0,0,0,0,0,1200,0,0,100,0,0,0,0}},
-    {"chime",    {100,0,160,1,12,900,25,12,0,0,1,42,1,0,10,45,45,0, 100,0,0,0,0,0,0,0,0,0,0,0,1200,0,0,100,0,0,0,0}},
-    {"rain",     {100,0,55,1,48,1800,78,0,1,0,1,32,1,0,35,55,25,35, 100,0,0,0,0,0,0,0,0,0,0,0,1200,0,0,100,0,0,0,0}},
-    {"drift",    {100,0,1200,1,15,2200,62,-7,0,0,1,45,1,0,65,20,55,15, 100,0,0,0,0,0,0,0,0,0,0,0,1200,0,0,100,0,0,0,0}},
+    {"sub dust", {100,0,90,1,16,140,12,-12,1,0,1,12,1,0,0,25,5,0, 100,0,0,0,0,0,0,0,0,0,0,0,1200,0,0,100,0,0,0,0,0}},
+    {"grit",     {100,3,14,1,42,240,38,0,1,0,0,8,1,0,12,90,5,20, 100,0,0,0,0,0,0,0,0,0,0,0,1200,0,0,100,0,0,0,0,0}},
+    {"glass",    {100,0,85,1,28,700,30,12,0,0,1,28,1,0,5,20,15,0, 100,0,0,0,0,0,0,0,0,0,0,0,1200,0,0,100,0,0,0,0,0}},
+    {"halo",     {100,0,650,1,18,800,55,0,0,0,1,55,1,0,15,10,65,0, 100,0,0,0,0,0,0,0,0,0,0,0,1200,0,0,100,0,0,0,0,0}},
+    {"tide",     {100,0,51.78f,0,24,1200,45,12,0,0,1,30,1,0,0,0,0,0, 100,0,0,0,0,0,0,0,0,0,0,0,1200,0,0,100,0,0,0,0,0}},
+    {"choir",    {100,0,900,1,22,1600,32,0,0,0,1,48,1,0,20,15,45,5, 100,0,0,0,0,0,0,0,0,0,0,0,1200,0,0,100,0,0,0,0,0}},
+    {"tines",    {100,6,35,1,14,450,18,7,1,0,1,22,1,0,5,75,10,0, 100,0,0,0,0,0,0,0,0,0,0,0,1200,0,0,100,0,0,0,0,0}},
+    {"chime",    {100,0,160,1,12,900,25,12,0,0,1,42,1,0,10,45,45,0, 100,0,0,0,0,0,0,0,0,0,0,0,1200,0,0,100,0,0,0,0,0}},
+    {"rain",     {100,0,55,1,48,1800,78,0,1,0,1,32,1,0,35,55,25,35, 100,0,0,0,0,0,0,0,0,0,0,0,1200,0,0,100,0,0,0,0,0}},
+    {"drift",    {100,0,1200,1,15,2200,62,-7,0,0,1,45,1,0,65,20,55,15, 100,0,0,0,0,0,0,0,0,0,0,0,1200,0,0,100,0,0,0,0,0}},
     // 0.2's ten: one idea each from the new controls. Output trims level-match them to the ten above (loudness suite).
     // organ: tone lock over a slowly walking anchor; short grains, because overlapped wavetable reads of
     // inharmonic input partly cancel (scan 100% would read time-aligned copies: a plain delay).
-    {"swarm",    {100,0,180,1,30,900,50,0,0,0,1,35,1,0,0,0,0,0, 100,0,3,0,0,0,0,3,1,0,0,0,1200,0,1,150,0,0,0,0}},
-    {"organ",    {100,2,6,1,24,300,0,0,0,0,1,30,1,0,0,0,0,0, 10,2,0,0,30,0,0,0,0,0,0,0,1200,0,0,100,0,0,0,0}},
-    {"cathedral",{100,0,600,1,16,1500,40,12,0,0,1,60,1,0,0,0,0,0, 100,0,2,1,0,0,0,0,0,0,0,20,1200,0,0,100,55,0,0,0}},
-    {"stutter",  {100,0,14.05f,0,16,250,10,0,0,0,1,15,1,0,0,0,0,0, 100,0,0,0,90,0,0,0,0,30,70,0,1200,0,0,100,0,0,0,0}},
-    {"undertow", {100,0,700,1,12,1500,40,0,0,0,1,40,1,0,0,0,0,0, 50,0,0,0,0,80,100,0,0,0,0,0,1200,0,0,100,0,0,0,0}},
-    {"stretch",  {100,0,60,1,13.6f,100,5,0,0,0,1,15,1,0,0,0,0,0, 50,1,0,0,40,0,0,0,0,0,0,0,1200,0,0,100,0,0,0,0}},
-    {"prism",    {100,6,120,1,40,1200,60,0,0,0,1,35,1,0,0,0,0,0, 100,0,0,0,0,0,0,0,0,0,0,85,1200,70,1,100,0,0,0,0}},
-    {"orbit",    {100,-1.5f,400,1,20,1400,45,0,0,0,1,35,1,0,40,0,0,0, 100,0,1,2,0,0,0,0,0,0,0,0,1200,0,1,180,0,0,0,0}},
-    {"snapshot", {100,0,250,1,24,200,15,0,0,0,1,25,1,0,0,0,0,0, 0,0,0,0,0,0,0,0,0,0,0,0,1200,0,0,100,0,0,1,1}},
-    {"chorale",  {100,0,300,1,24,600,35,0,0,0,1,45,1,0,0,0,0,0, 100,0,3,5,0,0,0,0.3f,0,0,0,0,1200,0,0,100,0,0,0,0}}
+    {"swarm",    {100,0,180,1,30,900,50,0,0,0,1,35,1,0,0,0,0,0, 100,0,3,0,0,0,0,3,1,0,0,0,1200,0,1,150,0,0,0,0,0}},
+    {"organ",    {100,2,6,1,24,300,0,0,0,0,1,30,1,0,0,0,0,0, 10,2,0,0,30,0,0,0,0,0,0,0,1200,0,0,100,0,0,0,0,0}},
+    {"cathedral",{100,0,600,1,16,1500,40,12,0,0,1,60,1,0,0,0,0,0, 100,0,2,1,0,0,0,0,0,0,0,20,1200,0,0,100,55,0,0,0,0}},
+    {"stutter",  {100,0,14.05f,0,16,250,10,0,0,0,1,15,1,0,0,0,0,0, 100,0,0,0,90,0,0,0,0,30,70,0,1200,0,0,100,0,0,0,0,0}},
+    {"undertow", {100,0,700,1,12,1500,40,0,0,0,1,40,1,0,0,0,0,0, 50,0,0,0,0,80,100,0,0,0,0,0,1200,0,0,100,0,0,0,0,0}},
+    {"stretch",  {100,0,60,1,13.6f,100,5,0,0,0,1,15,1,0,0,0,0,0, 50,1,0,0,40,0,0,0,0,0,0,0,1200,0,0,100,0,0,0,0,0}},
+    {"prism",    {100,6,120,1,40,1200,60,0,0,0,1,35,1,0,0,0,0,0, 100,0,0,0,0,0,0,0,0,0,0,85,1200,70,1,100,0,0,0,0,0}},
+    {"orbit",    {100,-1.5f,400,1,20,1400,45,0,0,0,1,35,1,0,40,0,0,0, 100,0,1,2,0,0,0,0,0,0,0,0,1200,0,1,180,0,0,0,0,0}},
+    {"snapshot", {100,0,250,1,24,200,15,0,0,0,1,25,1,0,0,0,0,0, 0,0,0,0,0,0,0,0,0,0,0,0,1200,0,0,100,0,0,1,1,0}},
+    {"chorale",  {100,0,300,1,24,600,35,0,0,0,1,45,1,0,0,0,0,0, 100,0,3,5,0,0,0,0.3f,0,0,0,0,1200,0,0,100,0,0,0,0,0}},
 };
 
 void SiltProcessor::setAll(const float* normalised)
@@ -1382,6 +1393,8 @@ void SiltProcessor::nudge(int64 seed)
             if (std::abs(snapped - next[i]) <= .15f) next[i] = snapped;
         }
     }
+    if (auto* pitch = apvts.getParameter(ids[Pitch]); apvts.getRawParameterValue("pitchSnap")->load() < .5f)
+        next[Pitch] = pitch->convertTo0to1(std::round(pitch->convertFrom0to1(next[Pitch])));
     selectAb(1 - abSlot(), true);
     setAll(next);
     setIdentity(-1, "random");

@@ -61,7 +61,9 @@ static const Contract contract[] {
     {"harmony",0,5,0,"unison,fifth,octave,major,minor,held"},{"shape",0,100,0},{"tilt",-100,100,0},{"reverse",0,100,0},
     {"detune",0,24,0},{"scale",0,4,0,"free,chromatic,major,minor,pentatonic"},{"drop",0,100,0},{"repeat",0,100,0},
     {"band",0,100,0},{"centre",100,12000,1200},{"spectra",0,100,0},{"space",0,1,0,"pan,binaural"},{"width",0,200,100},
-    {"feedback",0,95,0},{"filter",-100,100,0},{"sprayDir",0,2,0,"both,back,ahead"},{"onset",0,1,0,"ramp,full"}
+    {"feedback",0,95,0},{"filter",-100,100,0},{"sprayDir",0,2,0,"both,back,ahead"},{"onset",0,1,0,"ramp,full"},
+    // 0.4.2, appended (version hint 3)
+    {"pitchSnap",0,1,0,"semi,free"}
 };
 static_assert(std::size(contract)==silt::numParams);
 static void set(Proc& p, const char* id, float v) { auto* q = p.apvts.getParameter(id); q->setValueNotifyingHost(q->convertTo0to1(v)); }
@@ -163,7 +165,7 @@ static void testContract()
     CHECK(juce::String(JUCE_STRINGIFY(JucePlugin_AUMainType))=="'aumf'");
     CHECK(juce::String(JUCE_STRINGIFY(JucePlugin_CFBundleIdentifier))=="com.dripworks.silt");
     CHECK(juce::String(JucePlugin_Name)=="silt" && juce::String(JucePlugin_Manufacturer)=="daveydidit");
-    CHECK(juce::String(JucePlugin_VersionString)=="0.4.1" && juce::String(JucePlugin_Vst3Category)=="Fx");
+    CHECK(juce::String(JucePlugin_VersionString)=="0.4.2" && juce::String(JucePlugin_Vst3Category)=="Fx");
     CHECK(!JucePlugin_IsSynth && JucePlugin_WantsMidiInput && !JucePlugin_ProducesMidiOutput);
     Proc p;
     CHECK(p.getParameters().size()==(int)std::size(contract) && p.stateVersion==2 && p.getNumPrograms()==20);
@@ -171,7 +173,7 @@ static void testContract()
     {
         const auto& c=contract[i];
         auto* q=dynamic_cast<juce::RangedAudioParameter*>(p.getParameters()[i]);
-        CHECK(q && q->paramID==c.id && q->getVersionHint()==(i<silt::numParamsV1?1:2) && q->isAutomatable());
+        CHECK(q && q->paramID==c.id && q->getVersionHint()==(i<silt::numParamsV1?1:i<silt::numParamsV2?2:3) && q->isAutomatable());
         CHECK(q->getNormalisableRange().start==c.lo && q->getNormalisableRange().end==c.hi && get(p,c.id)==c.def);
         if(auto* choice=dynamic_cast<juce::AudioParameterChoice*>(q)) CHECK(c.choices && choice->choices.joinIntoString(",")==c.choices);
         else if(dynamic_cast<juce::AudioParameterBool*>(q)) CHECK(c.choices && juce::String(c.choices).isEmpty());
@@ -249,8 +251,10 @@ static void testParameterText()
     bad("filter","lp"),bad("tilt","hp 30"),bad("scan","50 st"),bad("centre","1.2 s");
     is("mix","45",45),is("mix","45%",45),is("mix","0.45",.45f),is("mix","1,5",1.5f),is("mix","150",100),is("mix"," 45 % ",45);
     is("output","-6",-6),is("output","-6 dB",-6),is("output","-6DB",-6),is("output","-inf",-24),is("output","-INF dB",-24),is("output","MIN",-24),is("output",juce::String::fromUTF8("−6").toRawUTF8(),-6);
+    set(p,"pitchSnap",1); // free: cents and fractions as typed (semi rounds them: testPitchSnap)
     is("pitch","+7",7),is("pitch","7st",7),is("pitch","7 semi",7),is("pitch","-12",-12),is("pitch","+50c",.5f),is("pitch","50 cents",.5f);
     is("pitch","+1 oct",12),is("pitch","-2oct",-24),is("pitch","7.5",7.5f),is("pitch","g3",7),is("pitch","c2",-12),is("pitch","C3",0),is("pitch","f#3",6),is("pitch","bb2",-2);
+    set(p,"pitchSnap",0);
     is("detune","7",7),is("detune","50c",.5f),is("detune","1 oct",12);
     is("centre","1200",1200),is("centre","1.2k",1200),is("centre","1.2 kHz",1200),is("centre","800 hz",800),is("centre","a4",440),is("centre","a5",880);
     is("scan","50",50),is("scan","50%",50),is("scan","0.5x",50),is("scan","-1x",-100),is("scan","stop",0),is("scan","normal",100),is("scan","rev",-100);
@@ -315,7 +319,7 @@ static void testState()
     Proc p;
     set(p,"pitch",20);
     load(p,blob("<SILT stateVersion=\"1\"><PARAM id=\"size\" value=\"0.5\"/></SILT>"));
-    for(const auto& c:contract) CHECK(get(p,c.id)==(juce::String(c.id)=="size"?.5f:c.def));
+    for(const auto& c:contract) CHECK(get(p,c.id)==(juce::String(c.id)=="size"?.5f:c.def)); // pitch 12 is a semitone: semi
     load(p,blob("<SILT stateVersion=\"9000\"><PARAM id=\"pitch\" value=\"-7\"/><PARAM id=\"newThing\" value=\"8\"/></SILT>"));
     CHECK(get(p,"pitch")==-7 && get(p,"mix")==100);
     load(p,blob("<SILT><PARAM id=\"size\" value=\"nan\"/><PARAM id=\"output\" value=\"oops\"/></SILT>"));
@@ -335,7 +339,8 @@ static void testState()
     Proc ab;load(ab,blob("<SILT stateVersion=\"1\" slotB=\"2;"+slot.joinIntoString(",")+"\"/>"));
     set(ab,{{"scan",-50},{"shape",80},{"centre",300}});ab.selectAb(1);
     CHECK(ab.apvts.getParameter("mix")->getValue()==.25f && ab.apvts.getParameter("chaos")->getValue()==.25f);
-    for(int k=silt::numParamsV1;k<silt::numParams;++k)CHECK(get(ab,contract[k].id)==contract[k].def);
+    for(int k=silt::numParamsV1;k<silt::numParamsV2;++k)CHECK(get(ab,contract[k].id)==contract[k].def);
+    CHECK(get(ab,"pitchSnap")==(std::abs(get(ab,"pitch")-std::round(get(ab,"pitch")))<.005f?0:1));
     ab.selectAb(0);CHECK(get(ab,"scan")==-50 && get(ab,"centre")==300);
 }
 struct Gestures : juce::AudioProcessorListener
@@ -346,6 +351,83 @@ struct Gestures : juce::AudioProcessorListener
     void audioProcessorParameterChangeGestureBegin(juce::AudioProcessor*,int) override {++begun;}
     void audioProcessorParameterChangeGestureEnd(juce::AudioProcessor*,int) override {++ended;}
 };
+static juce::Component* find(juce::Component& c, const juce::String& id);
+// 0.4.2 (David's note 10): pitch snap. semi (the default) resolves pitch to whole semitones for the dial, typed values,
+// nudge and automation, and the engine plays the rounded value; free is continuous as before. Sessions saved before 0.4.2
+// open in free when their pitch lies between semitones (they sound unchanged), else in semi. Scale is independent: it
+// still snaps only detune / chaos spread, per grain.
+static void testPitchSnap()
+{
+    const auto grainPitch=[](const Settings& s){Proc p;set(p,s);prepare(p);run(p,48000);return p.feed.lastPitch.load();};
+    const auto render=[](const Settings& s){Proc p;set(p,s);prepare(p);return run(p,48000);};
+    {
+        Proc p;CHECK(get(p,"pitchSnap")==0);
+        set(p,"pitch",7.3f);
+        CHECK(p.apvts.getParameter("pitch")->getCurrentValueAsText()=="+7 st" && *p.parse("pitch","5.6")==6 && *p.parse("pitch","-3.4 st")==-3);
+        set(p,"pitchSnap",1);
+        CHECK(p.apvts.getParameter("pitch")->getCurrentValueAsText()=="+7.30 st" && std::abs(*p.parse("pitch","5.6")-5.6f)<1e-5f);
+    }
+    CHECK(grainPitch({{"pitch",7.3f}})==7 && std::abs(grainPitch({{"pitch",7.3f},{"pitchSnap",1}})-7.3f)<1e-4f);
+    CHECK(render({{"pitch",7.3f}})==render({{"pitch",7}}) && !(render({{"pitch",7.3f},{"pitchSnap",1}})==render({{"pitch",7},{"pitchSnap",1}})));
+    CHECK(render({{"pitch",7},{"pitchSnap",1}})==render({{"pitch",7}})); // on a semitone both modes sound alike
+    // scale keeps its own job: with no spread it leaves a free pitch between semitones alone, and with detune it snaps.
+    CHECK(std::abs(grainPitch({{"pitch",7.3f},{"pitchSnap",1},{"scale",1}})-7.3f)<1e-4f);
+    {
+        Proc p;set(p,{{"pitch",7.3f},{"pitchSnap",1},{"scale",1},{"detune",3}});prepare(p);
+        for(int k=0;k<20;++k){run(p,4800);const float st=p.feed.lastPitch.load();CHECK(std::abs(st-std::round(st))<1e-4f);}
+    }
+    // Sessions and preset files from before 0.4.2 have no pitchSnap.
+    Proc p;
+    load(p,blob("<SILT stateVersion=\"2\"><PARAM id=\"pitch\" value=\"7.25\"/></SILT>"));
+    CHECK(get(p,"pitchSnap")==1 && get(p,"pitch")==7.25f);
+    load(p,blob("<SILT stateVersion=\"2\"><PARAM id=\"pitch\" value=\"-5\"/></SILT>"));
+    CHECK(get(p,"pitchSnap")==0 && get(p,"pitch")==-5);
+    load(p,blob("<SILT stateVersion=\"2\"/>"));
+    CHECK(get(p,"pitchSnap")==0 && get(p,"pitch")==12);
+    load(p,blob("<SILT stateVersion=\"2\"><PARAM id=\"pitch\" value=\"7.25\"/><PARAM id=\"pitchSnap\" value=\"0\"/></SILT>"));
+    CHECK(get(p,"pitchSnap")==0 && get(p,"pitch")==7.25f); // saved by 0.4.2: as saved
+    {
+        Proc q;set(q,{{"pitch",-2.5f},{"pitchSnap",1}});Proc r;load(r,save(q));CHECK(get(r,"pitchSnap")==1 && get(r,"pitch")==-2.5f);
+        prepare(q),prepare(r);CHECK(run(q,48000)==run(r,48000));
+    }
+    { // an old fractional session sounds as it did: the same render as free at that pitch
+        Proc old;load(old,blob("<SILT stateVersion=\"2\"><PARAM id=\"pitch\" value=\"3.5\"/></SILT>"));prepare(old);
+        CHECK(run(old,48000)==render({{"pitch",3.5f},{"pitchSnap",1}}));
+    }
+    // A 0.2-0.4.1 A/B slot holds 38 values: pitch snap follows its pitch.
+    for(float pitch:{4.5f,4.0f})
+    {
+        juce::StringArray slot;
+        for(int k=0;k<silt::numParamsV2;++k)slot.add(juce::String(p.apvts.getParameter(contract[k].id)->convertTo0to1(k==7?pitch:contract[k].def),9));
+        Proc ab;load(ab,blob("<SILT stateVersion=\"2\" slotB=\"4;"+slot.joinIntoString(",")+"\"/>"));
+        ab.selectAb(1);
+        CHECK(std::abs(get(ab,"pitch")-pitch)<1e-3f && get(ab,"pitchSnap")==(pitch==4.0f?0:1));
+    }
+    // Every factory preset pitches on a semitone in semi; nudge keeps semi's pitch whole.
+    for(int i=0;i<silt::numPresets;++i){p.setCurrentProgram(i);CHECK(get(p,"pitchSnap")==0);}
+    for(int seed=1;seed<40;++seed){Proc n;set(n,"pitch",5);n.nudge(seed);CHECK(get(n,"pitch")==std::round(get(n,"pitch")));}
+    // The editor: semi / free under the pitch value; in semi the pitch dial lands on semitones, in free it is continuous.
+    {
+        Proc e;std::unique_ptr<juce::AudioProcessorEditor> editor(e.createEditor());
+        auto& timer=dynamic_cast<juce::Timer&>(*editor);timer.stopTimer();
+        auto *semi=dynamic_cast<juce::Button*>(find(*editor,"pitchSnap:0")),*freeKey=dynamic_cast<juce::Button*>(find(*editor,"pitchSnap:1"));
+        auto *pitch=find(*editor,"pitch"),*mode=find(*editor,"pitchMode:1");
+        CHECK(semi && freeKey && pitch && mode);
+        if(semi && freeKey && pitch && mode)
+        {
+            CHECK(semi->getY()>mode->getY() && semi->getX()>=pitch->getX() && freeKey->getRight()<=pitch->getRight()); // under shift / tape, in pitch's column
+            set(e,"pitch",12);
+            CHECK(pitch->keyPressed(juce::KeyPress(juce::KeyPress::upKey)) && get(e,"pitch")==13);
+            CHECK(pitch->keyPressed(juce::KeyPress(juce::KeyPress::downKey)) && pitch->keyPressed(juce::KeyPress(juce::KeyPress::downKey)) && get(e,"pitch")==11);
+            timer.timerCallback();
+            freeKey->triggerClick();
+            for(int k=0;k<50 && get(e,"pitchSnap")<.5f;++k)juce::MessageManager::getInstance()->runDispatchLoopUntil(5);
+            CHECK(get(e,"pitchSnap")==1);
+            dynamic_cast<juce::Timer*>(pitch)->timerCallback();
+            CHECK(pitch->keyPressed(juce::KeyPress(juce::KeyPress::upKey)) && get(e,"pitch")>11 && get(e,"pitch")<12);
+        }
+    }
+}
 static void testPresets()
 {
     const auto folder=juce::File::getSpecialLocation(juce::File::tempDirectory).getNonexistentChildFile("silt-tests","",false);
@@ -641,7 +723,7 @@ static void testGrainFeatures()
         // Chaos alone keeps 0.1.0's semitone rounding in free, and snaps to the chosen scale otherwise.
         for(const auto& g:grains({{"chaos",40},{"scale",(float)scale}}))CHECK(inScale(g.pitch,scale?mask:0xfff));
     }
-    for(const auto& g:grains({{"pitch",3.5f},{"scale",2}}))CHECK(g.pitch==3.5f); // no spread: no snap
+    for(const auto& g:grains({{"pitch",3.5f},{"scale",2},{"pitchSnap",1}}))CHECK(g.pitch==3.5f); // no spread: no snap (free pitch)
     // Drop silences a share of the clock's grains; the rest keep their ticks.
     const auto all=grains({}),half=grains({{"drop",50}});
     CHECK(grains({{"drop",100}}).empty() && half.size()>all.size()/4 && half.size()<all.size()*3/4);
@@ -1655,7 +1737,7 @@ static void testGoldens(bool record=false)
     const bool ci=std::getenv("GITHUB_ACTIONS")!=nullptr;
     const char* expectedEnvironment="14.2.0/Release/07adb83962bd7f372226ea055bca705c159534fa4a19d3279488b12cd95eea5c", *expectedRenderer="506141d22f79fb1886eb4dec6e8e40da3c3c48e3df63f1f3d60e979dd78361b5";
     const char* expectedSound="c84295f77b28dd4228a7fe471bf7e41937303f55ff5663e927482f9dca5907da";
-    const char* expectedShots[]{"2487f5646c244b5c269ef9dcd96feffa0fc840ab64cef024d5064ab3f12c71a0","21008e9df554483ddd2c485e623f888f48374b847409c1c85d94b817e6154f9a","942ca13617dda69ac217f407afeff2bda2dc94ff87e218808abeef0c23d8b3b1"}; // 0.4.1: the macro row deleted
+    const char* expectedShots[]{"f85a0b50ace18d106c504dde5522c64bda007fccaa8f7041bcf711d555a53585","22c89d124c03108794bddbb40259a027ab855b28c2c713cf307fd56577efb0ca","bba890bcd6a61ccd5369d9789cc80e7f6d6df55777c75baf26b0caeb3aa8b12d"}; // 0.4.2: semi / free under pitch
     std::cout<<"Golden environment: "<<environment<<"\nGolden renderer: "<<renderer<<"\n";
     if(record || (!ci && environment==expectedEnvironment))
     {
@@ -1714,7 +1796,7 @@ int main(int argc,char** argv)
     // Make sure the allocation probe itself works, then clear its calibration allocation.
     onAudioThread=true;void* probe=::operator new(64);escape(probe);::operator delete(probe);onAudioThread=false;
     CHECK(audioAllocations>0);audioAllocations=0;
-    testContract();testParameterText();testState();testPresets();testDryAndLifecycle();testTimingAndMidi();testRatios();testOnsetsAndSource();testFreezeAndWindows();
+    testContract();testParameterText();testState();testPresets();testPitchSnap();testDryAndLifecycle();testTimingAndMidi();testRatios();testOnsetsAndSource();testFreezeAndWindows();
     testGrainFeatures();testHeadsAndLock();testColourAndSpace();testSound();testEdges();testDenseBlocks();
     if(argc<2 || juce::String(argv[1])!="--core")testEditor(),testSkin(),testGoldens(),testPerformance(),testWindowAudible(),testLoudness();
     CHECK(audioAllocations==0);

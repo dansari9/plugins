@@ -571,6 +571,7 @@ struct Dial : Component, Timer
     ParameterAttachment attachment;
     const bool fader;
     std::function<double(double, int)> step; // a stepped dial's value one notch away
+    std::function<bool()> whole; // now resolves to whole steps: drags land on them, keys step by one
     Field field;
     double value = 0; // unsnapped through a drag or wheel burst
     bool dragging = false, reset = false;
@@ -637,7 +638,11 @@ struct Dial : Component, Timer
             if (auto* dial = dynamic_cast<Dial*>(focusable[(size_t) i])) return *dial;
         }
     }
-    void move(double delta) { value = jlimit(0.0, 1.0, value + delta), attachment.setValueAsPartOfGesture(q.convertFrom0to1((float) value)); }
+    void move(double delta)
+    {
+        value = jlimit(0.0, 1.0, value + delta);
+        attachment.setValueAsPartOfGesture(q.convertFrom0to1((float) (step && whole && whole() ? step(value, 0) : value)));
+    }
     void mouseDown(const MouseEvent& e) override
     {
         if (isTimerRunning()) timerCallback();
@@ -743,8 +748,9 @@ struct Dial : Component, Timer
         {
             if (dragging) return true;
             if (!isTimerRunning()) value = q.getValue(), attachment.beginGesture();
-            move((code == KeyPress::upKey || code == KeyPress::rightKey ? 1 : -1)
-                 * (k.getModifiers().isShiftDown() ? .001 : k.getModifiers().isCommandDown() ? .1 : .01));
+            const int direction = code == KeyPress::upKey || code == KeyPress::rightKey ? 1 : -1;
+            if (step && whole && whole()) value = step(value, direction), move(0);
+            else move(direction * (k.getModifiers().isShiftDown() ? .001 : k.getModifiers().isCommandDown() ? .1 : .01));
             startTimer(300);
             return true;
         }
@@ -889,6 +895,7 @@ struct Editor : AudioProcessorEditor, Timer
                               { "reverb", "reverb", 81, 36, false, [this] { return tier2.value("reverbOn") < .5f ? String("idle while reverb is off") : String(); }, false },
                               { "feedback", "feedback", 81, 43 }, { "mix", "mix", 92, 36 }, { "output", "output", 92, 43, true } },
               { { "pitchMode", "", 3, 41, { "shift pitch at fixed grain length", "pitch sets grain playback speed" }, 1, 0, true },
+                { "pitchSnap", "", 3, 42, { "pitch moves in semitones", "pitch moves freely" }, 1, 0, true },
                 { "scale", "scale", 25, 36, { "continuous pitch", "snap to semitones", "snap to the major scale", "snap to the minor scale", "snap to the pentatonic scale" } },
                 { "heads", "heads", 6, 43, { "one read head", "share grains between two heads", "share grains between three heads", "share grains between four heads" } },
                 { "harmony", "harmony", 16, 43, { "all heads play the same pitch", "add fifths", "add octaves", "major chord", "minor chord", "one head per held MIDI note" }, 2, 9 },
@@ -944,6 +951,7 @@ struct Editor : AudioProcessorEditor, Timer
         // Stepped wheels: pitch by a semitone, size in sync by a note value.
         auto& pitch = *dial("pitch");
         pitch.step = [q = pitch.q.getNormalisableRange()](double n, int d) { return (double) q.convertTo0to1(jlimit(q.start, q.end, std::round(q.convertFrom0to1((float) n)) + (float) d)); };
+        pitch.whole = [this] { return tier2.value("pitchSnap") < .5f; }; // semi
         dial("size")->step = [this](double n, int d) {
             if (tier1.value("sizeSync") > .5f) return n + d * .01;
             const int k = jlimit(0, silt::numNotes - 1, roundToInt(std::pow(n, 1.6) * (silt::numNotes - 1)) + d); // Silt.cpp's syncIndex
