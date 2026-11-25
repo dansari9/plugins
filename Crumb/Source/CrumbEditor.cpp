@@ -1,25 +1,29 @@
-// crumb editor: ASCII design option 5, "one wave" (crusher-design/ascii/option_5.*, made by src/grid.py + opt5.py).
-// One 120 x 34 cell grid scaled with the window (50-200 %, fixed aspect). Text is Geist Mono in its cells; braille, box,
-// block and geometric glyphs are vectors per cell, so they join. At 30 Hz, when anything it shows changed, the grid is
-// rebuilt: the 20 ms scope runs through an editor-side copy of the stage chain and crosses the panel, each stage showing
-// its own output. Only cells that changed are redrawn into a device-pixel image and repainted: idle costs nothing.
-// Controls are invisible Sliders and Buttons on their hit cells in a 1024 x 576 layer scaled with the window: drag,
-// double-click = default and click the value to type work as before. Keys follow their parameters through attachments.
+// crumb's editor: design round 4, "wave" (crumb-options/round4/opt2.js without the verb section). One 132 x 34 cell grid
+// scaled with the window (50-200 %, fixed aspect), as gulp's and silt's: text is Geist Mono in its cells; braille, shade,
+// rules and markers are vectors per cell. The page is the riso paper, the accent prints in its ink ramp and the picture's
+// neutrals in its shadow inks, from plates built once per image size (the same plates the site's skin uses).
+// At 30 Hz the editor takes the samples the audio thread wrote (Wave.h draws them, nothing else moves) and rebuilds the
+// grid when anything it shows changed; only cells that changed are redrawn and repainted: idle costs nothing.
+// Controls are invisible Sliders and Buttons on their hit cells in a 1056 x 544 layer scaled with the window: drag,
+// double-click = default, click the value to type. `more` shows each section's other controls in the same places.
 #include "BinaryData.h"
 #include "Crumb.h"
+#include "Wave.h"
+#include <cstring>
+#include <optional>
 
 using namespace juce;
 
 namespace
 {
-constexpr int C = 120, R = 34, W = 1024, H = 576, VX = 108, band = 12, dotCols = (VX - 2) * 2;
-constexpr float cw = (float) W / C, ch = (float) H / R;
-constexpr double pi = MathConstants<double>::pi;
-const Colour page { 0xff0d0d0d }, white { 0xffececec }, grey { 0xff7a7a7a }, rule { 0xff2c2c2c }, dark { 0xff454545 }, red { 0xffff3d1f };
-Colour fade(Colour c, bool on) { return on ? c : c.interpolatedWith(page, 0.6f); } // a stage that does nothing
+constexpr int C = 132, R = 34, W = 1056, H = 544, AX = 3, AT = 5, AW = crumb::Wave::columns / 2, AH = crumb::Wave::rows / 4;
+constexpr int titleY = 19, knobY = 22, selectY = 29;
+constexpr float cw = 8, ch = 16;
+const Colour page { 0xff0d0d0d }, primary { 0xffececec }, muted { 0xff7a7a7a }, rule { 0xff2a2a2a }, line { 0xff2c2c2c }, dim { 0xff454545 }, accent { 0xffff3d1f }, kick { 0xff5a5a5a };
+const Colour cobalt { 0xff5b7cff }, lilac { 0xffa98bff }, sun { 0xffffc83d }, tang { 0xffff6a2f }, pink { 0xffff4f9a }, cream { 0xffefe6d2 }; // riso inks
 String u(const char* s) { return String::fromUTF8(s); }
 String minus(const String& s) { return s.replace("-", u("−")); }
-Rectangle<int> cells(int x, int y, int w, int h) { return Rectangle<float>(cw * (float) x, ch * (float) y, cw * (float) w, ch * (float) h).toNearestInt(); }
+Rectangle<int> cells(int x, int y, int w, int h) { return { x * (int) cw, y * (int) ch, w * (int) cw, h * (int) ch }; }
 constexpr uint8 brailleBit(int dx, int dy) { return (uint8) (dy == 3 ? 0x40 << dx : 1 << (dy + 3 * dx)); }
 Font mono(float size, bool bold)
 {
@@ -28,13 +32,54 @@ Font mono(float size, bool bold)
     return Font(FontOptions(faces[bold ? 1 : 0]).withPointHeight(size));
 }
 
+// The sections, in signal order, and what each shows: its dials on the main page and under `more` (null: the same).
+struct Section { const char* name; int x, w, knobs; };
+const Section sections[] = { { "in", 3, 12, 1 }, { "crush", 18, 28, 3 }, { "loss", 49, 28, 3 }, { "band", 80, 18, 2 }, { "out", 101, 28, 3 } };
+int knobX(const Section& s, int k) { return s.knobs > 1 ? s.x + k * ((s.w - 8) / (s.knobs - 1)) : s.x + (s.w - 8) / 2; }
+enum Zoom { automatic, samples, frames }; // what a control's change makes the picture show
+struct KnobSpec { const char *id, *name; int section, slot, page; Zoom zoom; bool centred; }; // page: 0 main, 1 more, 2 both
+const KnobSpec knobSpecs[] = {
+    { "preamp", "drive", 0, 0, 0, automatic, false }, { "bits", "bits", 1, 0, 0, samples, false }, { "rate", "rate", 1, 1, 0, samples, false }, { "jitter", "jitter", 1, 2, 0, samples, false },
+    { "loss", "loss", 2, 0, 2, frames, false }, { "speed", "speed", 2, 1, 2, frames, false }, { "drop", "drop", 2, 2, 2, frames, false },
+    { "lowCut", "low", 3, 0, 0, automatic, false }, { "highCut", "high", 3, 1, 0, automatic, false },
+    { "mix", "mix", 4, 0, 2, automatic, false }, { "output", "output", 4, 1, 2, automatic, false }, { "auto", "auto", 4, 2, 2, automatic, false },
+    { "gate", "gate", 0, 0, 1, automatic, false }, { "dither", "dither", 1, 0, 1, samples, false }, { "approxDev", "approx", 1, 1, 1, samples, true }, { "imagesShift", "images", 1, 2, 1, samples, false },
+    { "reso", "reso", 3, 0, 1, automatic, false }, { "slope", "slope", 3, 1, 1, automatic, false } };
+constexpr int numKnobs = (int) std::size(knobSpecs);
+
+// `< name >`: the slot is the longest of its own names and one cell either side, so it never resizes; centred (with its
+// label) under its section.
+struct SelectorSpec { const char *id, *label; StringArray names; int section, page; Zoom zoom; int shift; };
+const SelectorSpec selectorSpecs[] = {
+    { "stereo", "", { "stereo", "joint", "mono" }, 0, 2, frames, 0 }, { "dcShift", "tread", { "riser", "tread" }, 1, 2, samples, 0 },
+    { "fill", "fill", { "gap", "hold" }, 2, 0, frames, 0 }, { "fOrder", "place", { "pre", "post" }, 3, 0, automatic, 0 },
+    { "keep", "keep", { "lost", "kept" }, 2, 1, frames, 0 }, { "ear", "", { "ear", "flat" }, 2, 1, frames, 15 }, { "invert", "invert", { "off", "on" }, 3, 1, automatic, 0 } };
+constexpr int numSelectors = (int) std::size(selectorSpecs);
+int slotWidth(const SelectorSpec& s)
+{
+    int longest = 0;
+    for (const auto& n : s.names) longest = jmax(longest, n.length());
+    return longest + 4;
+}
+int labelWidth(const SelectorSpec& s) { return s.label[0] != 0 ? (int) std::strlen(s.label) + 1 : 0; }
+int selectorX(const SelectorSpec& s) // the label's first cell
+{
+    int w = labelWidth(s) + slotWidth(s);
+    if (s.shift > 0 || std::strcmp(s.id, "keep") == 0) w = 23; // keep and ear share their section: one group
+    return sections[s.section].x + (sections[s.section].w - w) / 2 + s.shift;
+}
+
 struct Cell
 {
     juce_wchar c = ' ';
-    Colour fg, bg; // bg transparent: the page
+    Colour fg, bg; // bg transparent: the paper
     bool bold = false;
-    bool operator!=(const Cell& o) const { return c != o.c || fg != o.fg || bg != o.bg || bold != o.bold; }
+    uint8 edge = 0; // 1: a rule through the middle, 2: on the top edge
+    juce_wchar left = 0; // nonzero: half-cell centring, with the previous glyph's right half clipped to this cell
+    bool operator!=(const Cell& o) const { return c != o.c || fg != o.fg || bg != o.bg || bold != o.bold || edge != o.edge || left != o.left; }
 };
+enum Mode { merge, under, over }; // braille onto braille: or the dots, keep the old cell, replace it
+using Dots = std::vector<std::pair<int, int>>;
 struct Grid
 {
     Cell at[R][C];
@@ -42,167 +87,381 @@ struct Grid
     {
         for (auto p = s.getCharPointer(); !p.isEmpty(); ++x)
             if (const auto c = p.getAndAdvance(); isPositiveAndBelow(x, C) && isPositiveAndBelow(y, R))
-                at[y][x] = { c, fg, bg, bold };
+                at[y][x].c = c, at[y][x].fg = fg, at[y][x].bg = bg, at[y][x].bold = bold, at[y][x].left = 0;
     }
-    void centre(int x, int w, int y, String s, Colour fg, bool bold = false) { s = s.substring(0, w), put(x + (w - s.length()) / 2, y, s, fg, bold); }
-    void right(int x, int y, const String& s, Colour fg, bool bold = false) { put(x - s.length() + 1, y, s, fg, bold); }
+    void centre(int x, int w, int y, String s, Colour fg, bool bold = false)
+    {
+        s = s.substring(0, w), x += (w - s.length()) / 2;
+        put(x, y, s, fg, bold);
+        if ((w - s.length()) % 2 != 0)
+            for (int k = 0; k <= s.length(); ++k)
+                if (isPositiveAndBelow(x + k, C) && isPositiveAndBelow(y, R))
+                    at[y][x + k] = { k < s.length() ? s[k] : ' ', fg, {}, bold, at[y][x + k].edge, k > 0 ? s[k - 1] : ' ' };
+    }
+    void right(int x, int y, const String& s, Colour fg) { put(x - s.length() + 1, y, s, fg); }
+    void edge(int x0, int x1, int y, uint8 kind)
+    {
+        for (int x = x0; x < x1; ++x) at[y][x].edge = kind;
+    }
+    void braille(int x, int y, int w, int h, const Dots& dots, Colour fg, Mode mode = merge) // dots in a 2w x 4h space
+    {
+        std::vector<uint8> bits((size_t) (w * h));
+        for (auto [dx, dy] : dots)
+            if (isPositiveAndBelow(dx, 2 * w) && isPositiveAndBelow(dy, 4 * h))
+                bits[(size_t) (dy / 4 * w + dx / 2)] |= brailleBit(dx % 2, dy % 4);
+        for (int j = 0; j < h; ++j)
+            for (int i = 0; i < w; ++i)
+                if (int v = bits[(size_t) (j * w + i)]; v != 0 && isPositiveAndBelow(x + i, C) && isPositiveAndBelow(y + j, R))
+                {
+                    auto& cell = at[y + j][x + i];
+                    const bool old = cell.c >= 0x2800 && cell.c <= 0x28ff;
+                    if (old && mode == under) continue;
+                    cell = { (juce_wchar) (0x2800 + (v | (old && mode == merge ? (int) cell.c - 0x2800 : 0))), fg, {}, false, cell.edge };
+                }
+    }
 };
-
-// Stages in display (= signal) order; filter pre swaps the filter with the empty dock. Knobs sit dx cells into theirs.
-enum { In, Dock, Quant, Approx, Resample, Images, Filter, Mix, numStages };
-constexpr int widths[] = { 14, 6, 16, 12, 14, 12, 20, 12 };
-const char* const names[] = { "in", "", "quantize", "approx", "resample", "images", "filter", "mix" };
-struct KnobSpec { const char* id; const char* name; int stage, dx; bool up, centred; };
-const KnobSpec knobSpecs[] = { { "preamp", "preamp", In, 3, true, false },          { "dither", "dither", In, 3, false, false },
-                               { "approxDev", "deviate", Approx, 2, false, true },   { "rate", "freq", Resample, 3, true, false },
-                               { "jitter", "jitter", Resample, 3, false, false },    { "imagesShift", "shift", Images, 2, false, false },
-                               { "cutoff", "cutoff", Filter, 1, true, false },       { "reso", "reso", Filter, 11, true, false },
-                               { "mix", "fx", Mix, 2, true, false },                 { "output", "output", Mix, 2, false, false } };
-const char* const types[] = { "off", "lp", "bp", "hp", "br" };
-const char* const digits[10][4] = { { "█▀█", "█ █", "█ █", "▀▀▀" }, { "▗█ ", " █ ", " █ ", "▀▀▀" }, { "▀▀█", "▄▄█", "█  ", "▀▀▀" },
-                                    { "▀▀█", "▄▄█", "  █", "▀▀▀" }, { "█ █", "█▄█", "  █", "  ▀" }, { "█▀▀", "█▄▄", "  █", "▀▀▀" },
-                                    { "█▀▀", "█▄▄", "█ █", "▀▀▀" }, { "▀▀█", "  █", "  █", "  ▀" }, { "█▀█", "█▄█", "█ █", "▀▀▀" },
-                                    { "█▀█", "█▄█", "  █", "▀▀▀" } };
 
 // Controls draw nothing: the grid shows them. The value box only appears while a value is typed.
 struct Look : LookAndFeel_V4
 {
+    Look()
+    {
+        setColour(PopupMenu::backgroundColourId, Colour(0xff141414)), setColour(PopupMenu::textColourId, cream);
+        setColour(PopupMenu::highlightedBackgroundColourId, Colour(0xff2a2a2a)), setColour(PopupMenu::highlightedTextColourId, cream);
+    }
+    Font getPopupMenuFont() override { return mono(13, false); }
     Font getLabelFont(Label&) override { return mono(cw / 0.6f, false); }
     void drawLabel(Graphics&, Label&) override {}
     void drawRotarySlider(Graphics&, int, int, int, int, float, float, float, Slider&) override {}
     Label* createSliderTextBox(Slider& s) override
     {
         auto* l = LookAndFeel_V4::createSliderTextBox(s);
-        l->setColour(Label::backgroundWhenEditingColourId, page), l->setColour(Label::textWhenEditingColourId, white);
-        l->setColour(Label::outlineWhenEditingColourId, {}), l->setColour(TextEditor::highlightColourId, red.withAlpha(0.4f));
-        l->setColour(TextEditor::highlightedTextColourId, white), l->setColour(CaretComponent::caretColourId, red);
+        l->setColour(Label::backgroundWhenEditingColourId, page), l->setColour(Label::textWhenEditingColourId, cream);
+        l->setColour(Label::outlineWhenEditingColourId, {}), l->setColour(TextEditor::highlightColourId, tang.withAlpha(0.4f));
+        l->setColour(TextEditor::highlightedTextColourId, cream), l->setColour(CaretComponent::caretColourId, tang);
         return l;
     }
 };
 struct Key : Button
 {
+    std::function<void(int)> onStep; // a selector's arrow: the wheel and the arrow keys step too
+    float wheel = 0;
     explicit Key(const String& id) : Button(id) { setComponentID(id), setRepaintsOnMouseActivity(false); }
     void paintButton(Graphics&, bool, bool) override {}
+    void mouseWheelMove(const MouseEvent& e, const MouseWheelDetails& w) override
+    {
+        if (!onStep) return Button::mouseWheelMove(e, w);
+        wheel += (std::abs(w.deltaY) > 0 ? w.deltaY : -w.deltaX) * (w.isReversed ? -1.0f : 1.0f);
+        if (std::abs(wheel) >= 0.12f) onStep(wheel > 0 ? 1 : -1), wheel = 0;
+    }
+    bool keyPressed(const KeyPress& k) override
+    {
+        const int code = k.getKeyCode();
+        if (onStep && (code == KeyPress::upKey || code == KeyPress::rightKey || code == KeyPress::downKey || code == KeyPress::leftKey))
+            return onStep(code == KeyPress::upKey || code == KeyPress::rightKey ? 1 : -1), true;
+        return Button::keyPressed(k);
+    }
 };
+
+// fbm of the family's plates: octaves of a seeded random lattice (3 * 2^o rows) smoothly stretched over h x w, 0..1.
+std::vector<float> fbm(int h, int w, int octaves, int64 seed)
+{
+    std::vector<float> out((size_t) (h * w));
+    Random random(seed);
+    for (int o = 0; o < octaves; ++o)
+    {
+        const int rows = (3 << o) + 1, cols = (3 << o) * w / h + 2;
+        std::vector<float> lattice((size_t) (rows * cols));
+        for (auto& v : lattice) v = random.nextFloat();
+        const auto at = [&](int j, int i) { return lattice[(size_t) (j * cols + i)]; };
+        for (int y = 0; y < h; ++y)
+            for (int x = 0; x < w; ++x)
+            {
+                const float fy = ((float) y + 0.5f) * (float) rows / (float) h - 0.5f, fx = ((float) x + 0.5f) * (float) cols / (float) w - 0.5f;
+                const int j = jlimit(0, rows - 2, (int) std::floor(fy)), i = jlimit(0, cols - 2, (int) std::floor(fx));
+                const auto smooth = [](float t) { t = jlimit(0.0f, 1.0f, t); return t * t * (3 - 2 * t); };
+                const float ty = smooth(fy - (float) j), tx = smooth(fx - (float) i);
+                out[(size_t) (y * w + x)] += jmap(ty, jmap(tx, at(j, i), at(j, i + 1)), jmap(tx, at(j + 1, i), at(j + 1, i + 1))) / (float) (1 << o);
+            }
+    }
+    const auto [lo, hi] = std::minmax_element(out.begin(), out.end());
+    const float low = *lo, range = *hi - *lo + 1e-9f;
+    for (auto& v : out) v = (v - low) / range;
+    return out;
+}
+
+// opt2.js's plates in design pixels: the accent's three-ink ramp and the picture's two shadow inks at 1x, the paper (page,
+// grain, the picture's printed dots, a halftone glow per dial) at 2x. The ramp keeps the frame's place for everything the
+// verb section's removal moved: a dial prints in the ink it was approved in. tools/crumb-plates.mjs dumps them for the site.
+struct Plates
+{
+    Image ink { Image::RGB, W, H, true, SoftwareImageType() }, tint { Image::RGB, W, H, true, SoftwareImageType() }, paper { Image::RGB, 2 * W, 2 * H, true, SoftwareImageType() };
+    static constexpr int frameW = 148 * 8, frameAW = 142;
+    static constexpr int bayer[4][4] { { 0, 8, 2, 10 }, { 12, 4, 14, 6 }, { 3, 11, 1, 9 }, { 15, 7, 13, 5 } };
+    static bool inPlot(int x, int y) { return x >= AX * 8 && x < (AX + AW) * 8 && y >= AT * 16 && y < (AT + AH) * 16; }
+    static float frameX(int x, int y) // a design pixel's place across the approved frame
+    {
+        if (inPlot(x, y)) return (float) (AX * 8) + (float) (x - AX * 8) * (float) frameAW / (float) AW;
+        return (float) (x < 100 * 8 ? x : x + 128);
+    }
+    static int ramp(float at, int stops, int rank)
+    {
+        const float v = jlimit(0.0f, 1.0f, at) * (float) (stops - 1);
+        const int k = jmin((int) v, stops - 1);
+        return jmin(stops - 1, k + (jlimit(0.0f, 1.0f, (v - (float) k - 0.3f) / 0.4f) > (float) rank / 16 ? 1 : 0));
+    }
+    Plates()
+    {
+        const auto noise = fbm(144, 256, 5, 21), field = fbm(AH + 1, frameAW + 1, 4, 918);
+        const Colour inks[] { pink, tang, sun }, shadows[] { cobalt.interpolatedWith(cream, 0.2f), lilac.interpolatedWith(cream, 0.2f) };
+        const Colour papers[] { page.interpolatedWith(lilac, 0.55f), page.interpolatedWith(cobalt, 0.55f) };
+        for (int y = 0; y < H; ++y)
+            for (int x = 0; x < W; ++x)
+            {
+                const float fx = frameX(x, y), n = noise[(size_t) (y * 144 / H * 256 + jmin(255, (int) (fx * 256 / frameW)))] - 0.5f;
+                const int rank = bayer[y % 4][x % 4];
+                ink.setPixelAt(x, y, inks[ramp(fx / frameW + n * 0.1f, 3, rank)]);
+                tint.setPixelAt(x, y, inPlot(x, y) ? shadows[ramp(1 - (float) (y - AT * 16) / (AH * 16) + n * 0.15f, 2, rank)] : page);
+            }
+        for (int y = 0; y < 2 * H; ++y)
+            for (int x = 0; x < 2 * W; ++x)
+                paper.setPixelAt(x, y, bayer[y / 2 % 4][x / 2 % 4] == 15 && ((uint32) x * 73856093u ^ (uint32) y * 19349663u) % 100 >= 55 ? Colour(0xff121212) : page);
+        constexpr int dots[8][2] { { 5, 4 }, { 11, 4 }, { 5, 12 }, { 11, 12 }, { 5, 20 }, { 11, 20 }, { 5, 28 }, { 11, 28 } }, order[8] { 0, 4, 6, 2, 5, 1, 3, 7 };
+        constexpr int ph = AH * 32;
+        for (int r = 0; r < AH; ++r)
+            for (int c = 0; c < AW; ++c)
+            {
+                const float v = jlimit(0.0f, 1.0f, (field[(size_t) (r * (frameAW + 1) + c)] * 0.85f + 0.15f * (float) (r * 32) / ph - 0.35f) * 1.6f);
+                for (int k = 0; k < 8; ++k)
+                    if (v * 8 > (float) order[k] + 0.5f)
+                    {
+                        const int dx = c * 16 + dots[k][0], dy = r * 32 + dots[k][1];
+                        for (int q = 0; q < 9; ++q) paper.setPixelAt(AX * 16 + dx - 1 + q % 3, AT * 32 + dy - 1 + q / 3, papers[ramp((float) dy / ph, 2, bayer[dy / 2 % 4][dx / 2 % 4])]);
+                    }
+            }
+        for (const auto& s : sections)
+            for (int k = 0; k < s.knobs; ++k)
+            {
+                const int x0 = knobX(s, k), gx = (x0 + 4) * 16, gy = (knobY + 2) * 32;
+                const float at = (frameX(x0 * 8, knobY * 16) + 32) / (float) frameW, cs = std::cos(0.5236f), sn = std::sin(0.5236f);
+                const Colour glow = page.interpolatedWith(inks[jmin(2, (int) (at * 3))], 0.12f);
+                const auto wrap = [](float t) { return t - 6 * std::floor(t / 6) - 3; };
+                for (int y = -85; y < 85; ++y)
+                    for (int x = -85; x < 85; ++x)
+                    {
+                        const float r = std::hypot((float) x, (float) y), a = (float) x + 85, b = (float) y + 85;
+                        if (r > 2 * 7.9f * 4) continue;
+                        const float level = std::pow(jmax(0.0f, 1 - r / 85), 1.6f);
+                        if (std::hypot(wrap(a * cs + b * sn), wrap(b * cs - a * sn)) / (6 / 1.414f) < std::sqrt(level) * 0.95f) paper.setPixelAt(gx + x, gy + y, glow);
+                    }
+            }
+    }
+};
+const Plates& plates()
+{
+    static const Plates p;
+    return p;
+}
 
 struct Editor : AudioProcessorEditor, Timer
 {
     CrumbProcessor& proc;
     Look look;
     Component layer; // the controls, in design pixels
-    Slider knobs[10];
-    Key prev { "prev" }, next { "next" }, save { "save" }, slotA { "A" }, slotB { "B" }, minusKey { "minus" }, plus { "plus" }, dcShift { "dcShift" },
-        approx { "approxOn" }, images { "imagesOn" }, pre { "pre" }, post { "post" }, dock { "dock" }, autoGain { "autoGain" }, typeKeys[5] { Key { "off" }, Key { "lp" }, Key { "bp" }, Key { "hp" }, Key { "br" } };
-    // Attachments after the components they drive, so they are destroyed first.
-    std::unique_ptr<AudioProcessorValueTreeState::SliderAttachment> knobAtt[10];
-    std::vector<std::unique_ptr<ParameterAttachment>> keyAtt;
-    std::vector<float> in = std::vector<float>(crumb::Scope::size), out = in, work = in, seg[numStages];
-    int n = 16, start = 0;
-    bool laidOutPre = false;
-    float scopePeak = 0.1f, needle[2] {}, speed[2] {}, level[2] {}, peak[2] {};
-    crumb::Scope::Meter seen; // the meter totals last read: opening the editor starts from the current position
-    double stepAt = 0, heard = 0, peakAt = 0;
-    bool clip[2] {};
+    Slider knobs[numKnobs];
+    Key prev { "prev" }, next { "next" }, name { "preset" }, slotA { "A" }, slotB { "B" }, random { "randomize" }, more { "more" }, on { "on" };
+    OwnedArray<Key> arrows; // two per selector
+    crumb::Wave wave;
+    uint32_t seen = 0;
+    double heard = -1e9, peakAt = 0;
+    float outPeak = 0;
+    bool flat = true, opened = false, clipped = false;
+    Zoom zoom = automatic;
     Grid shown;
     std::vector<float> drawnFrom; // what the shown grid was built from: the same again means idle, nothing to rebuild
     String drawnName;
-    Image image; // the shown grid in device pixels
+    Image image, inkPlate, tintPlate, paperPlate; // the shown grid and the plates, in device pixels
+    std::vector<uint8> dotMasks[4]; // coverage of one cell's eight dots and the shade's four, per cell size (w, h each one of two)
     Font fonts[2] { mono(1, false), mono(1, true) };
 
     explicit Editor(CrumbProcessor& p) : AudioProcessorEditor(p), proc(p)
     {
-        for (auto& s : seg)
-            s.resize(crumb::Scope::size / 2);
         setOpaque(true), setLookAndFeel(&look);
         addAndMakeVisible(layer);
         layer.setBounds(0, 0, W, H);
-        for (int i = 0; i < 10; ++i)
+        for (int i = 0; i < numKnobs; ++i)
         {
             auto& k = knobs[i];
             const auto& s = knobSpecs[i];
-            k.setSliderStyle(Slider::RotaryVerticalDrag), k.setTextBoxStyle(s.up ? Slider::TextBoxBelow : Slider::TextBoxAbove, false, cells(0, 0, 10, 1).getWidth(), roundToInt(ch));
+            k.setSliderStyle(Slider::RotaryVerticalDrag), k.setTextBoxStyle(Slider::TextBoxBelow, false, 80, 16);
             k.setTitle(s.name), k.setComponentID(s.id), k.setRepaintsOnMouseActivity(false);
-            knobAtt[i] = std::make_unique<AudioProcessorValueTreeState::SliderAttachment>(p.apvts, s.id, k);
-            k.textFromValueFunction = [f = k.textFromValueFunction](double v) { return minus(f(v)); };
-            k.updateText();
-            auto* param = p.apvts.getParameter(s.id);
-            k.setDoubleClickReturnValue(true, param->convertFrom0to1(param->getDefaultValue()));
-            layer.addAndMakeVisible(k);
+            const auto range = knobRange(i);
+            k.setRange(range.getStart(), range.getEnd(), 0);
+            k.textFromValueFunction = [this, i](double) { return knobText(i); };
+            k.valueFromTextFunction = [this, i](const String& t) { return knobFromText(i, t); };
+            k.setDoubleClickReturnValue(true, knobDefault(i));
+            k.setValue(knobValue(i), dontSendNotification);
+            k.onDragStart = [this, i] { gesture(i, true); };
+            k.onDragEnd = [this, i] { gesture(i, false); };
+            k.onValueChange = [this, i] { setKnob(i, knobs[i].getValue()); };
+            k.setBounds(cells(knobX(sections[s.section], s.slot) - 1, knobY - 1, 10, 6));
+            layer.addChildComponent(k);
         }
-        prev.onClick = [this] { proc.stepPreset(-1); };
-        next.onClick = [this] { proc.stepPreset(1); };
-        save.onClick = [this] { proc.saveUserPreset(); };
-        slotA.onClick = [this] { proc.selectAb(0); };
-        slotB.onClick = [this] { proc.selectAb(1); };
-        for (auto [key, x, w] : { std::tuple { &prev, 30, 2 }, { &next, 62, 2 }, { &save, 67, 4 }, { &slotA, 74, 1 }, { &slotB, 76, 1 } })
+        prev.onClick = [this] { proc.stepPreset(-1), zoom = automatic; };
+        next.onClick = [this] { proc.stepPreset(1), zoom = automatic; };
+        name.onClick = [this] { showPresets(); };
+        slotA.onClick = [this] { proc.selectAb(0), zoom = automatic; };
+        slotB.onClick = [this] { proc.selectAb(1), zoom = automatic; };
+        random.onClick = [this] { proc.randomize(Time::currentTimeMillis()), zoom = automatic; };
+        more.onClick = [this] { opened = !opened, showPage(); };
+        on.onClick = [this] { setParam("bypass", value("bypass") > 0.5f ? 0.0f : 1.0f); };
+        for (auto [key, x, w] : { std::tuple { &prev, 11, 3 }, { &next, 38, 3 }, { &name, 14, 24 }, { &slotA, 43, 1 }, { &slotB, 45, 1 }, { &random, 49, 9 }, { &more, C - 30, 6 }, { &on, C - 21, 4 } })
             layer.addAndMakeVisible(*key), key->setBounds(cells(x, 1, w, 1));
-        // Keys never toggle themselves: the attachment sets them from the parameter, a click only asks for a value.
-        auto bind = [&](const char* id, std::vector<Key*> keys) {
-            auto att = std::make_unique<ParameterAttachment>(*p.apvts.getParameter(id), [keys](float v) {
-                for (size_t k = 0; k < keys.size(); ++k)
-                    keys[k]->setToggleState(keys.size() == 1 ? v > 0.5f : (int) k == roundToInt(v), dontSendNotification);
-            });
-            for (size_t k = 0; k < keys.size(); ++k)
-                keys[k]->onClick = [a = att.get(), k, single = keys.size() == 1, key = keys[k]] { a->setValueAsCompleteGesture(single ? (key->getToggleState() ? 0.0f : 1.0f) : (float) k); };
-            att->sendInitialUpdate();
-            keyAtt.push_back(std::move(att));
-            return keyAtt.back().get();
-        };
-        bind("dcShift", { &dcShift }), bind("approxOn", { &approx }), bind("imagesOn", { &images }), bind("autoGain", { &autoGain });
-        bind("fType", { &typeKeys[0], &typeKeys[1], &typeKeys[2], &typeKeys[3], &typeKeys[4] });
-        auto* order = bind("fOrder", { &pre, &post });
-        dock.onClick = [this, order] { order->setValueAsCompleteGesture(preOrder() ? 1.0f : 0.0f); }; // the filter moves into the dock
-        keyAtt.push_back(std::make_unique<ParameterAttachment>(*p.apvts.getParameter("bits"), [](float) {}));
-        auto* bitsAtt = keyAtt.back().get();
-        minusKey.onClick = [this, bitsAtt] { bitsAtt->setValueAsCompleteGesture((float) jmax(0, bits() - 1)); };
-        plus.onClick = [this, bitsAtt] { bitsAtt->setValueAsCompleteGesture((float) jmin(24, bits() + 1)); };
-        for (auto* key : { &minusKey, &plus, &dcShift, &approx, &images, &pre, &post, &dock, &autoGain, &typeKeys[0], &typeKeys[1], &typeKeys[2], &typeKeys[3], &typeKeys[4] })
-            layer.addAndMakeVisible(*key);
-        layout();
+        prev.setTitle("previous preset"), next.setTitle("next preset"), name.setTitle("presets");
+        prev.onStep = next.onStep = [this](int by) { proc.stepPreset(by), zoom = automatic; };
+        for (int i = 0; i < numSelectors; ++i)
+            for (int by : { -1, 1 })
+            {
+                const auto& s = selectorSpecs[i];
+                auto* key = arrows.add(new Key(String(s.id) + (by < 0 ? "-" : "+")));
+                const int x = selectorX(s) + labelWidth(s);
+                key->setBounds(cells(by < 0 ? x : x + slotWidth(s) - 2, selectY, 2, 1));
+                key->onClick = [this, i, by] { step(i, by); }, key->onStep = [this, i](int d) { step(i, d); };
+                key->setTitle(String(by < 0 ? "previous " : "next ") + (s.label[0] != 0 ? s.label : s.id));
+                layer.addChildComponent(key);
+            }
+        showPage();
 
         const int stored = proc.editorWidth; // read first: setting the limits already resizes
         setResizable(true, false);
         setResizeLimits(W / 2, H / 2, W * 2, H * 2);
         getConstrainer()->setFixedAspectRatio((double) W / H);
         const int width = stored > 0 ? jlimit(W / 2, W * 2, stored) : W;
-        setSize(width, width * H / W);
-        proc.scope.meter(seen), stepAt = heard = peakAt = proc.scope.clock();
+        setSize(width, roundToInt(width * (double) H / W));
+        seen = proc.scope.write.load(std::memory_order_acquire) - (uint32_t) crumb::Scope::size;
+        heard = peakAt = proc.scope.clock();
         timerCallback();
         startTimerHz(30);
     }
     ~Editor() override { setLookAndFeel(nullptr); }
 
+    // ---- values
     float value(const char* id) const { return proc.apvts.getRawParameterValue(id)->load(); }
-    String text(const char* id) const { return minus(proc.apvts.getParameter(id)->getCurrentValueAsText()); }
-    int bits() const { return roundToInt(value("bits")); }
-    bool preOrder() const { return value("fOrder") < 0.5f; }
-    std::array<int, numStages> order() const { return { In, preOrder() ? Filter : Dock, Quant, Approx, Resample, Images, preOrder() ? Dock : Filter, Mix }; }
-    std::array<int, numStages> stageX() const // first column of each stage
+    int index(const char* id) const { return roundToInt(value(id)); }
+    void setParam(const char* id, float v)
     {
-        std::array<int, numStages> x {};
-        int at = 2;
-        for (auto s : order())
-            x[(size_t) s] = at, at += widths[s];
-        return x;
+        auto* p = proc.apvts.getParameter(id);
+        p->beginChangeGesture(), p->setValueNotifyingHost(p->convertTo0to1(v)), p->endChangeGesture();
     }
-    // Stages that currently do nothing are dimmed.
-    bool active(int stage) const
+    static bool is(const KnobSpec& s, const char* id) { return std::strcmp(s.id, id) == 0; }
+    // A dial's position 0..1; just past an end lies "off" (bits over 24, approx and images under their least).
+    static constexpr double offAt = 0.06;
+    static Range<double> knobRange(int i)
     {
-        return stage == Quant ? bits() > 0 : stage == Approx ? value("approxOn") > 0.5f : stage == Images ? value("imagesOn") > 0.5f : stage == Filter ? value("fType") > 0.5f : true;
+        const auto& s = knobSpecs[i];
+        return { is(s, "approxDev") || is(s, "imagesShift") ? -offAt : 0, is(s, "bits") ? 1 + offAt : 1 };
     }
-    void layout()
+    double knobValue(int i) const
     {
-        const auto x = stageX();
-        for (int i = 0; i < 10; ++i)
-            knobs[i].setBounds(cells(x[(size_t) knobSpecs[i].stage] + knobSpecs[i].dx - 1, knobSpecs[i].up ? 4 : 23, 10, 6));
-        const int q = x[Quant], f = x[Filter];
-        minusKey.setBounds(cells(q + 1, 5, 3, 4)), plus.setBounds(cells(q + 12, 5, 3, 4)), dcShift.setBounds(cells(q + 3, 25, 12, 1));
-        approx.setBounds(cells(x[Approx] + 1, 6, 11, 1)), images.setBounds(cells(x[Images] + 1, 6, 11, 1));
-        pre.setBounds(cells(f + 2, 27, 3, 2)), post.setBounds(cells(f + 6, 27, 4, 2)), dock.setBounds(cells(x[Dock] + 1, band - 1, 5, 12));
-        autoGain.setBounds(cells(x[Mix] + 3, 30, 6, 1));
-        for (int k = 0, tx = f + 2; k < 5; tx += (int) std::strlen(types[k]) + 1, ++k)
-            typeKeys[k].setBounds(cells(tx, 24, (int) std::strlen(types[k]), 2));
-        laidOutPre = preOrder();
+        const auto& s = knobSpecs[i];
+        const auto* p = proc.apvts.getParameter(s.id);
+        if (is(s, "bits")) return index("bits") == 0 ? 1 + offAt : (index("bits") - 1) / 23.0;
+        if (is(s, "approxDev")) return value("approxOn") > 0.5f ? p->getValue() : -offAt;
+        if (is(s, "imagesShift")) return value("imagesOn") > 0.5f ? p->getValue() : -offAt;
+        if (is(s, "lowCut")) return p->convertTo0to1(proc.band().low);
+        if (is(s, "highCut")) return p->convertTo0to1(proc.band().high);
+        if (is(s, "auto")) return proc.autoAmount() / 100;
+        return p->getValue();
+    }
+    static double knobDefaultFor(const CrumbProcessor& proc, int i)
+    {
+        const auto& s = knobSpecs[i];
+        return is(s, "bits") ? 11 / 23.0 : is(s, "imagesShift") ? -offAt : (double) proc.apvts.getParameter(s.id)->getDefaultValue();
+    }
+    double knobDefault(int i) const { return knobDefaultFor(proc, i); }
+    String knobText(int i) const
+    {
+        const auto& s = knobSpecs[i];
+        const auto* p = proc.apvts.getParameter(s.id);
+        if (is(s, "bits")) return index("bits") == 0 ? String("off") : String(index("bits"));
+        if ((is(s, "approxDev") && value("approxOn") < 0.5f) || (is(s, "imagesShift") && value("imagesOn") < 0.5f)) return "off";
+        if (is(s, "lowCut") || is(s, "highCut") || is(s, "auto")) return minus(p->getText((float) knobValue(i), 0));
+        return minus(p->getCurrentValueAsText());
+    }
+    double knobFromText(int i, const String& t) const
+    {
+        const auto& s = knobSpecs[i];
+        const bool off = t.containsIgnoreCase("off");
+        if (is(s, "bits")) return off || t.getIntValue() == 0 ? 1 + offAt : (jlimit(1, 24, t.getIntValue()) - 1) / 23.0;
+        if (off && knobRange(i).getStart() < 0) return -offAt;
+        if (is(s, "slope")) // the nearest slope
+        {
+            const double want = t.retainCharacters("0123456789.").getDoubleValue();
+            int best = 0;
+            for (int k = 0; k < crumb::numSlopes; ++k)
+                if (std::abs(6 * crumb::slopeOrder[k] - want) < std::abs(6 * crumb::slopeOrder[best] - want)) best = k;
+            return best / (crumb::numSlopes - 1.0);
+        }
+        return proc.apvts.getParameter(s.id)->getValueForText(t);
+    }
+    const char* switchOf(int i) const { return is(knobSpecs[i], "approxDev") ? "approxOn" : is(knobSpecs[i], "imagesShift") ? "imagesOn" : nullptr; }
+    void gesture(int i, bool begin)
+    {
+        const auto& s = knobSpecs[i];
+        if (begin && (is(s, "lowCut") || is(s, "highCut") || is(s, "slope"))) proc.adoptBand();
+        if (begin && is(s, "auto")) proc.adoptAuto();
+        for (auto* id : { s.id, switchOf(i) })
+            if (id != nullptr)
+            {
+                auto* p = proc.apvts.getParameter(id);
+                begin ? p->beginChangeGesture() : p->endChangeGesture();
+            }
+    }
+    void setKnob(int i, double v)
+    {
+        const auto& s = knobSpecs[i];
+        auto* p = proc.apvts.getParameter(s.id);
+        const auto put = [](RangedAudioParameter* q, float n) {
+            if (const float legal = q->convertTo0to1(q->convertFrom0to1(jlimit(0.0f, 1.0f, n))); std::abs(legal - q->getValue()) > 1e-7f) q->setValueNotifyingHost(legal);
+        };
+        if (is(s, "bits")) put(p, p->convertTo0to1(v > 1 + offAt / 2 ? 0.0f : (float) (1 + roundToInt(jmin(1.0, v) * 23))));
+        else
+        {
+            if (const auto* sw = switchOf(i)) put(proc.apvts.getParameter(sw), v < -offAt / 2 ? 0.0f : 1.0f);
+            if (v >= 0 || switchOf(i) == nullptr) put(p, (float) v);
+        }
+        if (s.zoom != automatic) zoom = s.zoom;
+    }
+    void step(int i, int by)
+    {
+        const auto& s = selectorSpecs[i];
+        if (std::strcmp(s.id, "invert") == 0) proc.adoptBand();
+        setParam(s.id, (float) ((index(s.id) + by + s.names.size()) % s.names.size()));
+        if (s.zoom != automatic) zoom = s.zoom;
+    }
+    void showPage()
+    {
+        for (int i = 0; i < numKnobs; ++i) knobs[i].setVisible(knobSpecs[i].page == 2 || knobSpecs[i].page == (opened ? 1 : 0));
+        for (int i = 0; i < numSelectors; ++i)
+            for (int k = 0; k < 2; ++k) arrows[2 * i + k]->setVisible(selectorSpecs[i].page == 2 || selectorSpecs[i].page == (opened ? 1 : 0));
+    }
+    void showPresets()
+    {
+        PopupMenu menu;
+        for (int i : crumb::presetOrder) menu.addItem(1 + i, proc.getProgramName(i), true, proc.preset == i);
+        const auto files = proc.userPresets();
+        if (!files.isEmpty()) menu.addSeparator();
+        for (int k = 0; k < files.size(); ++k) menu.addItem(1000 + k, files[k], true, proc.preset < 0 && proc.presetName() == files[k]);
+        menu.addSeparator();
+        menu.addItem(999, "save");
+        menu.setLookAndFeel(&look);
+        menu.showMenuAsync(PopupMenu::Options().withTargetComponent(name), [self = SafePointer<Editor>(this), files](int r) {
+            if (!self || r == 0) return;
+            if (r == 999) self->proc.saveUserPreset();
+            else if (r >= 1000) self->proc.loadUserPreset(files[r - 1000]);
+            else self->proc.setCurrentProgram(r - 1);
+            self->zoom = automatic;
+        });
     }
     void resized() override
     {
@@ -210,298 +469,124 @@ struct Editor : AudioProcessorEditor, Timer
         proc.editorWidth = getWidth();
     }
 
+    // ---- the picture
+    // One step a codec frame's hop (at least 256 samples at 48 kHz), three columns wide, while the codec runs; the samples
+    // themselves, four columns a hold, while it does not or the crush controls are being turned.
+    bool showsFrames() const { return zoom == automatic ? proc.codecOn() : zoom == frames; }
+    void buildWave()
+    {
+        const double fs = proc.sampleRate.load();
+        if (showsFrames())
+        {
+            const int scale = crumb::rateScale(fs), hop = crumb::hops[crumb::speedIndex(value("speed") / 100)];
+            wave.build(hop * ((255 + hop) / hop) * scale, 3, false, 0);
+        }
+        else
+            wave.build(jlimit(0.5, 0.04 * fs / crumb::Wave::columns, 0.25 * fs / jmin(fs, (double) value("rate"))), 1, true, (int) (0.04 * fs));
+    }
     void timerCallback() override
     {
-        if (laidOutPre != preOrder())
-            layout();
-        // VU: the RMS of the audio since the last new block (held between blocks, silence after 0.5 s without audio)
-        // drives a 2nd-order needle (99 % in 300 ms, 1.5 % overshoot) in 1/240 s steps of elapsed time, at most 1 s of
-        // catch-up; 0 VU = -12 dBFS RMS (K-12). The clip light holds for 1 s after a sample over 0 dBFS.
         const double t = proc.scope.clock();
-        if (crumb::Scope::Meter m; proc.scope.meter(m) && m.frames != seen.frames)
+        auto& scope = proc.scope;
+        const auto w = scope.write.load(std::memory_order_acquire);
+        const bool fresh = w != seen;
+        if (w - seen > (uint32_t) crumb::Scope::size) seen = w - (uint32_t) crumb::Scope::size;
+        for (; seen != w; ++seen)
         {
-            for (int c = 0; c < 2; ++c)
-                level[c] = (float) std::sqrt((m.energy[c] - seen.energy[c]) / (double) (m.frames - seen.frames)) * Decibels::decibelsToGain(12.0f);
-            seen = m, heard = t;
+            const auto i = (size_t) (seen & (crumb::Scope::size - 1));
+            wave.add(scope.dry[i].load(std::memory_order_relaxed), scope.wet[i].load(std::memory_order_relaxed), scope.gone[i].load(std::memory_order_relaxed), scope.mark[i].load(std::memory_order_relaxed));
         }
-        else if (t - heard > 500)
-            level[0] = level[1] = 0;
-        int k = 0;
-        for (; stepAt + 1000.0 / 240 <= t && k < 240; ++k, stepAt += 1000.0 / 240)
-            for (int c = 0; c < 2; ++c)
-                speed[c] += (169 * (level[c] - needle[c]) - 20.8f * speed[c]) / 240, needle[c] += speed[c] / 240;
-        stepAt = k < 240 ? stepAt : t;
-        for (int c = 0; c < 2; ++c)
-        {
-            clip[c] = proc.scope.clipAt[c].load() + 1000 > t;
-            peak[c] = jmax(vuRows(needle[c]), peak[c] - 12 * (float) (t - peakAt) / 1000); // peak marker falls 12 rows/s
-            for (auto [id, v] : { std::pair { "vu" + String(c), var(needle[c]) }, { "clip" + String(c), var(clip[c]) } }) // for tests
-                if (!getProperties().contains(id) || getProperties()[id] != v) getProperties().set(id, v);
-        }
+        if (fresh) heard = t, flat = false;
+        else if (!flat && t - heard > 150) wave.clear(), scope.peak = outPeak = 0, flat = true; // no audio: a flat line
+        // The output's peak, falling 20 dB a second; the clip light holds for 1 s after a sample over 0 dBFS.
+        outPeak = jmax(scope.peak.exchange(0.0f, std::memory_order_relaxed), outPeak * Decibels::decibelsToGain((float) (-20 * (t - peakAt) / 1000)));
+        if (outPeak < 1e-5f) outPeak = 0;
         peakAt = t;
-        // The scope: 20 ms started on the last rising zero crossing of the input, so it stands still, 5 ms before the
-        // newest sample (the zero-phase passes settle there).
-        n = jlimit(16, crumb::Scope::size / 3, roundToInt(proc.sampleRate.load() * 0.02));
-        const int m = 2 * n + n / 4;
-        proc.scope.read(in.data(), out.data(), m);
-        start = m - n - n / 4;
-        for (int i = start; i > 1; --i)
-            if (in[(size_t) i - 1] <= 0 && in[(size_t) i] > 0)
-            {
-                start = i;
-                break;
-            }
-        std::vector<float> now(in.begin(), in.begin() + m); // n and start follow from these and the rate
-        for (auto* param : proc.getParameters())
-            now.push_back(param->getValue());
-        now.push_back((float) proc.sampleRate.load());
-        const bool waveChanged = drawnFrom.size() < now.size() || !std::equal(now.begin(), now.end(), drawnFrom.begin());
-        for (int c = 0; c < 2; ++c)
-            now.insert(now.end(), { std::floor(vuRows(needle[c]) * 8), peak[c] >= 0.5f ? (float) roundToInt(peak[c]) : -1.0f, (float) clip[c] });
-        now.insert(now.end(), { scopePeak, (float) proc.preset.load(), (float) proc.abSlot() });
-        if (now == drawnFrom && proc.presetName() == drawnName)
-            return;
+        clipped = scope.clipAt.load(std::memory_order_relaxed) + 1000 > t;
+        for (int i = 0; i < numKnobs; ++i) // the parameters move the dials (also while one is typed into: not its text)
+            if (auto& k = knobs[i]; !k.isMouseButtonDown())
+                if (const double v = knobValue(i); std::abs(v - k.getValue()) > 1e-6) k.setValue(v, dontSendNotification);
+        buildWave();
+
+        std::vector<float> now;
+        for (auto* param : proc.getParameters()) now.push_back(param->getValue());
+        now.insert(now.end(), { (float) proc.preset.load(), (float) proc.abSlot(), (float) opened, (float) showsFrames(), (float) clipped, (float) roundToInt(10 * Decibels::gainToDecibels(outPeak, -100.0f)) });
+        int hovered = 0;
+        for (auto* key : arrows) hovered = 2 * hovered + (key->isMouseOver() ? 1 : 0);
+        now.push_back((float) hovered);
+        now.push_back((float) (prev.isMouseOver() ? 1 : next.isMouseOver() ? 2 : random.isMouseOver() ? 3 : more.isMouseOver() ? 4 : on.isMouseOver() ? 5 : 0));
+        now.push_back(flat ? 0.0f : 1.0f);
+        if (!flat)
+            for (const auto& c : wave.column) now.insert(now.end(), { c.dry.lo, c.dry.hi, c.wet.lo, c.wet.hi, c.gone.lo, c.gone.hi, (float) c.mark });
+        now.push_back(flat ? 0 : wave.peak);
+        if (now == drawnFrom && proc.presetName() == drawnName) return;
         drawnFrom = std::move(now), drawnName = proc.presetName();
-        if (waveChanged) runChain();
         refresh();
     }
-    static float vuRows(float gain) // lit rows of 24: +3 VU fills the column, the scale marks are where opt5 puts them
-    {
-        const float db = Decibels::gainToDecibels(gain, -100.0f), stops[][2] { { -26, 0 }, { -20, 1 }, { -10, 8 }, { -7, 11 }, { -5, 14 }, { -3, 17 }, { 0, 21 }, { 3, 24 } };
-        int s = 0;
-        while (s < 6 && db > stops[s + 1][0])
-            ++s;
-        return jlimit(0.0f, 24.0f, stops[s][1] + (stops[s + 1][1] - stops[s][1]) * (db - stops[s][0]) / (stops[s + 1][0] - stops[s][0]));
-    }
 
-    // The stage chain as Crumb.cpp runs it, without its smoothing, ADAA, ladder errors, DC coupling or band-limited steps,
-    // magnified so each stage's crush shows at braille resolution: the steps are counted on the screen (2^(bits/4 + 0.8)
-    // levels across the band: 14 at 12 bit, 7 at 8 bit) and every rate and cutoff is divided by 16, as if the 20 ms
-    // played 16 times faster (so the hold always shows, continuous in the rate up to the host's). The filters run
-    // forward and back, so each stage stays lined up with the wave. Cheap enough to rerun on a new snapshot every frame.
-    // seg[s] = the output of stage s.
-    void runChain()
+    // gulp's dial: a round braille ring of 16 x 16 dots, the value's arc (centred: from the top) and a two-dot needle.
+    static void knob(Grid& g, int x, int y, double norm, const String& label, const String& text, bool centred)
     {
-        constexpr double zoom = 16;
-        const double fs = proc.sampleRate.load(), rate = jmin(fs, (double) value("rate")) / zoom, gain = Decibels::decibelsToGain((double) value("preamp"));
-        const int resolution = bits();
-        const double levels = std::exp2(resolution / 4.0 + 0.8), lsb = 2 / levels * scopePeak / 0.92, half = levels / 2;
-        const double dither = value("dither") / 100.0, jitter = value("jitter") / 100.0, mix = value("mix") / 100.0;
-        const double inc0 = rate / fs, jc = 1 - std::exp(-2 * pi * 30 * zoom / fs), jn = 0.5 / std::sqrt(jc / (3 * (2 - jc)));
-        const double outGain = Decibels::decibelsToGain((double) value("output")), wet = value("autoGain") > 0.5f ? 1 / gain : 1;
-        const bool tread = value("dcShift") > 0.5f, approxOn = value("approxOn") > 0.5f, imagesOn = value("imagesOn") > 0.5f;
-        const int type = roundToInt(value("fType"));
-        const auto g = [fs](double hz) { return std::tan(pi * jmin(0.49 * fs, hz) / fs); };
-        crumb::Coef approxF[4], imagesF[2], filter = crumb::svf(g(value("cutoff") / zoom), 2 * std::pow(40.0, -value("reso") / 100.0));
-        for (int k = 0; k < 4; ++k)
-            approxF[k] = crumb::svf(g(0.5 * rate * std::exp2(value("approxDev") / 100.0)), crumb::approxK[k]);
-        for (int k = 0; k < 2; ++k)
-            imagesF[k] = crumb::svf(g(0.5 * rate * std::exp2(2 * value("imagesShift") / 100.0)), crumb::imagesK[k]);
-        uint32 seed = 1;
-        double phase = 0, held = 0, walk = 0;
-        const auto random = [&seed] { return (double) ((seed = seed * 1664525u + 1013904223u) >> 8) * 0x1p-24; };
-        const int length = start + n + n / 4;
-        float* y = work.data();
-        const auto zeroPhase = [&](const crumb::Coef* c, int sections, int shape) { // forward then backward: lined up with its input
-            for (int pass = 0; pass < 2; ++pass)
-                for (int k = 0; k < sections; ++k)
-                {
-                    crumb::Svf svf { 0, y[pass == 0 ? 0 : length - 1] }; // settled on the first sample
-                    for (int i = 0; i < length; ++i)
-                    {
-                        auto& v = y[pass == 0 ? i : length - 1 - i];
-                        const auto o = svf.run(v, c[k]);
-                        v = (float) (shape == 1 ? o[0] : shape == 2 ? c[k].k * o[1] : shape == 3 ? o[2] : o[0] + o[2]); // lp bp hp br
-                    }
-                }
-        };
-        for (auto s : order())
-        {
-            if (s == In)
-                for (int i = 0; i < length; ++i)
-                    y[i] = (float) crumb::clip(jlimit(-64.0, 64.0, in[(size_t) i] * gain));
-            else if (s == Quant && resolution > 0)
-                for (int i = 0; i < length; ++i)
-                {
-                    const double v = (y[i] + dither * lsb * (random() - 0.5)) / lsb;
-                    y[i] = (float) ((jlimit(-half, half - 1, tread ? std::round(v) : std::floor(v)) + (tread ? 0 : 0.5)) * lsb);
-                }
-            else if (s == Approx && approxOn)
-                zeroPhase(approxF, 4, 1);
-            else if (s == Resample)
-                for (int i = 0; i < length; ++i)
-                {
-                    walk += jc * (2 * random() - 1 - walk);
-                    if (i == 0 || (phase += jmin(1.0, inc0 * (1 + 0.03 * jitter * jlimit(-1.0, 1.0, walk * jn)))) >= 1)
-                        phase -= phase >= 1 ? 1 : 0, held = y[i];
-                    y[i] = held;
-                }
-            else if (s == Images && imagesOn)
-                zeroPhase(imagesF, 2, 1);
-            else if (s == Filter && type > 0)
-                zeroPhase(&filter, 1, type);
-            else if (s == Mix)
-                for (int i = 0; i < length; ++i)
-                    y[i] = (float) ((in[(size_t) i] + mix * (y[i] * wet - in[(size_t) i])) * outGain);
-            std::copy(y + start, y + start + n, seg[s].begin());
-        }
-    }
-
-    // A round braille dial, 8 x 4 cells = 16 x 16 dots: a dotted 270 degree track, the value arc (centred: from the top)
-    // and a two-dot-wide needle. Cells with track dots are grey, then arc red, then needle white (opt5's layering).
-    void knob(Grid& g, int x, int y, float norm, const KnobSpec& s, const String& valueText, bool on)
-    {
-        uint8 track[4][8] {}, arc[4][8] {}, hand[4][8] {};
-        const auto dot = [](uint8 (&m)[4][8], double px, double py) {
-            const int ix = (int) px, iy = (int) py;
-            if (isPositiveAndBelow(ix, 16) && isPositiveAndBelow(iy, 16)) m[iy / 4][ix / 2] |= brailleBit(ix % 2, iy % 4);
-        };
-        const double c = 7.5, r = 7.2, v = 270.0 * norm;
+        Dots track, arc, needle;
+        norm = jlimit(0.0, 1.0, norm);
+        const double c = 7.5, r = 7.2, v = 270 * norm;
         for (int t = 0; t <= 270; t += 3)
         {
             const double a = degreesToRadians(225.0 + t);
-            dot((s.centred ? jmin(135.0, v) <= t && t <= jmax(135.0, v) : t <= v) ? arc : track, c + r * std::sin(a), c - r * std::cos(a));
+            ((centred ? jmin(135.0, v) <= t && t <= jmax(135.0, v) : t <= v) ? arc : track).push_back({ (int) (c + r * std::sin(a)), (int) (c - r * std::cos(a)) });
         }
         const double a = degreesToRadians(225 + v), sn = std::sin(a), cs = std::cos(a);
-        for (auto [x0, y0, len] : { std::tuple { c, c, r - 2 }, { c + 0.5, c + 0.5, r - 2.5 } }) // opt5's dotline, Python rounding
+        for (auto [x0, y0, len] : { std::tuple { c, c, r - 2 }, { c + 0.5, c + 0.5, r - 2.5 } })
         {
             const int steps = (int) jmax(std::abs(len * sn), std::abs(len * cs)) + 1;
             for (int k = 0; k < steps; ++k)
-                dot(hand, std::nearbyint(x0 + len * sn * k / jmax(1, steps - 1)), std::nearbyint(y0 - len * cs * k / jmax(1, steps - 1)));
+                needle.push_back({ (int) std::nearbyint(x0 + len * sn * k / jmax(1, steps - 1)), (int) std::nearbyint(y0 - len * cs * k / jmax(1, steps - 1)) });
         }
-        for (int j = 0; j < 4; ++j)
-            for (int i = 0; i < 8; ++i)
-                if (const int b = track[j][i] | arc[j][i] | hand[j][i])
-                    g.at[y + j][x + i] = { (juce_wchar) (0x2800 + b), fade(track[j][i] ? dark : arc[j][i] ? red : white, on), {} };
-        g.centre(x - 1, 10, s.up ? y - 1 : y + 4, s.name, fade(grey, on));
-        g.centre(x - 1, 10, s.up ? y + 4 : y - 1, valueText, fade(white, on), true);
+        g.braille(x, y, 8, 4, track, dim), g.braille(x, y, 8, 4, arc, accent), g.braille(x, y, 8, 4, needle, primary, over);
+        g.centre(x - 3, 14, y - 1, label, muted), g.centre(x - 3, 14, y + 4, text, primary, true);
     }
-
+    static void toggle(Grid& g, int x, bool isOn, const String& label, bool hover)
+    {
+        g.put(x, 1, u(isOn ? "■" : "□"), isOn ? accent : hover ? primary : muted), g.put(x + 2, 1, label, isOn ? primary : muted);
+    }
     void refresh()
     {
         Grid g;
-        const auto x = stageX();
-        const bool preFilter = preOrder();
-        // Header: name, preset number and name with prev / next, save, A / B, maker.
-        g.put(2, 1, "crumb", white, true);
-        g.put(30, 1, u("‹"), grey), g.put(63, 1, u("›"), grey), g.put(67, 1, "save", grey);
-        g.put(33, 1, proc.preset >= 0 ? String(proc.preset.load()).paddedLeft('0', 2) : String("--"), grey);
-        g.centre(36, 26, 1, proc.presetName(), white, true);
-        for (int s = 0; s < 2; ++s)
-            g.put(74 + 2 * s, 1, s == 0 ? "A" : "B", proc.abSlot() == s ? page : grey, proc.abSlot() == s, proc.abSlot() == s ? white : Colour());
-        g.right(C - 3, 1, "daveydidit", dark);
-        g.put(2, 2, String::repeatedString(u("─"), C - 4), rule), g.put(2, R - 3, String::repeatedString(u("─"), C - 4), rule);
-        // Hairlines between the stages (dashed around the dock) and before the meters; stage names on the band's edge.
-        auto o = order();
-        for (int k = 1; k <= numStages; ++k)
-            for (int j = 3; j < R - 3; ++j)
-                g.put(k < numStages ? x[(size_t) o[(size_t) k]] : VX, j, u(k < numStages && (o[(size_t) k] == Dock || o[(size_t) k - 1] == Dock) ? "┆" : "│"), rule);
-        for (int s = 0; s < numStages; ++s)
-            g.put(x[(size_t) s] + 1, band - 1, names[s], fade(dark, active(s)));
-        g.centre(x[Dock], widths[Dock], band - 1, preFilter ? "post" : "pre", dark);
-        for (int i = 0; i < 10; ++i)
-        {
-            const auto& s = knobSpecs[i];
-            knob(g, x[(size_t) s.stage] + s.dx, s.up ? 5 : 24, proc.apvts.getParameter(s.id)->getValue(), s, text(s.id), active(std::strcmp(s.id, "dither") == 0 ? Quant : s.stage));
-        }
-        // quantize: the resolution in block numerals, - / + to step it; dc shift.
-        const int q = x[Quant], b = bits();
-        g.centre(q, 16, 4, "resolution", grey);
-        g.put(q + 2, 6, u("−"), grey, true), g.put(q + 13, 6, "+", grey, true);
-        if (b > 0)
-        {
-            const String digitsText(b);
-            for (int k = 0; k < digitsText.length(); ++k)
-                for (int j = 0; j < 4; ++j)
-                    g.put(q + (b < 10 ? 7 : 5 + 4 * k), 5 + j, u(digits[digitsText[k] - '0'][j]), white);
-            g.put(q + 5, 9, "bit", grey);
-        }
-        else
-            g.centre(q, 16, 6, "off", grey);
-        const auto toggle = [&](int tx, int ty, const char* id, const String& name, bool on) { g.put(tx, ty, u(value(id) > 0.5f ? "■" : "□"), fade(value(id) > 0.5f ? red : grey, on)), g.put(tx + 2, ty, name, value(id) > 0.5f ? fade(white, on) : fade(grey, on), value(id) > 0.5f); };
-        toggle(q + 4, 25, "dcShift", "dc shift", b > 0);
-        toggle(x[Approx] + 2, 6, "approxOn", "approx", true), toggle(x[Images] + 2, 6, "imagesOn", "images", true);
-        toggle(x[Mix] + 3, 30, "autoGain", "auto", true); // output follows the preamp down
-        // filter: type words (the selected one red, underlined), pre / post.
-        const int f = x[Filter], type = roundToInt(value("fType"));
-        for (int k = 0, tx = f + 2; k < 5; tx += (int) std::strlen(types[k]) + 1, ++k)
-        {
-            const auto colour = k == type ? (k == 0 ? white : red) : grey;
-            g.put(tx, 24, types[k], colour, k == type);
-            if (k == type) g.put(tx, 25, String::repeatedString(u("▔"), (int) std::strlen(types[k])), colour);
-        }
-        g.put(f + 2, 27, "pre", preFilter ? white : grey, preFilter), g.put(f + 6, 27, "post", preFilter ? grey : white, !preFilter);
-        g.put(preFilter ? f + 2 : f + 6, 28, String::repeatedString(u("▔"), preFilter ? 3 : 4), white);
+        // crumb < preset > A B randomize, more, on, the maker; a rule on the edge under them.
+        g.put(3, 1, "crumb", primary, true);
+        g.put(12, 1, "<", prev.isMouseOver() ? primary : muted), g.centre(14, 24, 1, proc.presetName(), primary, true), g.put(39, 1, ">", next.isMouseOver() ? primary : muted);
+        for (int k = 0; k < 2; ++k)
+            if (proc.abSlot() == k) g.put(43 + 2 * k, 1, k == 0 ? "A" : "B", page, true, primary);
+            else g.put(43 + 2 * k, 1, k == 0 ? "A" : "B", dim);
+        g.put(49, 1, "randomize", random.isMouseOver() ? primary : muted);
+        g.right(C - 4, 1, "daveydidit", dim);
+        toggle(g, C - 21, value("bypass") < 0.5f, "on", on.isMouseOver()), toggle(g, C - 30, opened, "more", more.isMouseOver());
+        g.edge(3, C - 3, 3, 2);
 
-        // The wave: dot column k shows the stage that owns its cell, so the signal is crushed stage by stage across the
-        // panel and turns red at mix. The input stage's output stays as a grey ghost wherever the wave left it.
-        int stageOf[C] {};
-        for (int s = 0; s < numStages; ++s)
-            for (int c = x[(size_t) s]; c < x[(size_t) s] + widths[s]; ++c) stageOf[c] = s;
-        float range[2][dotCols][2] {}; // [wave, ghost][column][lo, hi]
-        float top = 0;
-        for (int w = 0; w < 2; ++w)
-            for (int k = 0; k < dotCols; ++k)
-            {
-                const auto& v = seg[w == 0 ? stageOf[2 + k / 2] : In];
-                const int a = k * n / dotCols, e = jmax(a + 1, (k + 1) * n / dotCols);
-                float lo = v[(size_t) a], hi = lo;
-                if (a > 0) // joined to the previous column's last sample (none when columns outnumber samples)
-                    lo = jmin(lo, seg[w == 0 ? stageOf[2 + (k - 1) / 2] : In][(size_t) a - 1]), hi = jmax(hi, seg[w == 0 ? stageOf[2 + (k - 1) / 2] : In][(size_t) a - 1]);
-                for (int i = a; i < e; ++i)
-                    lo = jmin(lo, v[(size_t) i]), hi = jmax(hi, v[(size_t) i]);
-                range[w][k][0] = lo, range[w][k][1] = hi, top = jmax(top, -lo, hi);
-            }
-        scopePeak = jmax(0.05f, top, scopePeak * 0.95f); // display gain: fast up, slow down
-        uint8 dots[2][2][10][VX - 2] {}; // [wave, ghost][red][row][column]
-        for (int w = 0; w < 2; ++w)
-            for (int k = 0; k < dotCols; ++k)
-            {
-                const auto row = [this](float v) { return (int) std::nearbyint((1 - (jlimit(-1.1f, 1.1f, v / scopePeak * 0.92f) + 1) / 2) * 39); };
-                for (int py = row(range[w][k][1]); py <= row(range[w][k][0]); ++py)
-                    if (isPositiveAndBelow(py, 40))
-                        dots[w][w == 0 && stageOf[2 + k / 2] == Mix][py / 4][k / 2] |= brailleBit(k % 2, py % 4);
-            }
-        for (int j = 0; j < 10; ++j)
-            for (int i = 0; i < VX - 2; ++i)
-                if (const int wave = dots[0][0][j][i] | dots[0][1][j][i])
-                    g.at[band + j][2 + i] = { (juce_wchar) (0x2800 + wave), dots[0][0][j][i] ? white : red, {} };
-                else if (dots[1][0][j][i])
-                    g.at[band + j][2 + i] = { (juce_wchar) (0x2800 + dots[1][0][j][i]), dark, {} };
+        for (auto [i, j] : wave.water) g.put(AX + i, AT + j, u("░"), rule);
+        g.braille(AX, AT, AW, AH, wave.line, accent), g.braille(AX, AT, AW, AH, wave.lost, primary, over);
+        g.braille(AX, AT, AW, AH, wave.taken, muted, under), g.braille(AX, AT, AW, AH, wave.ghost, showsFrames() ? kick : muted, under);
 
-        // Meters: L / R columns from 20 to +3 VU (red from 0), eighth-cell tops, a falling peak mark, clip lights.
-        const std::pair<int, const char*> marks[] { { 0, "+3" }, { 3, "0" }, { 7, "3" }, { 10, "5" }, { 13, "7" }, { 16, "10" }, { 23, "20" } };
-        for (auto [j, t] : marks)
-            g.right(VX + 6, 4 + j, t, j < 4 ? red : grey);
-        for (int c = 0; c < 2; ++c)
+        for (const auto& s : sections)
         {
-            const int cx = VX + 3 + 5 * c;
-            const int lit = (int) std::floor(vuRows(needle[c]) * 8); // in eighths of a row
-            g.put(cx, 3, u(clip[c] ? "●" : "○"), clip[c] ? red : dark);
-            for (int j = 0; j < 24; ++j)
-            {
-                const int eighths = jlimit(0, 8, lit - 8 * (23 - j));
-                g.put(cx, 4 + j, eighths > 0 ? String::charToString((juce_wchar) (0x2580 + eighths)) : u("│"), eighths > 0 ? (j < 4 ? red : white) : rule);
-            }
-            if (peak[c] >= 0.5f)
-                g.put(cx, 28 - roundToInt(peak[c]), u("▬"), 24 - roundToInt(peak[c]) < 4 ? red : white);
-            g.put(cx, 28, c == 0 ? "L" : "R", grey);
+            if (&s != sections) g.put(s.x - 2, titleY, u("→"), muted);
+            g.put(s.x, titleY, s.name, primary), g.edge(s.x + (int) std::strlen(s.name) + 1, s.x + s.w, titleY, 1);
         }
-        g.centre(VX + 1, 11, 30, text("output"), white, true);
-
-        // Status line: rate, resolution, then each stage's setting; the scope span and the version.
-        const float rate = value("rate");
-        int at = 2;
-        const auto word = [&](const String& s, Colour colour, bool bold = false) { g.put(at, R - 2, s, colour, bold), at += s.length() + 1; };
-        word(rate >= 1000 ? String(rate / 1000, 1) : String(roundToInt(rate)), white, true), word(rate >= 1000 ? "khz" : "hz", grey);
-        b > 0 ? (word(String(b), white, true), word("bit", grey)) : word("off", white, true);
-        const String dot = u(" · ");
-        g.put(19, R - 2, String(value("dcShift") > 0.5f ? "mid-tread" : "mid-riser") + dot + "dither " + text("dither") + dot
-                             + (value("approxOn") > 0.5f ? "approx " + text("approxDev") : String("approx off")) + dot
-                             + (value("imagesOn") > 0.5f ? "images +" + text("imagesShift") : String("images off")) + dot
-                             + (type > 0 ? String(types[type]) + " " + text("cutoff") + (preFilter ? " pre" : " post") : String("filter off"))
-                             + (value("autoGain") > 0.5f ? dot + "auto " + (value("preamp") > 0 ? u("−") + text("preamp").substring(1) : text("preamp")) : String()), dark);
-        g.right(VX - 2, R - 2, "20 ms", dark), g.right(C - 3, R - 2, "v" JucePlugin_VersionString, dark);
+        for (int i = 0; i < numKnobs; ++i)
+            if (const auto& s = knobSpecs[i]; knobs[i].isVisible()) knob(g, knobX(sections[s.section], s.slot), knobY, knobValue(i), s.name, knobText(i), s.centred);
+        for (int i = 0; i < numSelectors; ++i)
+            if (const auto& s = selectorSpecs[i]; arrows[2 * i]->isVisible())
+            {
+                const int x = selectorX(s), at = x + labelWidth(s), w = slotWidth(s);
+                const int chosen = std::strcmp(s.id, "invert") == 0 ? (proc.band().invert ? 1 : 0) : index(s.id);
+                g.put(x, selectY, s.label, muted);
+                g.put(at, selectY, "<", arrows[2 * i]->isMouseOver() ? primary : muted), g.put(at + w - 1, selectY, ">", arrows[2 * i + 1]->isMouseOver() ? primary : muted);
+                g.centre(at + 1, w - 2, selectY, s.names[jlimit(0, s.names.size() - 1, chosen)], primary, true);
+            }
+        const auto& out = sections[4];
+        g.put(out.x, selectY, "out", muted), g.put(out.x + 4, selectY, outPeak > 0 ? minus(String(Decibels::gainToDecibels(outPeak), 1)) + " dB" : u("−inf"), primary, true);
+        g.right(out.x + out.w - 3, selectY, "clip", muted), g.put(out.x + out.w - 1, selectY, u("⠶"), clipped ? accent : dim);
+        g.put(3, R - 3, String::repeatedString(u("─"), C - 6), rule);
         show(g);
     }
 
@@ -532,8 +617,9 @@ struct Editor : AudioProcessorEditor, Timer
         const int iw = jmax(1, roundToInt((float) getWidth() * scale)), ih = jmax(1, roundToInt((float) getHeight() * scale));
         if (image.getWidth() != iw || image.getHeight() != ih)
         {
-            image = Image(Image::RGB, iw, ih, false);
+            image = Image(Image::RGB, iw, ih, false, SoftwareImageType()); // software: the dots are written in place
             fonts[0] = mono((float) iw / C / 0.6f, false), fonts[1] = mono((float) iw / C / 0.6f, true);
+            cutPlates(iw, ih);
             Graphics ig(image);
             for (int j = 0; j < R; ++j)
                 for (int i = 0; i < C; ++i)
@@ -541,60 +627,167 @@ struct Editor : AudioProcessorEditor, Timer
         }
         g.drawImageTransformed(image, AffineTransform::scale((float) getWidth() / (float) iw, (float) getHeight() / (float) ih));
     }
-    // One cell in device pixels. Cells are snapped to whole pixels, so lines and blocks join without seams.
+    // The plates at this editor's size in points (inks by the nearest pixel, the 2x paper averaged), then in device pixels.
+    void cutPlates(int iw, int ih)
+    {
+        const int w = jmax(1, jmin(iw, getWidth())), h = jmax(1, jmin(ih, getHeight()));
+        const auto& from = plates();
+        const auto device = [&](const std::function<Colour(int, int)>& at) {
+            Image out(Image::RGB, iw, ih, false, SoftwareImageType());
+            std::vector<Colour> row((size_t) w);
+            const Image::BitmapData d(out, Image::BitmapData::writeOnly);
+            for (int y = 0, done = -1; y < ih; ++y)
+            {
+                if (const int py = jmin(h - 1, y * h / ih); py != done)
+                {
+                    done = py;
+                    for (int x = 0; x < w; ++x) row[(size_t) x] = at(x, py);
+                }
+                for (int x = 0; x < iw; ++x) d.setPixelColour(x, y, row[(size_t) jmin(w - 1, x * w / iw)]);
+            }
+            return out;
+        };
+        const auto nearest = [&](const Image& img) {
+            return device([&](int x, int y) { return img.getPixelAt((int) (((float) x + 0.5f) * W / (float) w), (int) (((float) y + 0.5f) * H / (float) h)); });
+        };
+        inkPlate = nearest(from.ink), tintPlate = nearest(from.tint);
+        const Image::BitmapData p(from.paper, Image::BitmapData::readOnly);
+        paperPlate = device([&](int x, int y) {
+            const double x0 = x * 2.0 * W / w, x1 = (x + 1) * 2.0 * W / w, y0 = y * 2.0 * H / h, y1 = (y + 1) * 2.0 * H / h;
+            double sum[3] {}, area = 0;
+            for (int sy = (int) y0; sy < jmin(2 * H, (int) std::ceil(y1)); ++sy)
+                for (int sx = (int) x0; sx < jmin(2 * W, (int) std::ceil(x1)); ++sx)
+                {
+                    const double a = (jmin(x1, sx + 1.0) - jmax(x0, (double) sx)) * (jmin(y1, sy + 1.0) - jmax(y0, (double) sy));
+                    const auto c = p.getPixelColour(sx, sy);
+                    sum[0] += a * c.getRed(), sum[1] += a * c.getGreen(), sum[2] += a * c.getBlue(), area += a;
+                }
+            return Colour((uint8) roundToInt(sum[0] / area), (uint8) roundToInt(sum[1] / area), (uint8) roundToInt(sum[2] / area));
+        });
+        // One cell's eight braille dots (one byte each, coverage 0..255), then the shade's four, for the cell sizes in use.
+        const float cellW = (float) iw / C, cellH = (float) ih / R;
+        for (int s = 0; s < 4; ++s)
+        {
+            const int rw = (int) cellW + s % 2, rh = (int) cellH + s / 2;
+            dotMasks[s].assign((size_t) (9 * rw * rh), 0);
+            constexpr int fine = 8;
+            for (int q = 0; q < 12; ++q)
+            {
+                const float r = 0.15f * cellW, half = 0.11f * cellW;
+                const float x = q < 8 ? (float) rw * (0.3f + 0.4f * (float) (q % 2)) : cellW * ((float) ((q - 8) / 2) * 0.5f + 0.25f);
+                const float y = q < 8 ? (float) rh * (0.125f + 0.25f * (float) (q / 2)) : cellH * ((float) ((q - 8) / 2 + 2 * ((q - 8) % 2)) * 0.25f + 0.125f);
+                for (int py = 0; py < rh; ++py)
+                    for (int px = 0; px < rw; ++px)
+                    {
+                        int hits = 0;
+                        for (int k = 0; k < fine * fine; ++k)
+                        {
+                            const float dx = (float) px + ((float) (k % fine) + 0.5f) / fine - x, dy = (float) py + ((float) (k / fine) + 0.5f) / fine - y;
+                            hits += (q < 8 ? dx * dx + dy * dy <= r * r : std::abs(dx) <= half && std::abs(dy) <= half) ? 1 : 0;
+                        }
+                        auto& m = dotMasks[s][(size_t) (jmin(q, 8) * rw * rh + py * rw + px)];
+                        m = (uint8) jmin(255, (int) m + hits * 255 / (fine * fine));
+                    }
+            }
+        }
+    }
+    Rectangle<int> pixelsOf(int i, int j) const // a cell in device pixels, snapped to whole pixels
+    {
+        const auto px = [this](int k) { return roundToInt((float) k * (float) image.getWidth() / C); };
+        const auto py = [this](int k) { return roundToInt((float) k * (float) image.getHeight() / R); };
+        return Rectangle<int>::leftTopRightBottom(px(i), py(j), px(i + 1), py(j + 1));
+    }
+    // How a colour prints (the site's riso.js): the accent in its ink, the picture's neutrals in their shadow ink, other
+    // bright neutrals cream, anything else as it is.
+    struct Ink { const Image* plate; float alpha; Colour colour; };
+    Ink inkOf(Colour c, int i, int j) const
+    {
+        const int r = c.getRed(), g = c.getGreen(), b = c.getBlue();
+        const float lum = (float) (r + g + b) / 3, t = jlimit(0.0f, 1.0f, (lum - 13) / 223);
+        if (r - g > 40 && r - b > 30) return { &inkPlate, jlimit(0.0f, 1.0f, (float) (r - 13) / 242), {} };
+        const bool plot = i >= AX && i < AX + AW && j >= AT && j < AT + AH;
+        if (plot && lum > 20) return { &tintPlate, t, {} };
+        return { nullptr, 1, lum > 150 ? page.interpolatedWith(cream, t) : c };
+    }
+    // Coverage (one byte per pixel, the masks' layers or'ed) printed straight into the image.
+    void print(Rectangle<int> r, const std::vector<uint8>& masks, int bits, const Ink& ink)
+    {
+        const Image::BitmapData d(image, r.getX(), r.getY(), r.getWidth(), r.getHeight(), Image::BitmapData::readWrite);
+        std::optional<Image::BitmapData> from;
+        if (ink.plate != nullptr) from.emplace(*ink.plate, r.getX(), r.getY(), r.getWidth(), r.getHeight());
+        const int n = r.getWidth() * r.getHeight();
+        for (int y = 0; y < r.getHeight(); ++y)
+            for (int x = 0; x < r.getWidth(); ++x)
+            {
+                int cover = 0;
+                for (int q = 0; q < 9; ++q)
+                    if (bits & 1 << q) cover = jmin(255, cover + masks[(size_t) (q * n + y * r.getWidth() + x)]);
+                if (cover == 0) continue;
+                const float a = ink.alpha * (float) cover / 255;
+                auto* p = reinterpret_cast<PixelRGB*>(d.getPixelPointer(x, y));
+                const auto c = from ? from->getPixelColour(x, y) : ink.colour;
+                const auto mix = [a](uint8 under, uint8 top) { return (uint8) ((float) under + ((float) top - (float) under) * a + 0.5f); };
+                p->setARGB(255, mix(p->getRed(), c.getRed()), mix(p->getGreen(), c.getGreen()), mix(p->getBlue(), c.getBlue()));
+            }
+    }
+    // One cell in device pixels, snapped to whole pixels so lines and blocks join; vector glyphs as grid.js draws them.
     void drawCell(Graphics& g, int i, int j)
     {
         const auto& c = shown.at[j][i];
-        const auto px = [this](int k) { return roundToInt((float) k * (float) image.getWidth() / C); };
-        const auto py = [this](int k) { return roundToInt((float) k * (float) image.getHeight() / R); };
-        const auto r = Rectangle<int>::leftTopRightBottom(px(i), py(j), px(i + 1), py(j + 1));
-        g.setColour(c.bg.isTransparent() ? page : c.bg), g.fillRect(r);
-        if (c.c == ' ') return;
+        const auto r = pixelsOf(i, j);
         Graphics::ScopedSaveState state(g);
-        g.reduceClipRegion(r), g.setColour(c.fg); // nothing spills into a neighbour, which may be redrawn alone
+        g.reduceClipRegion(r); // nothing spills into a neighbour, which may be redrawn alone
+        g.drawImageAt(paperPlate, 0, 0);
+        if (!c.bg.isTransparent()) g.setColour(inkOf(c.bg, i, j).colour), g.fillRect(r);
         const float w = (float) image.getWidth() / C, h = (float) image.getHeight() / R, x = (float) r.getX(), y = (float) r.getY();
         const float cx = x + (float) r.getWidth() / 2, cy = y + (float) r.getHeight() / 2, lw = jmax(1.0f, w * 0.12f);
-        const int t = jmax(1, roundToInt(lw));
-        const auto block = [&](float l, float tp, float rt, float bt) {
-            g.fillRect(Rectangle<int>::leftTopRightBottom(roundToInt(x + l * (float) r.getWidth()), roundToInt(y + tp * (float) r.getHeight()),
-                                                          roundToInt(x + rt * (float) r.getWidth()), roundToInt(y + bt * (float) r.getHeight())));
+        const int t = jmax(1, roundToInt(lw)), hy = roundToInt(cy - (float) t / 2);
+        if (c.edge != 0)
+            g.setColour(line), g.fillRect(r.getX(), c.edge == 2 ? r.getY() : roundToInt(y + (float) r.getHeight() / 2), r.getWidth(), jmax(1, roundToInt((float) image.getWidth() / (float) jmax(1, getWidth()))));
+        if (c.c == ' ' && c.left <= ' ') return;
+        const auto ink = inkOf(c.fg, i, j);
+        const bool braille = c.c >= 0x2800 && c.c <= 0x28ff;
+        if (braille || c.c == 0x2591) // braille, ░ (a dither of four dots)
+        {
+            const int s = (r.getWidth() > (int) w ? 1 : 0) + (r.getHeight() > (int) h ? 2 : 0);
+            int bits = 0;
+            for (int q = 0; q < 8; ++q)
+                if (braille && ((c.c - 0x2800) & brailleBit(q % 2, q / 2))) bits |= 1 << q;
+            return print(r, dotMasks[s], braille ? bits : 1 << 8, ink);
+        }
+        if (ink.plate != nullptr) g.setTiledImageFill(*ink.plate, 0, 0, ink.alpha);
+        else g.setColour(ink.colour);
+        const auto glyph = [&](juce_wchar code, float offset) {
+            const float gx = (c.left != 0 ? (float) i * w : x + ((float) r.getWidth() - w) / 2) + offset;
+            if (const auto id = fonts[c.bold ? 1 : 0].getTypefacePtr()->getNominalGlyphForCodepoint(code))
+            {
+                const float size = w / 0.6f; // Geist Mono: advance 0.6 em, ascent 1.005 + descent 0.295 em
+                const uint16_t at = (uint16_t) *id;
+                const Point<float> origin { gx, y + (h - 1.3f * size) / 2 + 1.005f * size };
+                g.setFont(fonts[c.bold ? 1 : 0]);
+                g.getInternalContext().drawGlyphs({ &at, 1 }, { &origin, 1 }, {});
+            }
         };
-        if (c.c == 0x2500) g.fillRect(r.getX(), roundToInt(cy - (float) t / 2), r.getWidth(), t); // ─
-        else if (c.c == 0x2502) g.fillRect(roundToInt(cx - (float) t / 2), r.getY(), t, r.getHeight()); // │
-        else if (c.c == 0x2506) // ┆
-            for (int k = 0; k < 3; ++k) g.fillRect(Rectangle<float>((float) roundToInt(cx - (float) t / 2), y + h * ((float) k + 0.2f) / 3, (float) t, h * 0.2f));
-        else if (c.c >= 0x2581 && c.c <= 0x2588) block(0, 1 - (float) (c.c - 0x2580) / 8, 1, 1); // ▁ .. █
-        else if (c.c == 0x2580) block(0, 0, 1, 0.5f); // ▀
-        else if (c.c == 0x2594) block(0, 0, 1, 0.125f); // ▔
-        else if (c.c == 0x2597) block(0.5f, 0.5f, 1, 1); // ▗
-        else if (c.c >= 0x2800 && c.c <= 0x28ff) // braille
+        if (c.left != 0) { glyph(c.left, -w / 2), glyph(c.c, w / 2); return; }
+        if (c.c == 0x2500) g.fillRect(r.getX(), hy, r.getWidth(), t); // ─
+        else if (c.c == 0x25a0) g.fillRect(Rectangle<float>(0.72f * w, 0.36f * h).withCentre({ cx, cy })); // ■
+        else if (c.c == 0x25a1) g.drawRect(Rectangle<float>(0.72f * w, 0.36f * h).withCentre({ cx, cy }), (float) t); // □
+        else if (c.c == 0x2192) // →
         {
-            for (int dx = 0; dx < 2; ++dx)
-                for (int dy = 0; dy < 4; ++dy)
-                    if ((c.c - 0x2800) & brailleBit(dx, dy))
-                        g.fillEllipse(Rectangle<float>(0.3f * w, 0.3f * w).withCentre({ x + (float) r.getWidth() * (0.3f + 0.4f * (float) dx), y + (float) r.getHeight() * (0.125f + 0.25f * (float) dy) }));
-        }
-        else if (c.c == 0x25a0 || c.c == 0x25ac) g.fillRect(Rectangle<float>(c.c == 0x25a0 ? 0.72f * w : w, c.c == 0x25a0 ? 0.36f * h : 0.22f * h).withCentre({ cx, cy })); // ■ ▬
-        else if (c.c == 0x25a1) g.drawRect(Rectangle<float>(0.72f * w, 0.36f * h).withCentre({ cx, cy }), lw); // □
-        else if (c.c == 0x25cf) g.fillEllipse(Rectangle<float>(0.72f * w, 0.72f * w).withCentre({ cx, cy })); // ●
-        else if (c.c == 0x25cb) g.drawEllipse(Rectangle<float>(0.72f * w - lw, 0.72f * w - lw).withCentre({ cx, cy }), lw); // ○
-        else if (c.c == 0x2039 || c.c == 0x203a) // ‹ › (not in Geist Mono)
-        {
-            const float d = c.c == 0x2039 ? 1.0f : -1.0f;
             Path p;
-            p.startNewSubPath(cx + d * 0.14f * w, cy - 0.14f * h), p.lineTo(cx - d * 0.14f * w, cy + 0.02f * h), p.lineTo(cx + d * 0.14f * w, cy + 0.18f * h);
-            g.strokePath(p, PathStrokeType(lw));
+            p.startNewSubPath(cx - 0.32f * w, cy + 0.04f * h), p.lineTo(cx + 0.3f * w, cy + 0.04f * h);
+            p.startNewSubPath(cx + 0.08f * w, cy - 0.08f * h), p.lineTo(cx + 0.3f * w, cy + 0.04f * h), p.lineTo(cx + 0.08f * w, cy + 0.16f * h);
+            g.strokePath(p, PathStrokeType((float) t));
         }
-        else if (const auto glyph = fonts[c.bold ? 1 : 0].getTypefacePtr()->getNominalGlyphForCodepoint(c.c))
-        {
-            const float size = w / 0.6f; // Geist Mono: advance 0.6 em, line box ascent 1.005 + descent 0.295 em
-            const uint16_t id = (uint16_t) *glyph;
-            const Point<float> at { x + ((float) r.getWidth() - w) / 2, y + (h - 1.3f * size) / 2 + 1.005f * size };
-            g.setFont(fonts[c.bold ? 1 : 0]);
-            g.getInternalContext().drawGlyphs({ &id, 1 }, { &at, 1 }, {});
-        }
+        else glyph(c.c, 0);
     }
 };
 } // namespace
 
 AudioProcessorEditor* CrumbProcessor::createEditor() { return new Editor(*this); }
+
+namespace crumb
+{
+// The plates as PNGs (tests and the site: CrumbTests --plates).
+juce::Image plate(int k) { return k == 0 ? plates().ink : k == 1 ? plates().tint : plates().paper; }
+} // namespace crumb

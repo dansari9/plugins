@@ -6,7 +6,7 @@ if(APPLE)
 endif()
 
 # Bump on every build that is handed out: Logic caches Audio Units by version.
-project(Crumb VERSION 0.2.0 LANGUAGES C CXX)
+project(Crumb VERSION 0.3.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -37,7 +37,7 @@ juce_add_plugin(Crumb
     PLUGIN_CODE Crmb
     PLUGIN_NAME "crumb"
     PRODUCT_NAME "crumb"
-    DESCRIPTION "Vintage-sampler bit crusher"
+    DESCRIPTION "Bit crusher and lossy codec"
     IS_SYNTH FALSE
     NEEDS_MIDI_INPUT FALSE
     NEEDS_MIDI_OUTPUT FALSE
