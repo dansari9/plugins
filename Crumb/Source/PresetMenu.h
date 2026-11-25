@@ -14,7 +14,7 @@ public:
     struct Group { juce::String name; std::vector<Item> items; };
     std::function<void(int)> onChoose;
     std::function<juce::Font(float size, bool bold)> font;
-    float cw = 8, ch = 16;
+    float cw = 8, ch = 16, drop = 0; // drop: rows the list starts under its cells' top (an editor's rule may stand in the middle of a row)
     juce::Colour page { 0xff0d0d0d }, box { 0xff454545 }, rule { 0xff2c2c2c }, header { 0xff7a7a7a }, text { 0xffbcbcbc }, lit { 0xffefe6d2 };
 
     PresetMenu()
@@ -66,13 +66,13 @@ public:
         for (auto& h : heads)
             if (const int y = h.y - scroll; y >= 0 && y < view)
             {
-                const float x = cw * (float) (area.getX() + 2 + h.x), top = ch * (float) (area.getY() + 1 + y);
+                const float x = cw * (float) (area.getX() + 2 + h.x), top = ch * ((float) (area.getY() + 1 + y) + drop);
                 write(g, h.name, x + cw, top, header, false);
                 const float from = x + cw * (float) (h.name.isEmpty() ? 1 : h.name.length() + 2);
                 g.setColour(rule), g.fillRect(from, top + ch / 2, x + cw * (float) (width - 1) - from, 1.0f);
             }
-        if (scroll > 0) write(g, "^", cw * (float) area.getCentreX(), ch * (float) area.getY(), header, false, true);
-        if (scroll < height - view) write(g, "v", cw * (float) area.getCentreX(), ch * (float) (area.getBottom() - 1), header, false, true);
+        if (scroll > 0) write(g, "^", cw * (float) area.getCentreX(), ch * ((float) area.getY() + drop), header, false, true);
+        if (scroll < height - view) write(g, "v", cw * (float) area.getCentreX(), ch * ((float) (area.getBottom() - 1) + drop), header, false, true);
     }
     void mouseDown(const juce::MouseEvent& e) override
     {
@@ -137,7 +137,7 @@ private:
 
     juce::Rectangle<int> pixels(juce::Rectangle<int> c) const
     {
-        return (c.toFloat().transformedBy(juce::AffineTransform::scale(cw, ch))).toNearestInt();
+        return c.toFloat().translated(0, drop).transformedBy(juce::AffineTransform::scale(cw, ch)).toNearestInt();
     }
     // Groups one under the other, a blank row between, a new column where the next would not fit; returns the columns.
     int flow(const std::vector<Group>& groups, int tall, bool build)
