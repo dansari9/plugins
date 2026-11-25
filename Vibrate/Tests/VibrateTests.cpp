@@ -743,12 +743,13 @@ double benchmark(bool silent)
     };
     for (int i = 0; i < 512; ++i) process();
     double best = std::numeric_limits<double>::max();
-    for (int trial = 0; trial < 3; ++trial)
+    // Short trials: the fastest one is the code's own cost, without the machine's other work.
+    for (int trial = 0; trial < 48; ++trial)
     {
         const auto start = std::chrono::steady_clock::now();
-        for (int i = 0; i < 1024; ++i) process();
+        for (int i = 0; i < 64; ++i) process();
         const auto stop = std::chrono::steady_clock::now();
-        best = std::min(best, std::chrono::duration<double, std::nano>(stop - start).count() / (1024 * 512));
+        best = std::min(best, std::chrono::duration<double, std::nano>(stop - start).count() / (64 * 512));
     }
     return best;
 }

@@ -20,17 +20,50 @@ inline double snapZero(double value)
     return std::abs(value) < 1e-20 ? 0.0 : value;
 }
 
-inline double tanSmall(double x)
+// Two doubles worked on together. Each lane has the scalar's IEEE result, so the same bits.
+#if defined(__GNUC__) || defined(__clang__)
+using Pair = double __attribute__((vector_size(16)));
+
+inline Pair snapZero(Pair value)
+{
+    using Mask = long long __attribute__((vector_size(16)));
+    const Mask small = (value < 1e-20) & (value > -1e-20);
+    return reinterpret_cast<Pair>(reinterpret_cast<Mask>(value) & ~small);
+}
+#else
+struct Pair
+{
+    double a, b;
+    double operator[](int i) const { return i == 0 ? a : b; }
+    friend Pair operator+(Pair x, Pair y) { return { x.a + y.a, x.b + y.b }; }
+    friend Pair operator-(Pair x, Pair y) { return { x.a - y.a, x.b - y.b }; }
+    friend Pair operator*(Pair x, Pair y) { return { x.a * y.a, x.b * y.b }; }
+    friend Pair operator/(Pair x, Pair y) { return { x.a / y.a, x.b / y.b }; }
+    friend Pair operator+(double x, Pair y) { return { x + y.a, x + y.b }; }
+    friend Pair operator*(double x, Pair y) { return { x * y.a, x * y.b }; }
+    friend Pair operator*(Pair x, double y) { return { x.a * y, x.b * y }; }
+    friend Pair operator/(Pair x, double y) { return { x.a / y, x.b / y }; }
+};
+
+inline Pair snapZero(Pair value)
+{
+    return { snapZero(value.a), snapZero(value.b) };
+}
+#endif
+
+template <typename T>
+T tanSmall(T x)
 {
     // Taylor through x^9. All arguments are below 0.28 radians at the lowest rate.
-    const double xx = x * x;
+    const T xx = x * x;
     return x + x * xx * (1.0 / 3 + xx * (2.0 / 15 + xx * (17.0 / 315 + xx * (62.0 / 2835))));
 }
 
-inline double pow2Small(double x)
+template <typename T>
+T pow2Small(T x)
 {
     // exp(x * log(2)), through x^9 for a maximum exponent of ±1.2.
-    const double t = x * 0.69314718055994530942;
+    const T t = x * 0.69314718055994530942;
     return 1.0 + t * (1.0 + t * (1.0 / 2 + t * (1.0 / 6 + t * (1.0 / 24
         + t * (1.0 / 120 + t * (1.0 / 720 + t * (1.0 / 5040
         + t * (1.0 / 40320 + t / 362880.0))))))));
@@ -308,11 +341,10 @@ public:
             if (g[phase] > 0)
             {
                 phaseActive = true;
-                const double aFactor = pow2Small(d[phaseDepth] * n[8]);
-                const double bFactor = pow2Small(d[phaseDepth] * n[9]);
-                phase1 = 800.0 * aFactor;
-                phase2 = 800.0 * bFactor;
-                h = 0.5 * g[phase] * chains(x, { aFactor * phaseScale, bFactor * phaseScale });
+                const Pair factors = pow2Small(Pair { d[phaseDepth] * n[8], d[phaseDepth] * n[9] });
+                phase1 = 800.0 * factors[0];
+                phase2 = 800.0 * factors[1];
+                h = 0.5 * g[phase] * chains(x, factors * phaseScale);
             }
             else if (phaseActive)
             {
@@ -373,20 +405,18 @@ private:
     }
 
     // Two four-stage allpass chains side by side; the first minus the second.
-    double chains(double x, const std::array<double, 2>& frequency)
+    double chains(double x, Pair frequency)
     {
         constexpr std::array<double, 4> ratios { 0.5, 0.84, 1.3, 2.1 };
-        std::array<double, 2> y { x, x };
+        Pair y { x, x };
         for (std::size_t i = 0; i < ratios.size(); ++i)
-            for (std::size_t chain = 0; chain < 2; ++chain)
-            {
-                auto& state = phaseState[i][chain];
-                const double g = tanSmall(frequency[chain] * ratios[i]);
-                const double v = (y[chain] - state) * (g / (1.0 + g));
-                const double low = state + v;
-                state = snapZero(low + v);
-                y[chain] -= 2.0 * low;
-            }
+        {
+            const Pair g = tanSmall(frequency * ratios[i]);
+            const Pair v = (y - phaseState[i]) * (g / (1.0 + g));
+            const Pair low = phaseState[i] + v;
+            phaseState[i] = snapZero(low + v);
+            y = y - 2.0 * low;
+        }
         return y[0] - y[1];
     }
 
@@ -398,7 +428,7 @@ private:
     };
     std::array<unsigned, 8> sideTaps {};
     double phaseScale = 0;
-    std::array<std::array<double, 2>, 4> phaseState {};
+    std::array<Pair, 4> phaseState {};
     bool phaseActive = false;
 
     static constexpr double damping = 1.41421356237309504880;
