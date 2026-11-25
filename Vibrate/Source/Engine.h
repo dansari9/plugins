@@ -63,12 +63,20 @@ public:
         if (fraction >= 1.0)
         {
             fraction -= 1.0;
-            ++knot;
-            points = { points[1], points[2], points[3], point(knot + 3u) };
-            coefficients();
+            nextKnot();
         }
         return value;
     }
+
+    void nextKnot()
+    {
+        ++knot;
+        points = { points[1], points[2], points[3], point(knot + 3u) };
+        coefficients();
+    }
+
+    double rate() const { return increment; }
+    std::array<double, 4> cubic() const { return { a, b, c, d }; }
 
 private:
     double uniform(uint32_t at) const
@@ -93,6 +101,69 @@ private:
     std::array<double, 4> points {};
     uint32_t seed = 0, knot = 0;
     double fraction = 0, increment = 0, a = 0, b = 0, c = 0, d = 0;
+};
+
+// Every modulator in step, laid out so the compiler evaluates them in pairs. The same arithmetic as Spline::next,
+// in the same order, so the same bits.
+class SplineBank
+{
+public:
+    static constexpr std::size_t count = rates.size(), padded = (count + 1) / 2 * 2;
+    using Values = std::array<double, padded>;
+
+    void reset(double sampleRate)
+    {
+        fraction = {};
+        for (std::size_t i = 0; i < count; ++i)
+        {
+            splines[i].reset(static_cast<int>(i), sampleRate);
+            increment[i] = splines[i].rate();
+            load(i);
+        }
+        until = 0;
+    }
+
+    void next(Values& values)
+    {
+        for (std::size_t i = 0; i < padded; ++i)
+        {
+            values[i] = ((a[i] * fraction[i] + b[i]) * fraction[i] + c[i]) * fraction[i] + d[i];
+            fraction[i] += increment[i];
+        }
+        if (--until < 0)
+            wrap();
+    }
+
+private:
+    void load(std::size_t i)
+    {
+        const auto cubic = splines[i].cubic();
+        a[i] = cubic[0];
+        b[i] = cubic[1];
+        c[i] = cubic[2];
+        d[i] = cubic[3];
+    }
+
+    // Looks for a passed knot, then counts the samples no modulator can reach one in (two short, for rounding).
+    void wrap()
+    {
+        double least = 1e6;
+        for (std::size_t i = 0; i < count; ++i)
+        {
+            if (fraction[i] >= 1.0)
+            {
+                fraction[i] -= 1.0;
+                splines[i].nextKnot();
+                load(i);
+            }
+            least = std::min(least, (1.0 - fraction[i]) / increment[i]);
+        }
+        until = std::max(0, static_cast<int>(least) - 2);
+    }
+
+    std::array<Spline, count> splines;
+    Values a {}, b {}, c {}, d {}, fraction {}, increment {};
+    int until = 0;
 };
 
 template <std::size_t Size>
@@ -173,11 +244,9 @@ public:
         std::fill(line.begin(), line.end(), 0.0);
         cursor = 0;
         hpIc1 = hpIc2 = 0;
-        phaseA = {};
-        phaseB = {};
+        phaseState = {};
         phaseActive = false;
-        for (std::size_t i = 0; i < modulators.size(); ++i)
-            modulators[i].reset(static_cast<int>(i), fs);
+        modulators.reset(fs);
         gain.reset(gains(controls, bypass));
         depth.reset(depths(controls));
     }
@@ -206,34 +275,31 @@ public:
         const double x = input - damping * v1 - v2;
         line[cursor] = x;
 
-        const double n0 = modulators[0].next(), n1 = modulators[1].next();
-        const double n2 = modulators[2].next(), n3 = modulators[3].next();
-        const double n4 = modulators[4].next(), n5 = modulators[5].next();
-        const double n6 = modulators[6].next(), n7 = modulators[7].next();
-        const double n8 = modulators[8].next(), n9 = modulators[9].next(), n10 = modulators[10].next();
+        SplineBank::Values n;
+        modulators.next(n);
 
         double p = 0, a = 0, dl = 0, h = 0, s = 0;
         double pitch1 = 0, pitch2 = 0, panGain = 0, delay1 = 0, delay2 = 0, phase1 = 0, phase2 = 0;
         if constexpr ((lanes & (1u << pitch)) != 0)
             if (g[pitch] > 0)
             {
-                pitch1 = 1.0 + fs * (0.0023 + d[pitchDepth] * n0 * (9.0 / (3462.0 * rates[0]))
-                                                            + d[pitchDepth] * n2 * (1.0 / (3462.0 * rates[2])));
-                pitch2 = 1.0 + fs * (0.0023 + d[pitchDepth] * n1 * (9.0 / (3462.0 * rates[1]))
-                                                            + d[pitchDepth] * n3 * (1.0 / (3462.0 * rates[3])));
+                pitch1 = 1.0 + fs * (0.0023 + d[pitchDepth] * n[0] * (9.0 / (3462.0 * rates[0]))
+                                                            + d[pitchDepth] * n[2] * (1.0 / (3462.0 * rates[2])));
+                pitch2 = 1.0 + fs * (0.0023 + d[pitchDepth] * n[1] * (9.0 / (3462.0 * rates[1]))
+                                                            + d[pitchDepth] * n[3] * (1.0 / (3462.0 * rates[3])));
                 p = g[pitch] * (tap(pitch1) - tap(pitch2));
             }
         if constexpr ((lanes & (1u << pan)) != 0)
             if (g[pan] > 0)
             {
-                panGain = g[pan] * ((n4 + 0.35 * n5) / 1.35);
+                panGain = g[pan] * ((n[4] + 0.35 * n[5]) / 1.35);
                 a = panGain * x;
             }
         if constexpr ((lanes & (1u << delay)) != 0)
             if (g[delay] > 0)
             {
-                delay1 = 1.0 + fs * d[delayDepth] * (1.0 + n6);
-                delay2 = 1.0 + fs * d[delayDepth] * (1.0 + n7);
+                delay1 = 1.0 + fs * d[delayDepth] * (1.0 + n[6]);
+                delay2 = 1.0 + fs * d[delayDepth] * (1.0 + n[7]);
                 dl = g[delay] * (tap(delay1) - tap(delay2));
             }
 
@@ -242,18 +308,15 @@ public:
             if (g[phase] > 0)
             {
                 phaseActive = true;
-                const double aFactor = pow2Small(d[phaseDepth] * n8);
-                const double bFactor = pow2Small(d[phaseDepth] * n9);
+                const double aFactor = pow2Small(d[phaseDepth] * n[8]);
+                const double bFactor = pow2Small(d[phaseDepth] * n[9]);
                 phase1 = 800.0 * aFactor;
                 phase2 = 800.0 * bFactor;
-                const double chainA = allpass(x, aFactor * phaseScale, phaseA);
-                const double chainB = allpass(x, bFactor * phaseScale, phaseB);
-                h = 0.5 * g[phase] * (chainA - chainB);
+                h = 0.5 * g[phase] * chains(x, { aFactor * phaseScale, bFactor * phaseScale });
             }
             else if (phaseActive)
             {
-                phaseA = {};
-                phaseB = {};
+                phaseState = {};
                 phaseActive = false;
             }
         }
@@ -263,7 +326,7 @@ public:
                 double diffuse = 0;
                 for (std::size_t i = 0; i < sideTaps.size(); ++i)
                     diffuse += sideWeights[i] * line[(cursor - sideTaps[i]) & lineMask];
-                s = g[side] * (0.8 + 0.2 * n10) * diffuse;
+                s = g[side] * (0.8 + 0.2 * n[10]) * diffuse;
             }
 
         cursor = (cursor + 1u) & lineMask;
@@ -309,18 +372,22 @@ private:
              - outer * ((2.0 - t) * line[(at + 1u) & lineMask] + (t + 1.0) * line[(at - 2u) & lineMask]);
     }
 
-    static double allpass(double x, double frequency, std::array<double, 4>& state)
+    // Two four-stage allpass chains side by side; the first minus the second.
+    double chains(double x, const std::array<double, 2>& frequency)
     {
         constexpr std::array<double, 4> ratios { 0.5, 0.84, 1.3, 2.1 };
-        for (std::size_t i = 0; i < state.size(); ++i)
-        {
-            const double g = tanSmall(frequency * ratios[i]);
-            const double v = (x - state[i]) * (g / (1.0 + g));
-            const double low = state[i] + v;
-            state[i] = snapZero(low + v);
-            x -= 2.0 * low;
-        }
-        return x;
+        std::array<double, 2> y { x, x };
+        for (std::size_t i = 0; i < ratios.size(); ++i)
+            for (std::size_t chain = 0; chain < 2; ++chain)
+            {
+                auto& state = phaseState[i][chain];
+                const double g = tanSmall(frequency[chain] * ratios[i]);
+                const double v = (y[chain] - state) * (g / (1.0 + g));
+                const double low = state + v;
+                state = snapZero(low + v);
+                y[chain] -= 2.0 * low;
+            }
+        return y[0] - y[1];
     }
 
     static constexpr std::array<double, 8> sideSeconds { .0009, .0017, .0029, .0043, .0059, .0077, .0098, .0119 };
@@ -331,7 +398,7 @@ private:
     };
     std::array<unsigned, 8> sideTaps {};
     double phaseScale = 0;
-    std::array<double, 4> phaseA {}, phaseB {};
+    std::array<std::array<double, 2>, 4> phaseState {};
     bool phaseActive = false;
 
     static constexpr double damping = 1.41421356237309504880;
@@ -340,7 +407,7 @@ private:
     unsigned cursor = 0, lineMask = 0;
     int gainLength = 1440, depthLength = 12000;
     std::vector<double> line;
-    std::array<Spline, rates.size()> modulators;
+    SplineBank modulators;
     Ramp<numControls> gain;
     enum Depth { pitchDepth, delayDepth, phaseDepth, numDepths };
     Ramp<numDepths> depth;
