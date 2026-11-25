@@ -48,7 +48,7 @@ juce_add_plugin(Vibrate
     VST3_CATEGORIES Fx Modulation
 )
 
-target_sources(Vibrate PRIVATE Source/Vibrate.cpp Source/VibrateEditor.cpp)
+target_sources(Vibrate PRIVATE Source/Vibrate.cpp Source/VibrateEditor.cpp Source/State.cpp)
 
 # Geist Mono (SIL OFL 1.1, Assets/Fonts/OFL.txt), the same faces as Rootnote.
 juce_add_binary_data(VibrateFonts SOURCES

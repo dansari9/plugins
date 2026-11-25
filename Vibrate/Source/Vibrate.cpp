@@ -31,10 +31,11 @@ AudioProcessorValueTreeState::ParameterLayout parameterLayout()
 }
 }
 
-VibrateProcessor::VibrateProcessor()
+VibrateProcessor::VibrateProcessor(File presetDirectory)
     : AudioProcessor(BusesProperties().withInput("Input", AudioChannelSet::stereo(), true)
                                       .withOutput("Output", AudioChannelSet::stereo(), true)),
-      apvts(*this, nullptr, "VIBRATE", parameterLayout())
+      apvts(*this, nullptr, "VIBRATE", parameterLayout()),
+      directory(std::move(presetDirectory))
 {
     for (std::size_t i = 0; i < parameters.size(); ++i)
         parameters[i] = apvts.getRawParameterValue(vibrate::ids[i]);
@@ -88,17 +89,6 @@ void VibrateProcessor::process(AudioBuffer<float>& audio, bool hostBypass)
         left[i] = sample.left;
         right[i] = sample.right;
     }
-}
-
-void VibrateProcessor::getStateInformation(MemoryBlock& output)
-{
-    if (const auto xml = apvts.copyState().createXml())
-        copyXmlToBinary(*xml, output);
-}
-void VibrateProcessor::setStateInformation(const void* data, int size)
-{
-    if (const auto xml = getXmlFromBinary(data, size); xml != nullptr && xml->hasTagName(apvts.state.getType()))
-        apvts.replaceState(ValueTree::fromXml(*xml));
 }
 
 AudioProcessor* JUCE_CALLTYPE createPluginFilter() { return new VibrateProcessor(); }

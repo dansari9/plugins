@@ -27,12 +27,27 @@ inline double tanSmall(double x)
     return x + x * xx * (1.0 / 3 + xx * (2.0 / 15 + xx * (17.0 / 315 + xx * (62.0 / 2835))));
 }
 
+inline double pow2Small(double x)
+{
+    // exp(x * log(2)), through x^9 for a maximum exponent of ±1.2.
+    const double t = x * 0.69314718055994530942;
+    return 1.0 + t * (1.0 + t * (1.0 / 2 + t * (1.0 / 6 + t * (1.0 / 24
+        + t * (1.0 / 120 + t * (1.0 / 720 + t * (1.0 / 5040
+        + t * (1.0 / 40320 + t / 362880.0))))))));
+}
+
+// Fixed independent streams, selected to avoid chance correlation over the first 120 seconds.
+inline constexpr std::array<uint32_t, rates.size()> seeds {
+    0xa511e9b3u, 0x2afdb42au, 0xb0e97ea1u, 0x36d54918u, 0xbcc1138fu, 0x42acde06u,
+    0xa34e3f80u, 0x41734c5eu, 0x7b4d81ddu, 0xe241b397u, 0xae8afce8u
+};
+
 class Spline
 {
 public:
     void reset(int index, double sampleRate)
     {
-        seed = 0xA511E9B3u + static_cast<uint32_t>(index) * 0x85EBCA77u;
+        seed = seeds[static_cast<std::size_t>(index)];
         increment = rates[static_cast<std::size_t>(index)] / sampleRate;
         fraction = 0;
         knot = 0;
@@ -117,6 +132,16 @@ struct Ramp
 
 struct Stereo { float left, right; };
 
+struct Sample
+{
+    double mid, input;
+    Stereo out;
+    Controls terms;
+    double pitch1, pitch2, panGain, delay1, delay2, phase1, phase2;
+};
+
+struct IgnoreSample { void operator()(const Sample&) const {} };
+
 class Engine
 {
 public:
@@ -136,6 +161,9 @@ public:
         hp1 = 1.0 / (1.0 + g * (g + damping));
         hp2 = g * hp1;
         hp3 = g * hp2;
+        phaseScale = pi * 800.0 / fs;
+        for (std::size_t i = 0; i < sideTaps.size(); ++i)
+            sideTaps[i] = static_cast<unsigned>(std::round(fs * sideSeconds[i]));
         reset(controls, bypass);
     }
 
@@ -144,6 +172,9 @@ public:
         std::fill(line.begin(), line.end(), 0.0);
         cursor = 0;
         hpIc1 = hpIc2 = 0;
+        phaseA = {};
+        phaseB = {};
+        phaseActive = false;
         for (std::size_t i = 0; i < modulators.size(); ++i)
             modulators[i].reset(static_cast<int>(i), fs);
         gain.reset(gains(controls, bypass));
@@ -156,8 +187,8 @@ public:
         depth.set(depths(controls), depthLength);
     }
 
-    template <unsigned lanes = allLanes>
-    Stereo process(float left, float right)
+    template <unsigned lanes = allLanes, typename Observer = IgnoreSample>
+    Stereo process(float left, float right, const Observer& observe = {})
     {
         gain.advance();
         depth.advance();
@@ -178,36 +209,72 @@ public:
         const double n2 = modulators[2].next(), n3 = modulators[3].next();
         const double n4 = modulators[4].next(), n5 = modulators[5].next();
         const double n6 = modulators[6].next(), n7 = modulators[7].next();
-        modulators[8].next();
-        modulators[9].next();
-        modulators[10].next();
+        const double n8 = modulators[8].next(), n9 = modulators[9].next(), n10 = modulators[10].next();
 
-        double p = 0, a = 0, dl = 0;
+        double p = 0, a = 0, dl = 0, h = 0, s = 0;
+        double pitch1 = 0, pitch2 = 0, panGain = 0, delay1 = 0, delay2 = 0, phase1 = 0, phase2 = 0;
         if constexpr ((lanes & (1u << pitch)) != 0)
             if (g[pitch] > 0)
             {
-                const double tap1 = 1.0 + fs * (0.0023 + d[pitchDepth] * n0 * (9.0 / (3462.0 * rates[0]))
+                pitch1 = 1.0 + fs * (0.0023 + d[pitchDepth] * n0 * (9.0 / (3462.0 * rates[0]))
                                                             + d[pitchDepth] * n2 * (1.0 / (3462.0 * rates[2])));
-                const double tap2 = 1.0 + fs * (0.0023 + d[pitchDepth] * n1 * (9.0 / (3462.0 * rates[1]))
+                pitch2 = 1.0 + fs * (0.0023 + d[pitchDepth] * n1 * (9.0 / (3462.0 * rates[1]))
                                                             + d[pitchDepth] * n3 * (1.0 / (3462.0 * rates[3])));
-                p = g[pitch] * (tap(tap1) - tap(tap2));
+                p = g[pitch] * (tap(pitch1) - tap(pitch2));
             }
         if constexpr ((lanes & (1u << pan)) != 0)
             if (g[pan] > 0)
-                a = g[pan] * ((n4 + 0.35 * n5) / 1.35) * x;
+            {
+                panGain = g[pan] * ((n4 + 0.35 * n5) / 1.35);
+                a = panGain * x;
+            }
         if constexpr ((lanes & (1u << delay)) != 0)
             if (g[delay] > 0)
             {
-                const double tap1 = 1.0 + fs * d[delayDepth] * (1.0 + n6);
-                const double tap2 = 1.0 + fs * d[delayDepth] * (1.0 + n7);
-                dl = g[delay] * (tap(tap1) - tap(tap2));
+                delay1 = 1.0 + fs * d[delayDepth] * (1.0 + n6);
+                delay2 = 1.0 + fs * d[delayDepth] * (1.0 + n7);
+                dl = g[delay] * (tap(delay1) - tap(delay2));
+            }
+
+        if constexpr ((lanes & (1u << phase)) != 0)
+        {
+            if (g[phase] > 0)
+            {
+                phaseActive = true;
+                const double aFactor = pow2Small(d[phaseDepth] * n8);
+                const double bFactor = pow2Small(d[phaseDepth] * n9);
+                phase1 = 800.0 * aFactor;
+                phase2 = 800.0 * bFactor;
+                const double chainA = allpass(x, aFactor * phaseScale, phaseA);
+                const double chainB = allpass(x, bFactor * phaseScale, phaseB);
+                h = 0.5 * g[phase] * (chainA - chainB);
+            }
+            else if (phaseActive)
+            {
+                phaseA = {};
+                phaseB = {};
+                phaseActive = false;
+            }
+        }
+        if constexpr ((lanes & (1u << side)) != 0)
+            if (g[side] > 0)
+            {
+                double diffuse = 0;
+                for (std::size_t i = 0; i < sideTaps.size(); ++i)
+                    diffuse += sideWeights[i] * line[(cursor - sideTaps[i]) & lineMask];
+                s = g[side] * (0.8 + 0.2 * n10) * diffuse;
             }
 
         cursor = (cursor + 1u) & lineMask;
-        const double q = g[mix] * (p + a + dl);
+        const double q = g[mix] * (p + a + dl + h + s);
+        Stereo out { left, right };
         if (std::abs(q) > 0.0)
-            return { static_cast<float>(left + q), static_cast<float>(right - q) };
-        return { left, right };
+        {
+            out.left = static_cast<float>(left + q);
+            out.right = static_cast<float>(right - q);
+        }
+        observe({ input, x, out, { p, a, dl, h, s, q }, pitch1, pitch2, panGain, delay1, delay2, phase1, phase2 });
+        return out;
     }
 
 private:
@@ -235,6 +302,31 @@ private:
         return inner * (u * line[at & lineMask] + t * line[(at - 1u) & lineMask])
              - outer * ((2.0 - t) * line[(at + 1u) & lineMask] + (t + 1.0) * line[(at - 2u) & lineMask]);
     }
+
+    static double allpass(double x, double frequency, std::array<double, 4>& state)
+    {
+        constexpr std::array<double, 4> ratios { 0.5, 0.84, 1.3, 2.1 };
+        for (std::size_t i = 0; i < state.size(); ++i)
+        {
+            const double g = tanSmall(frequency * ratios[i]);
+            const double v = (x - state[i]) * (g / (1.0 + g));
+            const double low = state[i] + v;
+            state[i] = snapZero(low + v);
+            x -= 2.0 * low;
+        }
+        return x;
+    }
+
+    static constexpr std::array<double, 8> sideSeconds { .0009, .0017, .0029, .0043, .0059, .0077, .0098, .0119 };
+    // Signed exp(-t / 5 ms), last tap balances DC, then all taps normalized to unit squared sum.
+    static constexpr std::array<double, 8> sideWeights {
+        0.6123163047452082, -0.521781535971371, -0.41044789358518047, 0.31020984468642915,
+        0.2252585800098297, -0.1571575785172354, -0.1032598871745846, 0.04486216580690451
+    };
+    std::array<unsigned, 8> sideTaps {};
+    double phaseScale = 0;
+    std::array<double, 4> phaseA {}, phaseB {};
+    bool phaseActive = false;
 
     static constexpr double damping = 1.41421356237309504880;
     double fs = 48000;
