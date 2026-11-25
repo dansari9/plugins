@@ -62,37 +62,37 @@ AudioProcessorValueTreeState::ParameterLayout layout()
         return std::make_unique<AudioParameterChoice>(ParameterID { ids[i], i <= Bypass ? 1 : 3 }, name, items, def);
     };
     auto bitsText = AudioParameterIntAttributes().withStringFromValueFunction([](int v, int) { return v == 0 ? String("OFF") : String(v) + " bit"; });
-    return { num(Preamp, "Preamp", 0, 48, 0, "+dB"),
-             std::make_unique<AudioParameterInt>(ParameterID { ids[Bits], 1 }, "Resolution", 0, 24, 12, bitsText),
+    return { num(Preamp, "Drive", 0, 48, 0, "+dB"),
+             std::make_unique<AudioParameterInt>(ParameterID { ids[Bits], 1 }, "Bits", 0, 24, 12, bitsText),
              onOff(DcShift, "DC Shift", false),
              num(Dither, "Dither", 0, 100, 0, "%"),
              num(Rate, "Rate", 44, 44100, 26040, "Hz", true),
              num(Jitter, "Jitter", 0, 100, 0, "%"),
-             onOff(ApproxOn, "Approx Filter", true),
-             num(ApproxDev, "Approx Deviation", -100, 100, 0, "+%"),
-             onOff(ImagesOn, "Images Filter", false),
-             num(ImagesShift, "Images Shift", 0, 100, 0, "%"),
+             onOff(ApproxOn, "Anti-Alias On", true),
+             num(ApproxDev, "Anti-Alias", -100, 100, 0, "+%"),
+             onOff(ImagesOn, "Anti-Image On", false),
+             num(ImagesShift, "Anti-Image", 0, 100, 0, "%"),
              choice(FType, "Filter Type", { "OFF", "LP", "BP", "HP", "BR" }, 0),
-             choice(FOrder, "Filter Order", { "Pre", "Post" }, 1),
+             choice(FOrder, "Filter Position", { "Pre", "Post" }, 1),
              num(Cutoff, "Cutoff", 20, 20000, 20000, "Hz", true),
-             num(Reso, "Reso / Bandwidth", 0, 100, 0, "%"),
+             num(Reso, "Resonance", 0, 100, 0, "%"),
              num(Mix, "Mix", 0, 100, 100, "%"),
              num(Output, "Output", -24, 12, 0, "dB"),
              onOff(Bypass, "Bypass", false),
-             std::make_unique<AudioParameterBool>(ParameterID { ids[AutoGain], 2 }, "Auto Gain", true),
+             std::make_unique<AudioParameterBool>(ParameterID { ids[AutoGain], 2 }, "Auto Gain", false),
              num(Loss, "Loss", 0, 100, 0, "%"),
              num(Speed, "Speed", 0, 100, 100, "%"),
-             num(Drop, "Drop", 0, 100, 0, "%"),
-             choice(Fill, "Fill", { "gap", "hold" }, 0),
-             choice(Keep, "Keep", { "lost", "kept" }, 0),
-             choice(Ear, "Ear", { "ear", "flat" }, 0),
+             num(Drop, "Packet Loss", 0, 100, 0, "%"),
+             choice(Fill, "Packets", { "drop", "repeat" }, 0),
+             choice(Keep, "Delta", { "off", "on" }, 0),
+             choice(Ear, "Weighting", { "perceptual", "flat" }, 0),
              num(Gate, "Gate", -96, 0, -96, "gate"),
-             choice(Stereo, "Stereo", { "stereo", "joint", "mono" }, 0),
+             choice(Stereo, "Stereo Mode", { "stereo", "joint", "mono" }, 0),
              num(LowCut, "Low Cut", 20, 20000, 20, "Hz", true),
              num(HighCut, "High Cut", 20, 20000, 20000, "Hz", true),
-             choice(Slope, "Slope", { "6 dB", "12 dB", "18 dB", "24 dB", "36 dB", "48 dB", "72 dB", "96 dB" }, 3),
-             onOff(Invert, "Invert", false),
-             num(Auto, "Auto", 0, 100, 100, "%") };
+             choice(Slope, "Filter Slope", { "6 dB", "12 dB", "18 dB", "24 dB", "36 dB", "48 dB", "72 dB", "96 dB" }, 3),
+             onOff(Invert, "Filter Invert", false),
+             num(Auto, "Auto Gain Amount", 0, 100, 100, "%") };
 }
 
 // Minimum-phase lowpass sampled `over` times per host sample over `taps` samples: its impulse (unit DC gain per host
@@ -300,7 +300,7 @@ struct CrumbProcessor::Dsp
     std::array<Channel, 2> ch;
     Band bandPre, bandPost;
     crumb::Codec codec;
-    std::vector<float> dryRing[2]; // the input, for the dry path beside the codec
+    std::vector<float> dryRing[2], cutRing; // the input, for the dry path beside the codec, and where the drive clipped it
     int ringMask2 = 0, warm = 0;
     uint32 ringAt = 0;
     double engaged = 0, engageStep = 0; // the codec's crossfade, 0 = off (the 0.2 path bit for bit)
@@ -322,6 +322,7 @@ struct CrumbProcessor::Dsp
         codec.prepare(jmin(fs, 400000.0)); // allocates: prepareToPlay only
         ringMask2 = 2 * codec.latency - 1;
         for (auto& r : dryRing) r.assign((size_t) (2 * codec.latency), 0.0f);
+        cutRing.assign((size_t) (2 * codec.latency), 0.0f);
         engageStep = 1 / (0.02 * fs);
         gateCoef = 1 - std::exp(-1 / (0.005 * fs)), gateAttack = 1 - std::exp(-1 / (0.001 * fs)), gateRelease = 1 - std::exp(-1 / (0.08 * fs));
     }
@@ -339,6 +340,7 @@ struct CrumbProcessor::Dsp
         bandPre.reset(fs, bandConfig(true)), bandPost.reset(fs, bandConfig(false));
         codec.reset();
         for (auto& r : dryRing) std::fill(r.begin(), r.end(), 0.0f);
+        std::fill(cutRing.begin(), cutRing.end(), 0.0f);
         ringAt = 0, warm = 0, engaged = codecWanted() ? 1 : 0;
         gateEnv = 0, gateGain = 1;
         targets(true);
@@ -473,8 +475,13 @@ void CrumbProcessor::processBlock(AudioBuffer<float>& buffer, MidiBuffer&)
         for (int c = 0; c < channels; ++c) // non-finite input becomes silence; absurd levels are clipped
             dry[c] = std::isfinite(x[c][i]) ? jlimit(-1000.0f, 1000.0f, x[c][i]) : 0.0f, loudest = jmax(loudest, dry[c] * dry[c]);
         const double mono = channels == 2 ? f.v[SMono] : 0, middle = 0.5 * (dry[0] + dry[1]);
+        float cut = 0; // what the drive's clip takes off this sample, the louder side's
         for (int c = 0; c < channels; ++c)
-            y[c] = d.ch[(size_t) c].process(mono > 0 ? dry[c] + mono * (middle - dry[c]) : dry[c], f, d.bandPre, c, locked && c == 1 ? &shared : nullptr, locked && c == 0 ? &shared : nullptr);
+        {
+            const double x0 = mono > 0 ? dry[c] + mono * (middle - dry[c]) : dry[c];
+            if (const float t = crumb::clipped(x0 * f.v[SPre]); std::abs(t) > std::abs(cut)) cut = t;
+            y[c] = d.ch[(size_t) c].process(x0, f, d.bandPre, c, locked && c == 1 ? &shared : nullptr, locked && c == 0 ? &shared : nullptr);
+        }
         // Gate: the louder side's 5 ms level against the threshold; closed, the crushed signal is silent.
         d.gateEnv += d.gateCoef * (loudest - d.gateEnv);
         const double open = d.gateEnv >= gateOpen ? 1 : 0;
@@ -497,6 +504,9 @@ void CrumbProcessor::processBlock(AudioBuffer<float>& buffer, MidiBuffer&)
         else
             d.codec.idle(y, channels), d.warm = 0;
         const double e = d.engaged;
+        if (d.gateGain < 0.5 || mix <= 0) cut = 0; // not heard
+        d.cutRing[at] = cut;
+        if (e > 0.5) cut = d.cutRing[late];
         for (int c = 0; c < channels; ++c)
         {
             auto& ring = d.dryRing[c];
@@ -505,20 +515,19 @@ void CrumbProcessor::processBlock(AudioBuffer<float>& buffer, MidiBuffer&)
             if (e > 0)
                 dry[c] += e * (delayed - dry[c]), y[c] += e * (coded[c] - y[c]);
         }
-        float in = 0, out = 0, lost = 0;
+        float in = 0, out = 0, lost = 0, over = 0;
         for (int c = 0; c < channels; ++c)
         {
             if (!d.bandPost.idle()) y[c] = d.bandPost.run(c, y[c]);
             x[c][i] = (float) ((dry[c] + mix * (y[c] * wet - dry[c])) * gain);
             in += (float) dry[c] / (float) channels, out += x[c][i] / (float) channels, peak = jmax(peak, std::abs(x[c][i]));
+            if (const float t = std::abs(x[c][i]); t > 1 && 20 * std::log10(t) > std::abs(over)) over = std::copysign(20 * std::log10(t), x[c][i]);
             lost += (float) (e * gone[c] * wet) / (float) channels;
         }
-        scope.push(w + (uint32_t) i, in, out, lost, e > 0.5 ? (uint8_t) mark : (uint8_t) 0);
+        scope.push(w + (uint32_t) i, in, out, lost, e > 0.5 ? (uint8_t) mark : (uint8_t) 0, cut, over);
     }
     scope.write.store(w + (uint32_t) n, std::memory_order_release);
     scope.loudest(peak);
-    if (peak > 1.0f)
-        scope.clipAt.store(scope.clock(), std::memory_order_relaxed);
 }
 
 // Writers (presets, A/B, restore) serialize on txLock, which nothing else takes. While one publishes, `busy` makes
@@ -688,7 +697,9 @@ void CrumbProcessor::setStateInformation(const void* data, int size)
     const Transaction transaction(*this);
     // Migration: stateVersion 1 (0.1.x) lacks autoGain, in the parameters and in the A/B slots: both load it off. Version 2
     // (0.2.x) and 1 lack 0.3.0's parameters: all load neutral (the codec and the band off, auto 100 % of the old switch), so
-    // the sound is the old one; its filter type and cutoff keep working as parameters.
+    // the sound is the old one; its filter type and cutoff keep working as parameters. Version 3 (0.3.0) holds every parameter
+    // 4 (0.4.0) does: 0.4.0 took auto gain off the panel and turned its default off, but a session that had it on keeps it on
+    // and plays as it did, until a factory preset or randomize (a new sound) turns it off.
     applyParams(*tree, true);
     for (int k = 0; k < 2; ++k) // a slot counts only with a preset and all the normalised values of its version
     {
@@ -717,51 +728,54 @@ void CrumbProcessor::setStateInformation(const void* data, int size)
 // 1-12: classic 8/12/16-bit sampler flavours (generic names), 13-24: by use. Names are "bits·rate flavour".
 // Then 0.3.0's: loss, speed, drop, fill (0 gap 1 hold), keep (0 lost 1 kept), ear (0 ear 1 flat), gate dB (-96 off), stereo
 // (0 stereo 1 joint 2 mono), low cut Hz, high cut Hz, slope (0 6 .. 3 24 .. 7 96 dB), invert; 0..24 leave them neutral.
-// Auto gain is not part of a preset: loading one leaves it as it is and loads the values unchanged. With it on, the wet
-// path is compensated for the preamp like any other setting (a global output offset would also move the dry path).
+// Auto gain is off in every preset (0.4.0). Until 0.3.0 it was on by default, so each preset that it turned down or up has the
+// same change baked in: exactly, drive's share (mix and output; at mix m and drive p the wet share is m / p of 1 - m + m / p),
+// and the codec's as a fixed output gain, what it averaged over the demo loop and the tests'
+// (it follows the music, so it is near, not the same). Output ends at -24: dial tone and hard crush
+// are 2.0 and 4.9 dB louder than they were.
 constexpr crumb::Preset crumb::presets[numPresets] = {
     { "init", { 0, 12, 0, 0, 26040, 0, 1, 0, 0, 0, 0, 1, 20000, 0, 100, 0 } },
-    { "12\xc2\xb7" "26k dusty", { 4, 12, 0, 0, 26040, 4, 1, 0, 1, 10, 1, 1, 11000, 8, 100, -1 } },
-    { "12\xc2\xb7" "40k warm", { 6, 12, 0, 0, 39062.5f, 2, 1, 0, 1, 0, 1, 1, 15000, 5, 100, -2 } },
-    { "8\xc2\xb7" "22k grit", { 9, 8, 0, 0, 22050, 6, 1, 0, 0, 0, 0, 1, 20000, 0, 100, -4 } },
+    { "12\xc2\xb7" "26k dusty", { 4, 12, 0, 0, 26040, 4, 1, 0, 1, 10, 1, 1, 11000, 8, 100, -5 } },
+    { "12\xc2\xb7" "40k warm", { 6, 12, 0, 0, 39062.5f, 2, 1, 0, 1, 0, 1, 1, 15000, 5, 100, -8 } },
+    { "8\xc2\xb7" "22k grit", { 9, 8, 0, 0, 22050, 6, 1, 0, 0, 0, 0, 1, 20000, 0, 100, -13 } },
     { "16\xc2\xb7" "40k clean", { 0, 16, 0, 30, 40000, 0, 1, 0, 1, 20, 0, 1, 20000, 0, 100, 0 } },
-    { "10\xc2\xb7" "dark", { 3, 10, 0, 0, 16000, 3, 1, -30, 1, 0, 1, 1, 5500, 10, 100, 0 } },
-    { "12\xc2\xb7" "32k punch", { 12, 12, 0, 0, 31250, 2, 1, 0, 1, 15, 0, 1, 20000, 0, 100, -6 } },
-    { "8\xc2\xb7" "11k crunch", { 6, 8, 0, 0, 11025, 5, 0, 0, 0, 0, 0, 1, 20000, 0, 100, -4 } },
-    { "12\xc2\xb7" "26k tread", { 2, 12, 1, 0, 26040, 3, 1, 0, 1, 10, 1, 1, 12000, 0, 100, -1 } },
-    { "8\xc2\xb7" "16k fold", { 4, 8, 0, 0, 16000, 4, 1, 40, 0, 0, 0, 1, 20000, 0, 100, -3 } },
-    { "6\xc2\xb7" "8k toy", { 6, 6, 0, 0, 8000, 8, 0, 0, 0, 0, 0, 1, 20000, 0, 100, -6 } },
-    { "14\xc2\xb7" "44k glue", { 5, 14, 0, 40, 44100, 1, 1, 0, 1, 30, 0, 1, 20000, 0, 100, -2 } },
-    { "12\xc2\xb7" "20k thick", { 8, 12, 0, 0, 20000, 5, 1, -10, 1, 0, 1, 1, 9000, 15, 100, -3 } },
-    { "drums \xc2\xb7 crunch bus", { 10, 10, 0, 0, 22050, 3, 1, 0, 1, 10, 0, 1, 20000, 0, 70, -3 } },
-    { "drums \xc2\xb7 break dust", { 6, 12, 0, 0, 26040, 6, 1, -10, 1, 0, 1, 1, 9500, 10, 100, -2 } },
-    { "bass \xc2\xb7 warm 12", { 8, 12, 0, 0, 26040, 0, 1, -20, 1, 0, 1, 1, 4000, 20, 100, -3 } },
-    { "bass \xc2\xb7 sub grit", { 14, 8, 0, 0, 12000, 2, 1, 0, 1, 0, 1, 0, 2500, 25, 60, -4 } },
-    { "keys \xc2\xb7 lo-fi", { 4, 10, 0, 30, 18000, 12, 1, -20, 1, 0, 1, 1, 6500, 5, 100, 0 } },
-    { "vocal \xc2\xb7 radio", { 10, 8, 0, 20, 11025, 0, 1, 0, 1, 0, 2, 1, 1800, 40, 100, -2 } },
-    { "vocal \xc2\xb7 phone", { 6, 8, 1, 0, 8000, 0, 1, 0, 1, 0, 2, 1, 1200, 55, 100, -1 } },
+    { "10\xc2\xb7" "dark", { 3, 10, 0, 0, 16000, 3, 1, -30, 1, 0, 1, 1, 5500, 10, 100, -3 } },
+    { "12\xc2\xb7" "32k punch", { 12, 12, 0, 0, 31250, 2, 1, 0, 1, 15, 0, 1, 20000, 0, 100, -18 } },
+    { "8\xc2\xb7" "11k crunch", { 6, 8, 0, 0, 11025, 5, 0, 0, 0, 0, 0, 1, 20000, 0, 100, -10 } },
+    { "12\xc2\xb7" "26k tread", { 2, 12, 1, 0, 26040, 3, 1, 0, 1, 10, 1, 1, 12000, 0, 100, -3 } },
+    { "8\xc2\xb7" "16k fold", { 4, 8, 0, 0, 16000, 4, 1, 40, 0, 0, 0, 1, 20000, 0, 100, -7 } },
+    { "6\xc2\xb7" "8k toy", { 6, 6, 0, 0, 8000, 8, 0, 0, 0, 0, 0, 1, 20000, 0, 100, -12 } },
+    { "14\xc2\xb7" "44k glue", { 5, 14, 0, 40, 44100, 1, 1, 0, 1, 30, 0, 1, 20000, 0, 100, -7 } },
+    { "12\xc2\xb7" "20k thick", { 8, 12, 0, 0, 20000, 5, 1, -10, 1, 0, 1, 1, 9000, 15, 100, -11 } },
+    { "drums \xc2\xb7 crunch bus", { 10, 10, 0, 0, 22050, 3, 1, 0, 1, 10, 0, 1, 20000, 0, 42.5f, -8.7f } },
+    { "drums \xc2\xb7 break dust", { 6, 12, 0, 0, 26040, 6, 1, -10, 1, 0, 1, 1, 9500, 10, 100, -8 } },
+    { "bass \xc2\xb7 warm 12", { 8, 12, 0, 0, 26040, 0, 1, -20, 1, 0, 1, 1, 4000, 20, 100, -11 } },
+    { "bass \xc2\xb7 sub grit", { 14, 8, 0, 0, 12000, 2, 1, 0, 1, 0, 1, 0, 2500, 25, 23, -9.7f } },
+    { "keys \xc2\xb7 lo-fi", { 4, 10, 0, 30, 18000, 12, 1, -20, 1, 0, 1, 1, 6500, 5, 100, -4 } },
+    { "vocal \xc2\xb7 radio", { 10, 8, 0, 20, 11025, 0, 1, 0, 1, 0, 2, 1, 1800, 40, 100, -12 } },
+    { "vocal \xc2\xb7 phone", { 6, 8, 1, 0, 8000, 0, 1, 0, 1, 0, 2, 1, 1200, 55, 100, -7 } },
     { "hats \xc2\xb7 sizzle", { 0, 6, 0, 0, 30000, 0, 0, 0, 0, 0, 3, 1, 5000, 0, 50, -2 } },
-    { "pad \xc2\xb7 drift", { 2, 12, 0, 20, 22050, 60, 1, -10, 1, 20, 1, 1, 8000, 0, 100, 0 } },
+    { "pad \xc2\xb7 drift", { 2, 12, 0, 20, 22050, 60, 1, -10, 1, 20, 1, 1, 8000, 0, 100, -2 } },
     { "fx \xc2\xb7 alias sweep", { 0, 16, 0, 0, 6000, 0, 1, 100, 0, 0, 0, 1, 20000, 0, 100, -3 } },
-    { "fx \xc2\xb7 700 hz wreck", { 12, 4, 0, 0, 700, 30, 0, 0, 0, 0, 1, 1, 3000, 30, 100, -8 } },
-    { "mix \xc2\xb7 parallel crush", { 12, 8, 0, 0, 16000, 4, 1, 0, 1, 0, 0, 1, 20000, 0, 35, 0 } },
+    { "fx \xc2\xb7 700 hz wreck", { 12, 4, 0, 0, 700, 30, 0, 0, 0, 0, 1, 1, 3000, 30, 100, -20 } },
+    { "mix \xc2\xb7 parallel crush", { 12, 8, 0, 0, 16000, 4, 1, 0, 1, 0, 0, 1, 20000, 0, 11.9f, -2.6f } },
     // 0.3.0, from a clean stream to a crushed one
     { "256k stream", { 0, 16, 1, 0, 44100, 0, 1, 0, 0, 0, 0, 1, 20000, 0, 100, 0 }, { 4, 25, 0, 0, 0, 0, -96, 0, 20, 19000, 4, 0 } },
     { "128k stream", { 0, 16, 1, 0, 44100, 0, 1, 0, 0, 0, 0, 1, 20000, 0, 100, 0 }, { 10, 25, 0, 0, 0, 0, -96, 1, 20, 16000, 5, 0 } },
     { "64k stream", { 0, 16, 1, 0, 32000, 0, 1, 0, 0, 0, 0, 1, 20000, 0, 100, 0 }, { 28, 30, 0, 0, 0, 0, -96, 1, 20, 12500, 5, 0 } },
-    { "56k stream", { 3, 16, 0, 0, 22000, 4, 1, 0, 0, 0, 0, 1, 20000, 0, 100, -1.5f }, { 70, 40, 6, 1, 0, 0, -96, 0, 160, 6300, 3, 0 } },
-    { "32k swirl", { 0, 16, 1, 0, 22050, 0, 1, 0, 1, 0, 0, 1, 20000, 0, 100, 0 }, { 55, 12, 0, 0, 0, 0, -96, 1, 20, 9000, 3, 0 } },
-    { "slow smear", { 0, 0, 0, 0, 44100, 0, 1, 0, 0, 0, 0, 1, 20000, 0, 100, 0 }, { 62, 0, 0, 0, 0, 0, -96, 0, 40, 14000, 1, 0 } },
-    { "fast garble", { 4, 14, 0, 0, 26040, 12, 1, 0, 1, 10, 0, 1, 20000, 0, 100, -2 }, { 78, 100, 0, 0, 0, 0, -96, 0, 90, 9000, 1, 0 } },
-    { "bad line", { 2, 13, 0, 0, 16000, 0, 1, 0, 1, 0, 0, 1, 20000, 10, 100, 0 }, { 35, 50, 30, 0, 0, 0, -60, 2, 200, 3800, 5, 0 } },
+    { "56k stream", { 3, 16, 0, 0, 22000, 4, 1, 0, 0, 0, 0, 1, 20000, 0, 100, 2.6f }, { 70, 40, 6, 1, 0, 0, -96, 0, 160, 6300, 3, 0 } },
+    { "32k swirl", { 0, 16, 1, 0, 22050, 0, 1, 0, 1, 0, 0, 1, 20000, 0, 100, 0.3f }, { 55, 12, 0, 0, 0, 0, -96, 1, 20, 9000, 3, 0 } },
+    { "slow smear", { 0, 0, 0, 0, 44100, 0, 1, 0, 0, 0, 0, 1, 20000, 0, 100, 0.5f }, { 62, 0, 0, 0, 0, 0, -96, 0, 40, 14000, 1, 0 } },
+    { "fast garble", { 4, 14, 0, 0, 26040, 12, 1, 0, 1, 10, 0, 1, 20000, 0, 100, 9.4f }, { 78, 100, 0, 0, 0, 0, -96, 0, 90, 9000, 1, 0 } },
+    { "bad line", { 2, 13, 0, 0, 16000, 0, 1, 0, 1, 0, 0, 1, 20000, 10, 100, -1.8f }, { 35, 50, 30, 0, 0, 0, -60, 2, 200, 3800, 5, 0 } },
     { "stuck buffer", { 0, 16, 1, 0, 44100, 0, 1, 0, 0, 0, 0, 1, 20000, 0, 100, 0 }, { 12, 12, 45, 1, 0, 0, -96, 1, 20, 20000, 3, 0 } },
     { "phone call", { 6, 12, 1, 0, 8000, 0, 1, 0, 1, 0, 0, 1, 20000, 15, 100, -1 }, { 45, 62, 4, 1, 0, 0, -48, 2, 400, 3150, 5, 0 } },
-    { "only the lost", { 0, 16, 1, 0, 44100, 0, 1, 0, 0, 0, 0, 1, 20000, 0, 100, 0 }, { 38, 25, 0, 0, 1, 0, -96, 0, 20, 20000, 3, 0 } },
-    { "flat codec", { 3, 14, 0, 0, 32000, 0, 1, 0, 1, 0, 0, 1, 20000, 0, 100, -2 }, { 66, 50, 0, 0, 0, 1, -96, 0, 20, 20000, 3, 0 } },
-    { "8 bit cast", { 8, 8, 0, 20, 22050, 5, 1, 0, 1, 0, 0, 1, 20000, 0, 100, -3 }, { 40, 38, 0, 0, 0, 0, -96, 1, 70, 8000, 3, 0 } },
-    { "torn tape", { 6, 10, 0, 0, 18000, 45, 1, -10, 1, 0, 0, 1, 20000, 0, 100, -2 }, { 30, 12, 22, 0, 0, 0, -96, 0, 60, 7000, 1, 0 } },
-    { "dial tone", { 18, 5, 1, 0, 6000, 8, 0, 0, 0, 0, 0, 1, 20000, 35, 100, -6 }, { 82, 75, 10, 1, 0, 1, -42, 2, 300, 3400, 4, 0 } },
-    { "hard crush", { 24, 3, 0, 0, 4000, 20, 0, 0, 0, 0, 0, 1, 20000, 0, 100, -8 }, { 60, 88, 8, 1, 0, 1, -96, 0, 60, 12000, 1, 0 } },
+    { "only the lost", { 0, 16, 1, 0, 44100, 0, 1, 0, 0, 0, 0, 1, 20000, 0, 100, 9.9f }, { 38, 25, 0, 0, 1, 0, -96, 0, 20, 20000, 3, 0 } },
+    { "flat codec", { 3, 14, 0, 0, 32000, 0, 1, 0, 1, 0, 0, 1, 20000, 0, 100, -3.8f }, { 66, 50, 0, 0, 0, 1, -96, 0, 20, 20000, 3, 0 } },
+    { "8 bit cast", { 8, 8, 0, 20, 22050, 5, 1, 0, 1, 0, 0, 1, 20000, 0, 100, -9.3f }, { 40, 38, 0, 0, 0, 0, -96, 1, 70, 8000, 3, 0 } },
+    { "torn tape", { 6, 10, 0, 0, 18000, 45, 1, -10, 1, 0, 0, 1, 20000, 0, 100, -7.9f }, { 30, 12, 22, 0, 0, 0, -96, 0, 60, 7000, 1, 0 } },
+    { "dial tone", { 18, 5, 1, 0, 6000, 8, 0, 0, 0, 0, 0, 1, 20000, 35, 100, -24 }, { 82, 75, 10, 1, 0, 1, -42, 2, 300, 3400, 4, 0 } },
+    { "hard crush", { 24, 3, 0, 0, 4000, 20, 0, 0, 0, 0, 0, 1, 20000, 0, 100, -24 }, { 60, 88, 8, 1, 0, 1, -96, 0, 60, 12000, 1, 0 } },
 };
 constexpr int crumb::presetOrder[numPresets] = { 0, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24 };
 
@@ -783,7 +797,7 @@ void CrumbProcessor::setCurrentProgram(int index)
     {
         const int i = sound(k);
         auto* p = apvts.getParameter(ids[i]);
-        n[k] = i == AutoGain || i == Auto ? p->getValue() : p->convertTo0to1(i < Bypass ? v[i] : more[i - Loss]);
+        n[k] = i == AutoGain ? 0.0f : i == Auto ? p->getDefaultValue() : p->convertTo0to1(i < Bypass ? v[i] : more[i - Loss]);
     }
     {
         const Transaction transaction(*this);
@@ -836,8 +850,8 @@ void CrumbProcessor::stepPreset(int delta)
     else loadUserPreset(files[at - crumb::numPresets]);
 }
 
-// 0.3.0's ranges for a new sound: everything on the panel but mix, output, auto and on. The order of the draws is part of
-// the site's port (silt's randomize, juce::Random).
+// A new sound: everything on the panel but mix and output; auto gain goes off (without it the drive reaches 9 dB, half what
+// 0.3.0's did). The order of the draws is part of the site's port (silt's randomize, juce::Random).
 void CrumbProcessor::randomize(int64_t seed)
 {
     Random r(seed);
@@ -845,7 +859,7 @@ void CrumbProcessor::randomize(int64_t seed)
     float v[numParams];
     for (int i = 0; i < numParams; ++i) v[i] = apvts.getParameter(ids[i])->convertFrom0to1(apvts.getParameter(ids[i])->getDefaultValue());
     const auto log = [&](float lo, float hi) { return lo * std::pow(hi / lo, r.nextFloat()); };
-    v[Preamp] = r.nextFloat() < 0.5f ? 0.0f : r.nextFloat() * 18;
+    v[Preamp] = r.nextFloat() < 0.5f ? 0.0f : r.nextFloat() * 9;
     v[Bits] = r.nextFloat() < 0.2f ? 0.0f : (float) (3 + r.nextInt(14));
     v[DcShift] = (float) r.nextInt(2);
     v[Rate] = r.nextFloat() < 0.2f ? 44100.0f : log(2500, 44100);
@@ -860,7 +874,7 @@ void CrumbProcessor::randomize(int64_t seed)
     v[LowCut] = r.nextFloat() < 0.5f ? 20.0f : log(40, 400);
     v[HighCut] = r.nextFloat() < 0.5f ? 20000.0f : log(2500, 16000);
     v[Slope] = (float) (1 + r.nextInt(5));
-    for (int i : { Mix, Output, AutoGain, Auto }) v[i] = apvts.getParameter(ids[i])->convertFrom0to1(apvts.getParameter(ids[i])->getValue());
+    for (int i : { Mix, Output }) v[i] = apvts.getParameter(ids[i])->convertFrom0to1(apvts.getParameter(ids[i])->getValue());
     float n[numSound];
     for (int k = 0; k < numSound; ++k) n[k] = apvts.getParameter(ids[sound(k)])->convertTo0to1(v[sound(k)]);
     const Transaction transaction(*this);
@@ -868,7 +882,7 @@ void CrumbProcessor::randomize(int64_t seed)
     setIdentity(-1, "random");
 }
 
-// A 0.2 session's filter as the band shows it: lp = high cut, hp = low cut, bp = both, br = both, inverted.
+// A 0.2 session's filter as the panel shows it: lp = high cut, hp = low cut, bp = both, br = both, inverted.
 CrumbProcessor::BandView CrumbProcessor::band() const
 {
     const auto p = [this](int i) { return apvts.getRawParameterValue(ids[i])->load(); };
@@ -888,18 +902,6 @@ void CrumbProcessor::adoptBand()
         p->beginChangeGesture(), p->setValueNotifyingHost(p->convertTo0to1(v)), p->endChangeGesture();
     }
 }
-float CrumbProcessor::autoAmount() const { return apvts.getRawParameterValue(ids[AutoGain])->load() > 0.5f ? apvts.getRawParameterValue(ids[Auto])->load() : 0.0f; }
-void CrumbProcessor::adoptAuto()
-{
-    if (apvts.getRawParameterValue(ids[AutoGain])->load() > 0.5f) return;
-    const Transaction transaction(*this);
-    for (auto [i, v] : { std::pair { Auto, 0.0f }, { AutoGain, 1.0f } })
-    {
-        auto* p = apvts.getParameter(ids[i]);
-        p->beginChangeGesture(), p->setValueNotifyingHost(v), p->endChangeGesture();
-    }
-}
-
 File CrumbProcessor::saveUserPreset()
 {
     const ScopedLock writer(txLock);

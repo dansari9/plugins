@@ -9,7 +9,7 @@
 
 // crumb: vintage-sampler bit crusher by daveydidit (clean-room: textbook DSP only).
 // FROZEN: the parameter IDs listed in Crumb.cpp (ParameterID version 1, appended autoGain 2, 0.3.0's 3) and the state
-// format (APVTS XML <CRUMB stateVersion="3">, plus additive root attributes). Never rename, remove or reorder; only append.
+// format (APVTS XML <CRUMB stateVersion="4">, plus additive root attributes). Never rename, remove or reorder; only append.
 namespace crumb
 {
 void fft(std::vector<std::complex<double>>& x, bool inverse); // radix-2 in place, size a power of two
@@ -24,24 +24,28 @@ inline constexpr double approxK[] = { 1.9615705608, 1.6629392246, 1.1111404660, 
 inline constexpr double knee = 0.5, soft = 1 - knee;
 inline double clip(double x) { return std::abs(x) <= knee ? x : std::copysign(knee + soft * std::tanh((std::abs(x) - knee) / soft), x); }
 
+// What that clip took off, in dB with the sample's sign: nothing until the sample is past the converter's full scale.
+inline float clipped(double x) { return std::abs(x) > 1 ? (float) std::copysign(20 * std::log10(std::abs(x) / clip(std::abs(x))), x) : 0.0f; }
+
 // Live display feed: the audio thread writes what really happened to each sample (the dry input lined up with the output,
-// the output, what the codec took away, and whether the codec lost the frame it came from) with relaxed atomic stores;
-// the editor takes everything written since it last looked. Lock-free and allocation-free on both sides; a frame torn by
-// a concurrent write only shows as one odd sample. Per channel: the output's peak since the editor last took it, clipping.
+// the output, what the codec took away, whether the codec lost the frame it came from, and where it clipped) with relaxed
+// atomic stores; the editor takes everything written since it last looked. Lock-free and allocation-free on both sides; a
+// frame torn by a concurrent write only shows as one odd sample. Also the output's peak since the editor last took it.
 struct Scope
 {
     static constexpr int size = 1 << 15; // 170 ms at 192 kHz, 5 editor frames
     std::array<std::atomic<float>, size> dry {}, wet {}, gone {};
+    std::array<std::atomic<float>, size> cut {}, over {}; // clipping in dB, signed as the sample: what the drive's clip took off one past full scale, and how far the output is past 0 dBFS
     std::array<std::atomic<uint8_t>, size> mark {};
     std::atomic<uint32_t> write { 0 }, origin { 0 }; // origin: where in that count the codec's own began
     std::atomic<float> peak { 0 };
-    std::atomic<double> clipAt { -1e9 }; // clock() of the last output sample over 0 dBFS
     double (*clock)() = [] { return juce::Time::getMillisecondCounterHiRes(); }; // ms; tests substitute their own
-    void push(uint32_t at, float d, float w, float g, uint8_t m)
+    void push(uint32_t at, float d, float w, float g, uint8_t m, float c = 0, float o = 0)
     {
         const auto i = (size_t) (at & (size - 1));
         dry[i].store(d, std::memory_order_relaxed), wet[i].store(w, std::memory_order_relaxed);
         gone[i].store(g, std::memory_order_relaxed), mark[i].store(m, std::memory_order_relaxed);
+        cut[i].store(c, std::memory_order_relaxed), over[i].store(o, std::memory_order_relaxed);
     }
     void loudest(float p) // audio thread: raises the peak unless the editor just took it
     {
@@ -52,7 +56,7 @@ struct Preset
 {
     const char* name;
     float v[16]; // every parameter before bypass, in ID order, plain units (choices and switches by index)
-    float x[12] { 0, 100, 0, 0, 0, 0, -96, 0, 20, 20000, 3, 0 }; // 0.3.0's, loss .. invert (auto, as autoGain, is not part of a preset)
+    float x[12] { 0, 100, 0, 0, 0, 0, -96, 0, 20, 20000, 3, 0 }; // 0.3.0's, loss .. invert (a preset turns auto gain, gone from the panel, off)
 };
 inline constexpr int numPresets = 41;
 extern const Preset presets[numPresets]; // 0..24 as in 0.2, in their order
@@ -63,7 +67,7 @@ juce::Image plate(int k); // the editor's plates: ink, tint, paper
 class CrumbProcessor : public juce::AudioProcessor, private juce::AudioProcessorValueTreeState::Listener, private juce::AsyncUpdater
 {
 public:
-    static constexpr int stateVersion = 3; // 3 (0.3.0): 13 more parameters, missing = neutral; 2 (0.2.0): autoGain, missing (1) = off
+    static constexpr int stateVersion = 4; // 4 (0.4.0): the same parameters, auto gain off by default and off the panel; 3 (0.3.0): 13 more parameters, missing = neutral; 2 (0.2.0): autoGain, missing (1) = off
 
     explicit CrumbProcessor(juce::File presetDirectory = {});
     ~CrumbProcessor() override;
@@ -100,14 +104,12 @@ public:
     juce::File saveUserPreset();
     juce::String presetName() const;
     std::atomic<int> preset { 0 };
-    void randomize(int64_t seed); // a new sound from the controls; mix, output, auto and on stay
-    // What the editor's band and auto controls show, and (before one is edited) the same sound moved onto them: a 0.2
-    // session's filter type and cutoff, and its auto gain switch.
+    void randomize(int64_t seed); // a new sound from the controls; mix, output and bypass stay
+    // What the editor's filter controls show, and (before one is edited) the same sound moved onto them: a 0.2 session's
+    // filter type and cutoff.
     struct BandView { float low, high; bool invert, legacy; };
     BandView band() const;
     void adoptBand();
-    float autoAmount() const; // %
-    void adoptAuto();
     juce::StringArray userPresets() const; // names, in the arrows' order
     void loadUserPreset(const juce::String& name);
     bool codecOn() const; // loss or drop is up: the codec runs, with its latency

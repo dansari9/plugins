@@ -1,11 +1,11 @@
-// crumb's editor: design round 4, "wave" (crumb-options/round4/opt2.js without the verb section). One 132 x 34 cell grid
+// crumb's editor: design round 4, "wave" (crumb-options/round4/opt2.js without the verb section). One 132 x 41 cell grid
 // scaled with the window (50-200 %, fixed aspect), as gulp's and silt's: text is Geist Mono in its cells; braille, shade,
 // rules and markers are vectors per cell. The page is the riso paper, the accent prints in its ink ramp and the picture's
 // neutrals in its shadow inks, from plates built once per image size (the same plates the site's skin uses).
 // At 30 Hz the editor takes the samples the audio thread wrote (Wave.h draws them, nothing else moves) and rebuilds the
 // grid when anything it shows changed; only cells that changed are redrawn and repainted: idle costs nothing.
-// Controls are invisible Sliders and Buttons on their hit cells in a 1056 x 544 layer scaled with the window: drag,
-// double-click = default, click the value to type. `more` shows each section's other controls in the same places.
+// Controls are invisible Sliders and Buttons on their hit cells in a 1056 x 656 layer scaled with the window: drag,
+// double-click = default, click the value to type. Every control is on the one page.
 #include "BinaryData.h"
 #include "Crumb.h"
 #include "Wave.h"
@@ -16,10 +16,10 @@ using namespace juce;
 
 namespace
 {
-constexpr int C = 132, R = 34, W = 1056, H = 544, AX = 3, AT = 5, AW = crumb::Wave::columns / 2, AH = crumb::Wave::rows / 4;
-constexpr int titleY = 19, knobY = 22, selectY = 29;
+constexpr int C = 132, R = 41, W = 1056, H = 656, AX = 3, AT = 5, AW = crumb::Wave::columns / 2, AH = crumb::Wave::rows / 4;
+constexpr int titleY = 19, knobY = 22, lowerY = 29, selectY = 36; // two rows of dials; selectors on lowerY + 1, + 4, + 7
 constexpr float cw = 8, ch = 16;
-const Colour page { 0xff0d0d0d }, primary { 0xffececec }, muted { 0xff7a7a7a }, rule { 0xff2a2a2a }, line { 0xff2c2c2c }, dim { 0xff454545 }, accent { 0xffff3d1f }, kick { 0xff5a5a5a };
+const Colour page { 0xff0d0d0d }, primary { 0xffececec }, muted { 0xff7a7a7a }, rule { 0xff2a2a2a }, line { 0xff2c2c2c }, dim { 0xff454545 }, accent { 0xffff3d1f }, kick { 0xff5a5a5a }, hot { 0xffff2424 }; // hot: clipping, printed as it is
 const Colour cobalt { 0xff5b7cff }, lilac { 0xffa98bff }, sun { 0xffffc83d }, tang { 0xffff6a2f }, pink { 0xffff4f9a }, cream { 0xffefe6d2 }; // riso inks
 String u(const char* s) { return String::fromUTF8(s); }
 String minus(const String& s) { return s.replace("-", u("−")); }
@@ -32,28 +32,29 @@ Font mono(float size, bool bold)
     return Font(FontOptions(faces[bold ? 1 : 0]).withPointHeight(size));
 }
 
-// The sections, in signal order, and what each shows: its dials on the main page and under `more` (null: the same).
-struct Section { const char* name; int x, w, knobs; };
-const Section sections[] = { { "in", 3, 12, 1 }, { "crush", 18, 28, 3 }, { "loss", 49, 28, 3 }, { "band", 80, 18, 2 }, { "out", 101, 28, 3 } };
-int knobX(const Section& s, int k) { return s.knobs > 1 ? s.x + k * ((s.w - 8) / (s.knobs - 1)) : s.x + (s.w - 8) / 2; }
+// The sections, in signal order, with their dials: two rows, left to right, `pitch` cells apart.
+struct Section { const char* name; int x, w, pitch; };
+const Section sections[] = { { "in", 3, 10, 0 }, { "crush", 16, 30, 11 }, { "loss", 49, 28, 10 }, { "filter", 80, 28, 10 }, { "out", 111, 18, 10 } };
 enum Zoom { automatic, samples, frames }; // what a control's change makes the picture show
-struct KnobSpec { const char *id, *name; int section, slot, page; Zoom zoom; bool centred; }; // page: 0 main, 1 more, 2 both
+struct KnobSpec { const char *id, *name; int section, slot, row; Zoom zoom; bool centred; };
 const KnobSpec knobSpecs[] = {
-    { "preamp", "drive", 0, 0, 0, automatic, false }, { "bits", "bits", 1, 0, 0, samples, false }, { "rate", "rate", 1, 1, 0, samples, false }, { "jitter", "jitter", 1, 2, 0, samples, false },
-    { "loss", "loss", 2, 0, 2, frames, false }, { "speed", "speed", 2, 1, 2, frames, false }, { "drop", "drop", 2, 2, 2, frames, false },
-    { "lowCut", "low", 3, 0, 0, automatic, false }, { "highCut", "high", 3, 1, 0, automatic, false },
-    { "mix", "mix", 4, 0, 2, automatic, false }, { "output", "output", 4, 1, 2, automatic, false }, { "auto", "auto", 4, 2, 2, automatic, false },
-    { "gate", "gate", 0, 0, 1, automatic, false }, { "dither", "dither", 1, 0, 1, samples, false }, { "approxDev", "approx", 1, 1, 1, samples, true }, { "imagesShift", "images", 1, 2, 1, samples, false },
-    { "reso", "reso", 3, 0, 1, automatic, false }, { "slope", "slope", 3, 1, 1, automatic, false } };
+    { "preamp", "drive", 0, 0, 0, automatic, false }, { "gate", "gate", 0, 0, 1, automatic, false },
+    { "bits", "bits", 1, 0, 0, samples, false }, { "rate", "rate", 1, 1, 0, samples, false }, { "jitter", "jitter", 1, 2, 0, samples, false },
+    { "dither", "dither", 1, 0, 1, samples, false }, { "approxDev", "anti-alias", 1, 1, 1, samples, true }, { "imagesShift", "anti-image", 1, 2, 1, samples, false },
+    { "loss", "loss", 2, 0, 0, frames, false }, { "speed", "speed", 2, 1, 0, frames, false }, { "drop", "packet loss", 2, 2, 0, frames, false },
+    { "lowCut", "low cut", 3, 0, 0, automatic, false }, { "highCut", "high cut", 3, 1, 0, automatic, false }, { "reso", "resonance", 3, 2, 0, automatic, false },
+    { "mix", "mix", 4, 0, 0, automatic, false }, { "output", "output", 4, 1, 0, automatic, false } };
 constexpr int numKnobs = (int) std::size(knobSpecs);
+int knobX(const KnobSpec& k) { const auto& s = sections[k.section]; return s.pitch > 0 ? s.x + k.slot * s.pitch : s.x + (s.w - 8) / 2; }
+int knobRow(const KnobSpec& k) { return k.row == 0 ? knobY : lowerY; }
 
-// `< name >`: the slot is the longest of its own names and one cell either side, so it never resizes; centred (with its
-// label) under its section.
-struct SelectorSpec { const char *id, *label; StringArray names; int section, page; Zoom zoom; int shift; };
+// `< name >`: the slot is the longest of its own names and one cell either side, so it never resizes. loss and filter stack
+// theirs under their dials, labels and arrows each on one column, the stack centred; in and crush have one, centred.
+struct SelectorSpec { const char *id, *label; StringArray names; int section, y; Zoom zoom; };
 const SelectorSpec selectorSpecs[] = {
-    { "stereo", "", { "stereo", "joint", "mono" }, 0, 2, frames, 0 }, { "dcShift", "tread", { "riser", "tread" }, 1, 2, samples, 0 },
-    { "fill", "fill", { "gap", "hold" }, 2, 0, frames, 0 }, { "fOrder", "place", { "pre", "post" }, 3, 0, automatic, 0 },
-    { "keep", "keep", { "lost", "kept" }, 2, 1, frames, 0 }, { "ear", "", { "ear", "flat" }, 2, 1, frames, 15 }, { "invert", "invert", { "off", "on" }, 3, 1, automatic, 0 } };
+    { "stereo", "", { "stereo", "joint", "mono" }, 0, 2, frames }, { "dcShift", "dc shift", { "off", "on" }, 1, 2, samples },
+    { "ear", "weighting", { "perceptual", "flat" }, 2, 0, frames }, { "fill", "packets", { "drop", "repeat" }, 2, 1, frames }, { "keep", "delta", { "off", "on" }, 2, 2, frames },
+    { "slope", "slope", { "6 dB", "12 dB", "18 dB", "24 dB", "36 dB", "48 dB", "72 dB", "96 dB" }, 3, 0, automatic }, { "fOrder", "position", { "pre", "post" }, 3, 1, automatic }, { "invert", "invert", { "off", "on" }, 3, 2, automatic } };
 constexpr int numSelectors = (int) std::size(selectorSpecs);
 int slotWidth(const SelectorSpec& s)
 {
@@ -61,12 +62,15 @@ int slotWidth(const SelectorSpec& s)
     for (const auto& n : s.names) longest = jmax(longest, n.length());
     return longest + 4;
 }
-int labelWidth(const SelectorSpec& s) { return s.label[0] != 0 ? (int) std::strlen(s.label) + 1 : 0; }
-int selectorX(const SelectorSpec& s) // the label's first cell
+int selectorY(const SelectorSpec& s) { return lowerY + 1 + 3 * s.y; }
+std::pair<int, int> selectorX(const SelectorSpec& s) // the label's first cell, the slot's
 {
-    int w = labelWidth(s) + slotWidth(s);
-    if (s.shift > 0 || std::strcmp(s.id, "keep") == 0) w = 23; // keep and ear share their section: one group
-    return sections[s.section].x + (sections[s.section].w - w) / 2 + s.shift;
+    int label = 0, slot = 0;
+    for (const auto& o : selectorSpecs)
+        if (o.section == s.section) label = jmax(label, (int) std::strlen(o.label)), slot = jmax(slot, slotWidth(o));
+    if (label > 0) ++label;
+    const int x = sections[s.section].x + (sections[s.section].w - label - slot) / 2;
+    return { x, x + label };
 }
 
 struct Cell
@@ -191,8 +195,8 @@ std::vector<float> fbm(int h, int w, int octaves, int64 seed)
 }
 
 // opt2.js's plates in design pixels: the accent's three-ink ramp and the picture's two shadow inks at 1x, the paper (page,
-// grain, the picture's printed dots, a halftone glow per dial) at 2x. The ramp keeps the frame's place for everything the
-// verb section's removal moved: a dial prints in the ink it was approved in. tools/crumb-plates.mjs dumps them for the site.
+// grain, the picture's printed dots, a halftone glow per dial) at 2x. The ramp runs across the window as it did across the
+// approved frame, with out in its ink. CrumbTests --plates dumps them for the site.
 struct Plates
 {
     Image ink { Image::RGB, W, H, true, SoftwareImageType() }, tint { Image::RGB, W, H, true, SoftwareImageType() }, paper { Image::RGB, 2 * W, 2 * H, true, SoftwareImageType() };
@@ -202,7 +206,7 @@ struct Plates
     static float frameX(int x, int y) // a design pixel's place across the approved frame
     {
         if (inPlot(x, y)) return (float) (AX * 8) + (float) (x - AX * 8) * (float) frameAW / (float) AW;
-        return (float) (x < 100 * 8 ? x : x + 128);
+        return (float) (x < 108 * 8 ? x : x + 128);
     }
     static int ramp(float at, int stops, int rank)
     {
@@ -239,12 +243,11 @@ struct Plates
                         for (int q = 0; q < 9; ++q) paper.setPixelAt(AX * 16 + dx - 1 + q % 3, AT * 32 + dy - 1 + q / 3, papers[ramp((float) dy / ph, 2, bayer[dy / 2 % 4][dx / 2 % 4])]);
                     }
             }
-        for (const auto& s : sections)
-            for (int k = 0; k < s.knobs; ++k)
+        for (const auto& spec : knobSpecs)
             {
-                const int x0 = knobX(s, k), gx = (x0 + 4) * 16, gy = (knobY + 2) * 32;
+                const int x0 = knobX(spec), gx = (x0 + 4) * 16, gy = (knobRow(spec) + 2) * 32;
                 const float at = (frameX(x0 * 8, knobY * 16) + 32) / (float) frameW, cs = std::cos(0.5236f), sn = std::sin(0.5236f);
-                const Colour glow = page.interpolatedWith(inks[jmin(2, (int) (at * 3))], 0.12f);
+                const Colour glow = page.interpolatedWith(inks[at < 1.0f / 3 ? 0 : at < 0.72f ? 1 : 2], 0.12f);
                 const auto wrap = [](float t) { return t - 6 * std::floor(t / 6) - 3; };
                 for (int y = -85; y < 85; ++y)
                     for (int x = -85; x < 85; ++x)
@@ -269,13 +272,15 @@ struct Editor : AudioProcessorEditor, Timer
     Look look;
     Component layer; // the controls, in design pixels
     Slider knobs[numKnobs];
-    Key prev { "prev" }, next { "next" }, name { "preset" }, slotA { "A" }, slotB { "B" }, random { "randomize" }, more { "more" }, on { "on" };
+    Key prev { "prev" }, next { "next" }, name { "preset" }, slotA { "A" }, slotB { "B" }, random { "randomize" };
     OwnedArray<Key> arrows; // two per selector
     crumb::Wave wave;
     uint32_t seen = 0;
     double heard = -1e9, peakAt = 0;
     float outPeak = 0;
-    bool flat = true, opened = false, clipped = false;
+    struct Held { float db = 0; double at = 0; }; // a clip meter: its highest, held for 0.6 s
+    Held driveClip, outClip;
+    bool flat = true;
     Zoom zoom = automatic;
     Grid shown;
     std::vector<float> drawnFrom; // what the shown grid was built from: the same again means idle, nothing to rebuild
@@ -304,8 +309,8 @@ struct Editor : AudioProcessorEditor, Timer
             k.onDragStart = [this, i] { gesture(i, true); };
             k.onDragEnd = [this, i] { gesture(i, false); };
             k.onValueChange = [this, i] { setKnob(i, knobs[i].getValue()); };
-            k.setBounds(cells(knobX(sections[s.section], s.slot) - 1, knobY - 1, 10, 6));
-            layer.addChildComponent(k);
+            k.setBounds(cells(knobX(s) - 1, knobRow(s) - 1, 10, 6));
+            layer.addAndMakeVisible(k);
         }
         prev.onClick = [this] { proc.stepPreset(-1), zoom = automatic; };
         next.onClick = [this] { proc.stepPreset(1), zoom = automatic; };
@@ -313,9 +318,7 @@ struct Editor : AudioProcessorEditor, Timer
         slotA.onClick = [this] { proc.selectAb(0), zoom = automatic; };
         slotB.onClick = [this] { proc.selectAb(1), zoom = automatic; };
         random.onClick = [this] { proc.randomize(Time::currentTimeMillis()), zoom = automatic; };
-        more.onClick = [this] { opened = !opened, showPage(); };
-        on.onClick = [this] { setParam("bypass", value("bypass") > 0.5f ? 0.0f : 1.0f); };
-        for (auto [key, x, w] : { std::tuple { &prev, 11, 3 }, { &next, 38, 3 }, { &name, 14, 24 }, { &slotA, 43, 1 }, { &slotB, 45, 1 }, { &random, 49, 9 }, { &more, C - 30, 6 }, { &on, C - 21, 4 } })
+        for (auto [key, x, w] : { std::tuple { &prev, 11, 3 }, { &next, 38, 3 }, { &name, 14, 24 }, { &slotA, 43, 1 }, { &slotB, 45, 1 }, { &random, 49, 9 } })
             layer.addAndMakeVisible(*key), key->setBounds(cells(x, 1, w, 1));
         prev.setTitle("previous preset"), next.setTitle("next preset"), name.setTitle("presets");
         prev.onStep = next.onStep = [this](int by) { proc.stepPreset(by), zoom = automatic; };
@@ -324,13 +327,12 @@ struct Editor : AudioProcessorEditor, Timer
             {
                 const auto& s = selectorSpecs[i];
                 auto* key = arrows.add(new Key(String(s.id) + (by < 0 ? "-" : "+")));
-                const int x = selectorX(s) + labelWidth(s);
-                key->setBounds(cells(by < 0 ? x : x + slotWidth(s) - 2, selectY, 2, 1));
+                const int x = selectorX(s).second;
+                key->setBounds(cells(by < 0 ? x : x + slotWidth(s) - 2, selectorY(s), 2, 1));
                 key->onClick = [this, i, by] { step(i, by); }, key->onStep = [this, i](int d) { step(i, d); };
                 key->setTitle(String(by < 0 ? "previous " : "next ") + (s.label[0] != 0 ? s.label : s.id));
-                layer.addChildComponent(key);
+                layer.addAndMakeVisible(key);
             }
-        showPage();
 
         const int stored = proc.editorWidth; // read first: setting the limits already resizes
         setResizable(true, false);
@@ -370,7 +372,6 @@ struct Editor : AudioProcessorEditor, Timer
         if (is(s, "imagesShift")) return value("imagesOn") > 0.5f ? p->getValue() : -offAt;
         if (is(s, "lowCut")) return p->convertTo0to1(proc.band().low);
         if (is(s, "highCut")) return p->convertTo0to1(proc.band().high);
-        if (is(s, "auto")) return proc.autoAmount() / 100;
         return p->getValue();
     }
     static double knobDefaultFor(const CrumbProcessor& proc, int i)
@@ -385,7 +386,7 @@ struct Editor : AudioProcessorEditor, Timer
         const auto* p = proc.apvts.getParameter(s.id);
         if (is(s, "bits")) return index("bits") == 0 ? String("off") : String(index("bits"));
         if ((is(s, "approxDev") && value("approxOn") < 0.5f) || (is(s, "imagesShift") && value("imagesOn") < 0.5f)) return "off";
-        if (is(s, "lowCut") || is(s, "highCut") || is(s, "auto")) return minus(p->getText((float) knobValue(i), 0));
+        if (is(s, "lowCut") || is(s, "highCut")) return minus(p->getText((float) knobValue(i), 0));
         return minus(p->getCurrentValueAsText());
     }
     double knobFromText(int i, const String& t) const
@@ -394,22 +395,13 @@ struct Editor : AudioProcessorEditor, Timer
         const bool off = t.containsIgnoreCase("off");
         if (is(s, "bits")) return off || t.getIntValue() == 0 ? 1 + offAt : (jlimit(1, 24, t.getIntValue()) - 1) / 23.0;
         if (off && knobRange(i).getStart() < 0) return -offAt;
-        if (is(s, "slope")) // the nearest slope
-        {
-            const double want = t.retainCharacters("0123456789.").getDoubleValue();
-            int best = 0;
-            for (int k = 0; k < crumb::numSlopes; ++k)
-                if (std::abs(6 * crumb::slopeOrder[k] - want) < std::abs(6 * crumb::slopeOrder[best] - want)) best = k;
-            return best / (crumb::numSlopes - 1.0);
-        }
         return proc.apvts.getParameter(s.id)->getValueForText(t);
     }
     const char* switchOf(int i) const { return is(knobSpecs[i], "approxDev") ? "approxOn" : is(knobSpecs[i], "imagesShift") ? "imagesOn" : nullptr; }
     void gesture(int i, bool begin)
     {
         const auto& s = knobSpecs[i];
-        if (begin && (is(s, "lowCut") || is(s, "highCut") || is(s, "slope"))) proc.adoptBand();
-        if (begin && is(s, "auto")) proc.adoptAuto();
+        if (begin && (is(s, "lowCut") || is(s, "highCut"))) proc.adoptBand();
         for (auto* id : { s.id, switchOf(i) })
             if (id != nullptr)
             {
@@ -435,15 +427,9 @@ struct Editor : AudioProcessorEditor, Timer
     void step(int i, int by)
     {
         const auto& s = selectorSpecs[i];
-        if (std::strcmp(s.id, "invert") == 0) proc.adoptBand();
+        if (std::strcmp(s.id, "invert") == 0 || std::strcmp(s.id, "slope") == 0) proc.adoptBand();
         setParam(s.id, (float) ((index(s.id) + by + s.names.size()) % s.names.size()));
         if (s.zoom != automatic) zoom = s.zoom;
-    }
-    void showPage()
-    {
-        for (int i = 0; i < numKnobs; ++i) knobs[i].setVisible(knobSpecs[i].page == 2 || knobSpecs[i].page == (opened ? 1 : 0));
-        for (int i = 0; i < numSelectors; ++i)
-            for (int k = 0; k < 2; ++k) arrows[2 * i + k]->setVisible(selectorSpecs[i].page == 2 || selectorSpecs[i].page == (opened ? 1 : 0));
     }
     void showPresets()
     {
@@ -492,19 +478,23 @@ struct Editor : AudioProcessorEditor, Timer
         auto& scope = proc.scope;
         const auto w = scope.write.load(std::memory_order_acquire);
         const bool fresh = w != seen;
+        float cut = 0, over = 0;
         if (w - seen > (uint32_t) crumb::Scope::size) seen = w - (uint32_t) crumb::Scope::size;
         for (; seen != w; ++seen)
         {
             const auto i = (size_t) (seen & (crumb::Scope::size - 1));
-            wave.add(scope.dry[i].load(std::memory_order_relaxed), scope.wet[i].load(std::memory_order_relaxed), scope.gone[i].load(std::memory_order_relaxed), scope.mark[i].load(std::memory_order_relaxed));
+            wave.add(scope.dry[i].load(std::memory_order_relaxed), scope.wet[i].load(std::memory_order_relaxed), scope.gone[i].load(std::memory_order_relaxed), scope.mark[i].load(std::memory_order_relaxed),
+                     scope.cut[i].load(std::memory_order_relaxed), scope.over[i].load(std::memory_order_relaxed));
+            cut = jmax(cut, std::abs(scope.cut[i].load(std::memory_order_relaxed))), over = jmax(over, std::abs(scope.over[i].load(std::memory_order_relaxed)));
         }
         if (fresh) heard = t, flat = false;
-        else if (!flat && t - heard > 150) wave.clear(), scope.peak = outPeak = 0, flat = true; // no audio: a flat line
-        // The output's peak, falling 20 dB a second; the clip light holds for 1 s after a sample over 0 dBFS.
+        else if (!flat && t - heard > 150) wave.clear(), scope.peak = outPeak = 0, driveClip = outClip = {}, flat = true; // no audio: a flat line, nothing lit
+        for (auto [held, now] : { std::pair { &driveClip, cut }, { &outClip, over } })
+            if (now >= held->db || t - held->at > 600) *held = { now, t };
+        // The output's peak, falling 20 dB a second.
         outPeak = jmax(scope.peak.exchange(0.0f, std::memory_order_relaxed), outPeak * Decibels::decibelsToGain((float) (-20 * (t - peakAt) / 1000)));
         if (outPeak < 1e-5f) outPeak = 0;
         peakAt = t;
-        clipped = scope.clipAt.load(std::memory_order_relaxed) + 1000 > t;
         for (int i = 0; i < numKnobs; ++i) // the parameters move the dials (also while one is typed into: not its text)
             if (auto& k = knobs[i]; !k.isMouseButtonDown())
                 if (const double v = knobValue(i); std::abs(v - k.getValue()) > 1e-6) k.setValue(v, dontSendNotification);
@@ -512,14 +502,14 @@ struct Editor : AudioProcessorEditor, Timer
 
         std::vector<float> now;
         for (auto* param : proc.getParameters()) now.push_back(param->getValue());
-        now.insert(now.end(), { (float) proc.preset.load(), (float) proc.abSlot(), (float) opened, (float) showsFrames(), (float) clipped, (float) roundToInt(10 * Decibels::gainToDecibels(outPeak, -100.0f)) });
+        now.insert(now.end(), { (float) proc.preset.load(), (float) proc.abSlot(), (float) showsFrames(), (float) meter(driveClip), (float) meter(outClip), (float) roundToInt(10 * Decibels::gainToDecibels(outPeak, -100.0f)) });
         int hovered = 0;
         for (auto* key : arrows) hovered = 2 * hovered + (key->isMouseOver() ? 1 : 0);
         now.push_back((float) hovered);
-        now.push_back((float) (prev.isMouseOver() ? 1 : next.isMouseOver() ? 2 : random.isMouseOver() ? 3 : more.isMouseOver() ? 4 : on.isMouseOver() ? 5 : 0));
+        now.push_back((float) (prev.isMouseOver() ? 1 : next.isMouseOver() ? 2 : random.isMouseOver() ? 3 : 0));
         now.push_back(flat ? 0.0f : 1.0f);
         if (!flat)
-            for (const auto& c : wave.column) now.insert(now.end(), { c.dry.lo, c.dry.hi, c.wet.lo, c.wet.hi, c.gone.lo, c.gone.hi, (float) c.mark });
+            for (const auto& c : wave.column) now.insert(now.end(), { c.dry.lo, c.dry.hi, c.wet.lo, c.wet.hi, c.gone.lo, c.gone.hi, c.cut.lo, c.cut.hi, c.over.lo, c.over.hi, (float) c.mark });
         now.push_back(flat ? 0 : wave.peak);
         if (now == drawnFrom && proc.presetName() == drawnName) return;
         drawnFrom = std::move(now), drawnName = proc.presetName();
@@ -547,14 +537,13 @@ struct Editor : AudioProcessorEditor, Timer
         g.braille(x, y, 8, 4, track, dim), g.braille(x, y, 8, 4, arc, accent), g.braille(x, y, 8, 4, needle, primary, over);
         g.centre(x - 3, 14, y - 1, label, muted), g.centre(x - 3, 14, y + 4, text, primary, true);
     }
-    static void toggle(Grid& g, int x, bool isOn, const String& label, bool hover)
-    {
-        g.put(x, 1, u(isOn ? "■" : "□"), isOn ? accent : hover ? primary : muted), g.put(x + 2, 1, label, isOn ? primary : muted);
-    }
+    // A clip meter's lit cells: one a dB, at least one while it clips.
+    static constexpr int meterCells = 11;
+    static int meter(const Held& h) { return h.db > 0 ? jlimit(1, meterCells, (int) std::floor(h.db + 0.5f)) : 0; }
     void refresh()
     {
         Grid g;
-        // crumb < preset > A B randomize, more, on, the maker; a rule on the edge under them.
+        // crumb < preset > A B randomize, the maker; a rule on the edge under them.
         g.put(3, 1, "crumb", primary, true);
         g.put(12, 1, "<", prev.isMouseOver() ? primary : muted), g.centre(14, 24, 1, proc.presetName(), primary, true), g.put(39, 1, ">", next.isMouseOver() ? primary : muted);
         for (int k = 0; k < 2; ++k)
@@ -562,11 +551,11 @@ struct Editor : AudioProcessorEditor, Timer
             else g.put(43 + 2 * k, 1, k == 0 ? "A" : "B", dim);
         g.put(49, 1, "randomize", random.isMouseOver() ? primary : muted);
         g.right(C - 4, 1, "daveydidit", dim);
-        toggle(g, C - 21, value("bypass") < 0.5f, "on", on.isMouseOver()), toggle(g, C - 30, opened, "more", more.isMouseOver());
         g.edge(3, C - 3, 3, 2);
 
         for (auto [i, j] : wave.water) g.put(AX + i, AT + j, u("░"), rule);
         g.braille(AX, AT, AW, AH, wave.line, accent), g.braille(AX, AT, AW, AH, wave.lost, primary, over);
+        g.braille(AX, AT, AW, AH, wave.hot, hot);
         g.braille(AX, AT, AW, AH, wave.taken, muted, under), g.braille(AX, AT, AW, AH, wave.ghost, showsFrames() ? kick : muted, under);
 
         for (const auto& s : sections)
@@ -575,19 +564,29 @@ struct Editor : AudioProcessorEditor, Timer
             g.put(s.x, titleY, s.name, primary), g.edge(s.x + (int) std::strlen(s.name) + 1, s.x + s.w, titleY, 1);
         }
         for (int i = 0; i < numKnobs; ++i)
-            if (const auto& s = knobSpecs[i]; knobs[i].isVisible()) knob(g, knobX(sections[s.section], s.slot), knobY, knobValue(i), s.name, knobText(i), s.centred);
+        {
+            const auto& s = knobSpecs[i];
+            knob(g, knobX(s), knobRow(s), knobValue(i), s.name, knobText(i), s.centred);
+        }
         for (int i = 0; i < numSelectors; ++i)
-            if (const auto& s = selectorSpecs[i]; arrows[2 * i]->isVisible())
-            {
-                const int x = selectorX(s), at = x + labelWidth(s), w = slotWidth(s);
-                const int chosen = std::strcmp(s.id, "invert") == 0 ? (proc.band().invert ? 1 : 0) : index(s.id);
-                g.put(x, selectY, s.label, muted);
-                g.put(at, selectY, "<", arrows[2 * i]->isMouseOver() ? primary : muted), g.put(at + w - 1, selectY, ">", arrows[2 * i + 1]->isMouseOver() ? primary : muted);
-                g.centre(at + 1, w - 2, selectY, s.names[jlimit(0, s.names.size() - 1, chosen)], primary, true);
-            }
+        {
+            const auto& s = selectorSpecs[i];
+            const auto [x, at] = selectorX(s);
+            const int w = slotWidth(s), y = selectorY(s), chosen = std::strcmp(s.id, "invert") == 0 ? (proc.band().invert ? 1 : 0) : index(s.id);
+            g.put(x, y, s.label, muted);
+            g.put(at, y, "<", arrows[2 * i]->isMouseOver() ? primary : muted), g.put(at + w - 1, y, ">", arrows[2 * i + 1]->isMouseOver() ? primary : muted);
+            g.centre(at + 1, w - 2, y, s.names[jlimit(0, s.names.size() - 1, chosen)], primary, true);
+        }
+        // Where it clips, lit by the samples themselves: the drive's clip, the output past 0 dBFS; the output's peak.
         const auto& out = sections[4];
-        g.put(out.x, selectY, "out", muted), g.put(out.x + 4, selectY, outPeak > 0 ? minus(String(Decibels::gainToDecibels(outPeak), 1)) + " dB" : u("−inf"), primary, true);
-        g.right(out.x + out.w - 3, selectY, "clip", muted), g.put(out.x + out.w - 1, selectY, u("⠶"), clipped ? accent : dim);
+        const int lit[2] { meter(driveClip), meter(outClip) };
+        g.put(out.x, lowerY - 1, "clip", muted), g.put(out.x + out.w - 1, lowerY - 1, u("⠶"), lit[0] + lit[1] > 0 ? hot : dim);
+        for (int k = 0; k < 2; ++k)
+        {
+            g.put(out.x, lowerY + 1 + 3 * k, k == 0 ? "drive" : "output", muted);
+            for (int c = 0; c < meterCells; ++c) g.put(out.x + out.w - meterCells + c, lowerY + 1 + 3 * k, u("⠶"), c < lit[k] ? hot : dim);
+        }
+        g.put(out.x, selectY, "peak", muted), g.put(out.x + out.w - meterCells, selectY, outPeak > 0 ? (outPeak > 1 ? "+" : "") + minus(String(Decibels::gainToDecibels(outPeak), 1)) + " dB" : u("−inf"), primary, true);
         g.put(3, R - 3, String::repeatedString(u("─"), C - 6), rule);
         show(g);
     }
@@ -704,6 +703,7 @@ struct Editor : AudioProcessorEditor, Timer
     struct Ink { const Image* plate; float alpha; Colour colour; };
     Ink inkOf(Colour c, int i, int j) const
     {
+        if (c == hot) return { nullptr, 1, c };
         const int r = c.getRed(), g = c.getGreen(), b = c.getBlue();
         const float lum = (float) (r + g + b) / 3, t = jlimit(0.0f, 1.0f, (lum - 13) / 223);
         if (r - g > 40 && r - b > 30) return { &inkPlate, jlimit(0.0f, 1.0f, (float) (r - 13) / 242), {} };
@@ -779,8 +779,6 @@ struct Editor : AudioProcessorEditor, Timer
         };
         if (c.left != 0) { glyph(c.left, -w / 2), glyph(c.c, w / 2); return; }
         if (c.c == 0x2500) g.fillRect(r.getX(), hy, r.getWidth(), t); // ─
-        else if (c.c == 0x25a0) g.fillRect(Rectangle<float>(0.72f * w, 0.36f * h).withCentre({ cx, cy })); // ■
-        else if (c.c == 0x25a1) g.drawRect(Rectangle<float>(0.72f * w, 0.36f * h).withCentre({ cx, cy }), (float) t); // □
         else if (c.c == 0x2192) // →
         {
             Path p;

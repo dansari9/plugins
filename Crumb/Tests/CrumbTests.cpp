@@ -1,8 +1,8 @@
 // CrumbTests: drives the real processor and editor without a host. Exit code 1 on failure.
-//   CrumbTests --screenshot a.png [width] [more|quiet|crush]   render the editor at 1x after a drum + bass loop
+//   CrumbTests --screenshot a.png [width] [clip|quiet|crush]   render the editor at 1x after a drum + bass loop
 //   CrumbTests --plates dir                   the editor's riso plates as PNGs (the site's public/riso/crumb-*.png)
 //   CrumbTests --render in.f32 out.f32 [preset=n] [id=value ...]   stereo interleaved float32 at 48 kHz, 128-sample blocks
-//   CrumbTests --feed in.f32 out.f32 [preset=n] [id=value ...]     the display feed instead (dry, wet, gone, mark per sample)
+//   CrumbTests --feed in.f32 out.f32 [preset=n] [id=value ...]     the display feed instead (dry, wet, gone, mark, cut, over per sample)
 //   CrumbTests --bench | --bench-editor       DSP and editor timings
 #include "Crumb.h"
 #include "Wave.h"
@@ -77,6 +77,7 @@ static void set(Proc& p, const Settings& s)
         set(p, id, v);
 }
 static float get(Proc& p, const juce::String& id) { return p.apvts.getRawParameterValue(id)->load(); }
+static const Settings cleanCrush { { "bits", 0 }, { "rate", 44100 }, { "approxOn", 0 } };
 static bool defaults(Proc& p)
 {
     for (auto* param : p.getParameters())
@@ -163,10 +164,18 @@ static void testIdentity()
     CHECK(get(p, "preamp") == 0 && get(p, "bits") == 12 && get(p, "dcShift") == 0 && get(p, "dither") == 0 && get(p, "rate") == 26040
           && get(p, "jitter") == 0 && get(p, "approxOn") == 1 && get(p, "approxDev") == 0 && get(p, "imagesOn") == 0
           && get(p, "imagesShift") == 0 && get(p, "fType") == 0 && get(p, "fOrder") == 1 && get(p, "cutoff") == 20000 && get(p, "reso") == 0
-          && get(p, "mix") == 100 && get(p, "output") == 0 && get(p, "bypass") == 0 && get(p, "autoGain") == 1);
+          && get(p, "mix") == 100 && get(p, "output") == 0 && get(p, "bypass") == 0 && get(p, "autoGain") == 0); // 0.4.0: auto gain off
     // 0.3.0's are neutral.
     CHECK(get(p, "loss") == 0 && get(p, "speed") == 100 && get(p, "drop") == 0 && get(p, "fill") == 0 && get(p, "keep") == 0 && get(p, "ear") == 0
           && get(p, "gate") == -96 && get(p, "stereo") == 0 && get(p, "lowCut") == 20 && get(p, "highCut") == 20000 && get(p, "slope") == 3 && get(p, "invert") == 0 && get(p, "auto") == 100);
+    // 0.4.0's names (the IDs stay): what the host shows is what the panel says.
+    const std::pair<const char*, const char*> titles[] { { "preamp", "Drive" }, { "bits", "Bits" }, { "dcShift", "DC Shift" }, { "dither", "Dither" }, { "rate", "Rate" }, { "jitter", "Jitter" }, { "approxDev", "Anti-Alias" },
+        { "imagesShift", "Anti-Image" }, { "loss", "Loss" }, { "speed", "Speed" }, { "drop", "Packet Loss" }, { "fill", "Packets" }, { "keep", "Delta" }, { "ear", "Weighting" }, { "gate", "Gate" }, { "stereo", "Stereo Mode" },
+        { "lowCut", "Low Cut" }, { "highCut", "High Cut" }, { "reso", "Resonance" }, { "slope", "Filter Slope" }, { "fOrder", "Filter Position" }, { "invert", "Filter Invert" }, { "mix", "Mix" }, { "output", "Output" }, { "bypass", "Bypass" } };
+    for (auto& [id, name] : titles) CHECK(p.apvts.getParameter(id)->getName(64) == name);
+    set(p, { { "fill", 1 }, { "keep", 1 }, { "ear", 0 } });
+    CHECK(p.apvts.getParameter("fill")->getCurrentValueAsText() == "repeat" && p.apvts.getParameter("keep")->getCurrentValueAsText() == "on" && p.apvts.getParameter("ear")->getCurrentValueAsText() == "perceptual");
+    set(p, { { "fill", 0 }, { "keep", 0 } });
     CHECK(p.apvts.getParameter("gate")->getCurrentValueAsText() == "off" && p.apvts.getParameter("rate")->getCurrentValueAsText() == "26.0 kHz");
     CHECK(p.apvts.getParameter("bits")->getText(0, 16) == "OFF");
     CHECK(p.getLatencySamples() == 0 && p.getTailLengthSeconds() == 0 && !p.acceptsMidi() && !p.producesMidi());
@@ -205,7 +214,7 @@ static void testState()
         CHECK(m == m2);
         for (auto& id : ids)
             CHECK(get(a, id) == get(b, id));
-        CHECK(juce::AudioProcessor::getXmlFromBinary(m.getData(), (int) m.getSize())->getIntAttribute("stateVersion") == 3);
+        CHECK(juce::AudioProcessor::getXmlFromBinary(m.getData(), (int) m.getSize())->getIntAttribute("stateVersion") == 4);
         if (n < 6)
         {
             prepare(a, 48000, 256, 2), prepare(b, 48000, 256, 2);
@@ -561,11 +570,11 @@ static void testSound()
         step = std::max(step, std::abs(y[i] - y[i - 1]));
     std::cout << "auto gain transitions: largest step " << step << "\n";
     CHECK(step < 0.003f);
-    // Factory presets load as stored with auto gain on: 24 (35 % wet, +12 dB preamp) keeps its dry path at unity (mix
-    // 0: the input exactly) and its blend no louder than with auto gain off.
+    // Auto gain only ever moves the wet path: preset 24 with it on keeps its dry path at its output gain (mix 0: the input
+    // exactly), and its blend is no louder than with auto gain off.
     const auto preset = [&](float on, float mix) {
         Proc r;
-        set(r, "autoGain", on), r.setCurrentProgram(24);
+        r.setCurrentProgram(24), set(r, { { "autoGain", on }, { "output", 0 }, { "mix", 35 } });
         if (mix >= 0) set(r, "mix", mix);
         prepare(r, 48000, 512, 2);
         return run(r, 512, 2, 48000, sine);
@@ -790,8 +799,8 @@ static void testPresets()
     for (int i = 0; i < p.getNumPrograms(); ++i)
     {
         names.addIfNotAlreadyThere(p.getProgramName(i));
-        set(p, "autoGain", (float) (i % 2)), p.setCurrentProgram(i); // auto gain stays, the values load unchanged
-        CHECK(p.getCurrentProgram() == i && p.presetName() == p.getProgramName(i) && get(p, "autoGain") == (float) (i % 2));
+        set(p, { { "autoGain", (float) (i % 2) }, { "auto", 40 } }), p.setCurrentProgram(i); // a preset turns auto gain off
+        CHECK(p.getCurrentProgram() == i && p.presetName() == p.getProgramName(i) && get(p, "autoGain") == 0);
         for (int k = 0; k < 16; ++k) // every value is on its parameter's grid, so it is stored exactly
         {
             const float v = crumb::presets[i].v[k];
@@ -952,9 +961,72 @@ static void testScopeFifo()
     CHECK(dryWrong == 0 && wetWrong == 0 && sumWrong == 0 && held > 2000 && held < 12000);
 }
 
+// The clip feed carries what really clipped: nothing under full scale, the dB the drive's clip took off each sample past it
+// (signed, the louder side's, late with the codec), the dB each output sample is past 0 dBFS; none while it is not heard.
+static void testClipFeed()
+{
+    const auto ramp = [](int i) { return (float) (0.9 * std::sin(i * 0.02)); };
+    const auto feed = [&](const Settings& s, int ch, int n = 4096) {
+        auto p = std::make_unique<Proc>();
+        set(*p, cleanCrush), set(*p, s);
+        prepare(*p, 48000, 512, ch);
+        run(*p, 512, ch, n, ramp);
+        return p;
+    };
+    const auto wrong = [&](Proc& p, double drive, int late, int from, int n) {
+        int bad = 0, hits = 0;
+        for (int i = from; i < n; ++i)
+        {
+            const double a = i < late ? 0.0 : (double) ramp(i - late) * drive, want = std::abs(a) > 1 ? 20 * std::log10(std::abs(a) / crumb::clip(std::abs(a))) : 0.0;
+            const float is = p.scope.cut[(size_t) i].load();
+            bad += std::abs(std::abs(is) - want) > 2e-4 || (want > 0 && (is > 0) != (a > 0)) ? 1 : 0, hits += is != 0 ? 1 : 0;
+        }
+        return std::pair { bad, hits };
+    };
+    CHECK(wrong(*feed({}, 1), 1, 0, 0, 4096) == std::pair(0, 0)); // 0.9: in the knee, under full scale
+    const auto driven = feed({ { "preamp", 12 } }, 2);
+    const auto [bad, hits] = wrong(*driven, juce::Decibels::decibelsToGain(12.0), 0, 0, 4096);
+    CHECK(bad == 0 && hits > 2000);
+    const auto coded = feed({ { "preamp", 12 }, { "loss", 30 } }, 1, 12288); // the codec's latency later
+    const auto [bad2, hits2] = wrong(*coded, juce::Decibels::decibelsToGain(12.0), 2048, 2048, 12288);
+    CHECK(bad2 == 0 && hits2 > 4000);
+    for (auto& s : { Settings { { "preamp", 12 }, { "bypass", 1 } }, Settings { { "preamp", 12 }, { "mix", 0 } }, Settings { { "preamp", 12 }, { "gate", 0 } } })
+        CHECK(wrong(*feed(s, 2, 12288), 0, 0, 8192, 12288).first == 0);
+    // the output: exactly the samples past 0 dBFS
+    for (float output : { 0.0f, 6.0f })
+    {
+        Proc p;
+        set(p, cleanCrush), set(p, "output", output);
+        prepare(p, 48000, 512, 1);
+        const auto y = run(p, 512, 1, 4096, [&](int i) { return 0.5f * ramp(i) / 0.45f; });
+        int hot = 0;
+        for (size_t i = 0; i < y.size(); ++i)
+        {
+            const float is = p.scope.over[i].load();
+            CHECK(std::abs(y[i]) > 1 ? std::abs(std::abs(is) - 20 * std::log10(std::abs(y[i]))) < 1e-5f && (is > 0) == (y[i] > 0) : is == 0);
+            hot += is != 0;
+        }
+        CHECK(output == 0 ? hot == 0 : hot > 1000);
+    }
+    // the louder side is the one that counts
+    Proc p;
+    set(p, cleanCrush), set(p, { { "output", 12 }, { "preamp", 6 } });
+    prepare(p, 48000, 64, 2);
+    juce::AudioBuffer<float> b(2, 64);
+    juce::MidiBuffer midi;
+    for (int k = 0; k < 60; ++k)
+    {
+        b.clear();
+        for (int i = 0; i < 64; ++i) b.setSample(1, i, -0.9f);
+        onAudioThread = true, p.processBlock(b, midi), onAudioThread = false;
+    }
+    CHECK(audioAllocations.exchange(0) == 0);
+    const auto last = (size_t) (p.scope.write.load() - 1);
+    CHECK(std::abs(p.scope.cut[last].load() + 20 * std::log10(1.796 / crumb::clip(1.796))) < 0.01 && p.scope.over[last].load() < -11);
+}
+
 // ------------------------------------------------------------------------------------------------ 0.3.0: codec, band, gate
 static double energy(const std::vector<float>& y, size_t from, size_t to) { double e = 0; for (size_t i = from; i < to; ++i) e += (double) y[i] * y[i]; return e; }
-static const Settings cleanCrush { { "bits", 0 }, { "rate", 44100 }, { "approxOn", 0 } };
 
 static void testCodec()
 {
@@ -1210,6 +1282,13 @@ static juce::MemoryBlock v2Fixture()
     return blob(R"(<?xml version="1.0" encoding="UTF-8"?> <CRUMB stateVersion="2" preset="18" ab="1" slotA="5;0.291666657,0.416666657,0,0,0.853275359,0.219999999,1,0.349999994,1,0,0.25,1,0.743482947,0.349999994,1,0.666666687,0" slotNameA=""><PARAM id="approxDev" value="0.0"/><PARAM id="approxOn" value="1.0"/><PARAM id="autoGain" value="1.0"/><PARAM id="bits" value="8.0"/><PARAM id="bypass" value="0.0"/><PARAM id="cutoff" value="1800.0"/><PARAM id="dcShift" value="0.0"/><PARAM id="dither" value="20.0"/><PARAM id="fOrder" value="1.0"/><PARAM id="fType" value="2.0"/><PARAM id="imagesOn" value="1.0"/><PARAM id="imagesShift" value="0.0"/><PARAM id="jitter" value="0.0"/><PARAM id="mix" value="80.0"/><PARAM id="output" value="-2.0"/><PARAM id="preamp" value="10.0"/><PARAM id="rate" value="11025.0"/><PARAM id="reso" value="40.0"/></CRUMB>)");
 }
 [[maybe_unused]] static const char* const v2Hashes[] = { "7f8de87d275eeccf9f725e86dcb315a3a7b2b72c7522d10f8438b7b25c0796ef", "825925806d27227a109e96d879c513dd67cf52a8174dee1e02eb4305bb232acb" };
+// The same from 0.3.0 itself: slot A dial tone with auto gain at 60 %, slot B (current) the old filter beside the codec, driven,
+// with auto gain; and what 0.3.0 played of each.
+static juce::MemoryBlock v3Fixture()
+{
+    return blob(R"(<?xml version="1.0" encoding="UTF-8"?> <CRUMB stateVersion="3" preset="1" ab="1" slotA="39;0.375,0.208333328,1,0,0.71133244,0.0799999982,0,0.5,0,0,0,1,1,0.349999994,0.850000024,0.5,1,0.819999993,0.75,0.100000001,1,0,1,0.479166657,1,0.392030418,0.743482947,0.571428597,0,0.600000024" slotNameA="" editorWidth="1320"><PARAM id="approxDev" value="0.0"/><PARAM id="approxOn" value="1.0"/><PARAM id="auto" value="60.0"/><PARAM id="autoGain" value="1.0"/><PARAM id="bits" value="12.0"/><PARAM id="bypass" value="0.0"/><PARAM id="cutoff" value="11000.0"/><PARAM id="dcShift" value="0.0"/><PARAM id="dither" value="0.0"/><PARAM id="drop" value="8.0"/><PARAM id="ear" value="1.0"/><PARAM id="fOrder" value="1.0"/><PARAM id="fType" value="1.0"/><PARAM id="fill" value="1.0"/><PARAM id="gate" value="-96.0"/><PARAM id="highCut" value="20000.0"/><PARAM id="imagesOn" value="1.0"/><PARAM id="imagesShift" value="10.0"/><PARAM id="invert" value="0.0"/><PARAM id="jitter" value="4.0"/><PARAM id="keep" value="1.0"/><PARAM id="loss" value="30.0"/><PARAM id="lowCut" value="20.0"/><PARAM id="mix" value="100.0"/><PARAM id="output" value="-1.0"/><PARAM id="preamp" value="15.0"/><PARAM id="rate" value="26040.0"/><PARAM id="reso" value="8.0"/><PARAM id="slope" value="3.0"/><PARAM id="speed" value="40.0"/><PARAM id="stereo" value="1.0"/></CRUMB>)");
+}
+[[maybe_unused]] static const char* const v3Hashes[] = { "08bf8e3ba625613df74bf502b9f79e728b6d0b82865cd800f89b8e2c499bb6a1", "03a649c3c3725f97aaa7695f98db32838047c68c818c440175f991c92609112d" };
 static void testMigration()
 {
     Proc p;
@@ -1218,17 +1297,15 @@ static void testMigration()
     CHECK(p.abSlot() == 1 && p.getCurrentProgram() == 18 && get(p, "bits") == 8 && get(p, "fType") == 2 && get(p, "cutoff") == 1800 && get(p, "reso") == 40 && get(p, "mix") == 80 && get(p, "autoGain") == 1);
     for (int k = 18; k < ids.size(); ++k)
         CHECK(p.apvts.getParameter(ids[k])->getValue() == p.apvts.getParameter(ids[k])->getDefaultValue());
-    CHECK(p.getLatencySamples() == 0 && p.autoAmount() == 100);
+    CHECK(p.getLatencySamples() == 0 && get(p, "auto") == 100);
     // the band shows the old band-pass; nothing changes until it is edited, then it moves onto the new controls
     const auto b = p.band();
     CHECK(b.legacy && b.low == 1800 && b.high == 1800 && !b.invert);
     p.selectAb(0); // its 17 values, 0.3.0's neutral
-    CHECK(get(p, "fType") == 1 && std::abs(get(p, "cutoff") - 3400) < 1 && get(p, "autoGain") == 0 && get(p, "loss") == 0 && get(p, "highCut") == 20000 && get(p, "auto") == 100 && p.autoAmount() == 0);
+    CHECK(get(p, "fType") == 1 && std::abs(get(p, "cutoff") - 3400) < 1 && get(p, "autoGain") == 0 && get(p, "loss") == 0 && get(p, "highCut") == 20000 && get(p, "auto") == 100);
     CHECK(p.band().legacy && p.band().low == 20 && std::abs(p.band().high - 3400) < 1);
     p.adoptBand();
     CHECK(!p.band().legacy && get(p, "fType") == 0 && std::abs(get(p, "highCut") - 3400) < 1 && get(p, "lowCut") == 20 && get(p, "slope") == 1 && get(p, "reso") == 35);
-    p.adoptAuto();
-    CHECK(get(p, "autoGain") == 1 && get(p, "auto") == 0 && p.autoAmount() == 0);
     // a 0.2 user preset file (the parameters alone) loads the same way
     const auto dir = juce::File::getSpecialLocation(juce::File::tempDirectory).getNonexistentChildFile("crumb-v2", "", false);
     dir.createDirectory(), dir.getChildFile("mine.xml").replaceWithText("<CRUMB stateVersion='2'><PARAM id='bits' value='6'/><PARAM id='autoGain' value='1'/><PARAM id='fType' value='3'/><PARAM id='cutoff' value='250'/></CRUMB>");
@@ -1236,22 +1313,88 @@ static void testMigration()
     set(user, "loss", 50), user.loadUserPreset("mine");
     CHECK(user.presetName() == "mine" && get(user, "bits") == 6 && get(user, "loss") == 0 && user.band().legacy && user.band().low == 250 && user.band().high == 20000);
     dir.deleteRecursively();
-    // round trip: what 0.3.0 saves of it loads identically
+    // round trip: what 0.4.0 saves of it loads identically
     juce::MemoryBlock m, m2;
     Proc a, c;
     load(a, v2Fixture()), a.getStateInformation(m), load(c, m), c.getStateInformation(m2);
-    CHECK(m == m2 && juce::AudioProcessor::getXmlFromBinary(m.getData(), (int) m.getSize())->getIntAttribute("stateVersion") == 3);
+    CHECK(m == m2 && juce::AudioProcessor::getXmlFromBinary(m.getData(), (int) m.getSize())->getIntAttribute("stateVersion") == 4);
+
+    // 0.3.0: every parameter and both slots come back as they were, auto gain on included (it runs, off the panel), and stay
+    // through a save; testGoldens plays them.
+    Proc three;
+    set(three, { { "autoGain", 0 }, { "auto", 10 }, { "bits", 3 } }), load(three, v3Fixture());
+    const Settings slotB { { "preamp", 15 }, { "bits", 12 }, { "rate", 26040 }, { "jitter", 4 }, { "imagesOn", 1 }, { "imagesShift", 10 }, { "fType", 1 }, { "cutoff", 11000 }, { "reso", 8 }, { "mix", 100 }, { "output", -1 }, { "autoGain", 1 },
+        { "loss", 30 }, { "speed", 40 }, { "drop", 8 }, { "fill", 1 }, { "keep", 1 }, { "ear", 1 }, { "gate", -96 }, { "stereo", 1 }, { "lowCut", 20 }, { "highCut", 20000 }, { "slope", 3 }, { "invert", 0 }, { "auto", 60 } };
+    const Settings slotA { { "preamp", 18 }, { "bits", 5 }, { "dcShift", 1 }, { "rate", 6000 }, { "jitter", 8 }, { "approxOn", 0 }, { "reso", 35 }, { "mix", 85 }, { "output", -6 }, { "autoGain", 1 },
+        { "loss", 82 }, { "speed", 75 }, { "drop", 10 }, { "fill", 1 }, { "ear", 1 }, { "gate", -50 }, { "stereo", 2 }, { "lowCut", 300 }, { "highCut", 3400 }, { "slope", 4 }, { "auto", 60 } };
+    const auto holds = [](Proc& q, const Settings& want) {
+        for (auto& [id, v] : want)
+            if (std::abs(get(q, id) - v) > 1e-3f * std::max(1.0f, std::abs(v))) return false;
+        return true;
+    };
+    CHECK(three.abSlot() == 1 && three.getCurrentProgram() == 1 && three.editorWidth == 1320 && holds(three, slotB) && three.getLatencySamples() == 2048);
+    three.selectAb(0), CHECK(holds(three, slotA) && three.getCurrentProgram() == 39);
+    three.selectAb(1), CHECK(holds(three, slotB));
+    load(a, v3Fixture()), a.getStateInformation(m), load(c, m), c.getStateInformation(m2);
+    CHECK(m == m2 && holds(c, slotB));
+    c.selectAb(0), CHECK(holds(c, slotA));
+    // a new sound has no auto gain: a factory preset, randomize and a 0.4 instance; the session's other slot keeps it
+    c.setCurrentProgram(28), CHECK(get(c, "autoGain") == 0);
+    c.selectAb(1), CHECK(get(c, "autoGain") == 1 && get(c, "auto") == 60);
+    c.randomize(3), CHECK(get(c, "autoGain") == 0);
+    const auto folder = juce::File::getSpecialLocation(juce::File::tempDirectory).getNonexistentChildFile("crumb-v3", "", false);
+    folder.createDirectory(), folder.getChildFile("mine.xml").replaceWithText("<CRUMB stateVersion='3'><PARAM id='preamp' value='12'/><PARAM id='autoGain' value='1'/><PARAM id='auto' value='80'/><PARAM id='loss' value='20'/></CRUMB>");
+    Proc mine(folder);
+    mine.loadUserPreset("mine"), CHECK(get(mine, "preamp") == 12 && get(mine, "autoGain") == 1 && get(mine, "auto") == 80 && get(mine, "loss") == 20);
+    folder.deleteRecursively();
+}
+
+// 0.3.0's mix and output of every preset that auto gain (on by default until then) turned down or up: 0.4.0 bakes that in.
+struct Baked { int program; float mix, output; };
+static const Baked baked[] = {
+    { 1, 100, -1 }, { 2, 100, -2 }, { 3, 100, -4 }, { 5, 100, 0 }, { 6, 100, -6 }, { 7, 100, -4 },
+    { 8, 100, -1 }, { 9, 100, -3 }, { 10, 100, -6 }, { 11, 100, -2 }, { 12, 100, -3 }, { 13, 70, -3 },
+    { 14, 100, -2 }, { 15, 100, -3 }, { 16, 60, -4 }, { 17, 100, 0 }, { 18, 100, -2 }, { 19, 100, -1 },
+    { 21, 100, 0 }, { 23, 100, -8 }, { 24, 35, 0 }, { 28, 100, -1.5f }, { 29, 100, 0 },
+    { 30, 100, 0 }, { 31, 100, -2 }, { 32, 100, 0 }, { 35, 100, 0 }, { 36, 100, -2 }, { 37, 100, -3 },
+    { 38, 100, -2 }, { 39, 100, -6 }, { 40, 100, -8 },
+};
+static void testBaked()
+{
+    for (auto& b : baked)
+    {
+        Proc was, is;
+        was.setCurrentProgram(b.program), set(was, { { "mix", b.mix }, { "output", b.output }, { "autoGain", 1 }, { "auto", 100 } });
+        is.setCurrentProgram(b.program);
+        CHECK(get(is, "autoGain") == 0 && get(is, "output") != b.output);
+        prepare(was, 48000, 512, 2), prepare(is, 48000, 512, 2);
+        const auto x = run(was, 512, 2, 144000, [](int i) { return groove(i); }), y = run(is, 512, 2, 144000, [](int i) { return groove(i); });
+        double exx = 0, eyy = 0, ed = 0;
+        for (size_t i = 48000; i < x.size(); ++i) exx += x[i] * x[i], eyy += y[i] * y[i], ed += (y[i] - x[i]) * (y[i] - x[i]);
+        const double level = 10 * std::log10(eyy / exx), null = 10 * std::log10(ed / exx);
+        std::cout << "preset " << b.program << " against 0.3.0 with auto gain: level " << level << " dB, null " << null << " dB\n";
+        if (get(is, "loss") == 0) CHECK(null < -42); // drive's share exactly, to the 0.1 dB of output's grid
+        else CHECK(std::abs(level - (b.program == 39 ? 2.0 : b.program == 40 ? 4.9 : 0.0)) < 2.5); // the codec's is an average (the demo loop and this one)
+    }
+    // the others are what they were
+    Proc p;
+    for (int i : { 0, 4, 20, 22, 25, 26, 27, 33, 34 })
+    {
+        p.setCurrentProgram(i);
+        const std::map<int, std::pair<float, float>> old { { 0, { 100, 0 } }, { 4, { 100, 0 } }, { 20, { 50, -2 } }, { 22, { 100, -3 } }, { 25, { 100, 0 } }, { 26, { 100, 0 } }, { 27, { 100, 0 } }, { 33, { 100, 0 } }, { 34, { 100, -1 } } };
+        CHECK(get(p, "mix") == old.at(i).first && get(p, "output") == old.at(i).second);
+    }
 }
 
 static void testRandomize()
 {
     Proc a, b;
-    set(a, { { "mix", 40 }, { "output", -3 }, { "bypass", 1 }, { "auto", 25 } }), set(b, "mix", 100);
+    set(a, { { "mix", 40 }, { "output", -3 }, { "bypass", 1 }, { "autoGain", 1 }, { "auto", 25 } }), set(b, "mix", 100);
     a.randomize(5), b.randomize(5);
-    CHECK(a.presetName() == "random" && a.preset == -1 && get(a, "mix") == 40 && get(a, "output") == -3 && get(a, "bypass") == 1 && get(a, "auto") == 25 && get(b, "mix") == 100);
+    CHECK(a.presetName() == "random" && a.preset == -1 && get(a, "mix") == 40 && get(a, "output") == -3 && get(a, "bypass") == 1 && get(a, "autoGain") == 0 && get(a, "auto") == 100 && get(b, "mix") == 100);
     for (auto* id : { "preamp", "bits", "rate", "loss", "speed", "drop", "fill", "lowCut", "highCut", "stereo", "fType" }) CHECK(get(a, id) == get(b, id));
     std::set<float> losses;
-    for (int k = 0; k < 20; ++k) a.randomize(k), losses.insert(get(a, "loss"));
+    for (int k = 0; k < 20; ++k) a.randomize(k), losses.insert(get(a, "loss")), CHECK(get(a, "preamp") <= 9);
     CHECK(losses.size() > 10 && get(a, "fType") == 0);
 }
 
@@ -1289,6 +1432,25 @@ static void testWave()
     }
     CHECK(runs > 40 && shortRuns == 0);
     CHECK(h.column[0].dry.lo > 0 && h.column[0].dry.lo < 0.02f); // triggered: starts just past a rising zero
+    // clipping: hot dots hang from the crest of the steps whose samples clipped, on their own side, deeper by the dB; the rails
+    // where the output is past 0 dBFS; and nowhere else
+    crumb::Wave z;
+    for (int i = 0; i < 40000; ++i)
+    {
+        const bool up = i >= 30000 && i < 30300, down = i >= 35000 && i < 35300;
+        z.add(0.5f, i % 2 ? 0.5f : -0.5f, 0, 0, up ? 3.0f : down ? -7.0f : 0.0f, i >= 37000 && i < 37300 ? 1.0f : 0.0f);
+    }
+    z.build(256, 3, false, 0, 40000);
+    std::map<int, std::pair<int, int>> dots; // per column: dots above and below the middle
+    for (auto [k, row] : z.hot) ++(row < 24 ? dots[k].first : dots[k].second);
+    for (int k = 0; k < crumb::Wave::columns; ++k)
+    {
+        const int from = (40000 / 256 - 84 + k / 3) * 256, to = from + 256;
+        const auto in = [&](int a, int b) { return from < b && to > a; };
+        const int above = (in(30000, 30300) ? 4 : 0) + (in(37000, 37300) ? 2 : 0), below = in(35000, 35300) ? 6 : 0;
+        CHECK(dots[k].first == above && dots[k].second == below);
+    }
+    w.clear(), w.build(256, 3, false, 0), CHECK(w.hot.empty());
     // silence, and no audio at all: one flat line, no ghost fill, nothing taken
     w.clear(), w.build(256, 3, false, 0);
     for (auto [k, row] : w.line) CHECK(row == 23 || row == 24);
@@ -1344,11 +1506,11 @@ static void testScopeRepaints()
             std::unique_ptr<juce::AudioProcessorEditor> e(p.createEditor());
             auto& timer = dynamic_cast<juce::Timer&>(*e);
             timer.stopTimer();
-            e->setSize(1056 * percent / 100, 544 * percent / 100), e->setVisible(true);
+            e->setSize(1056 * percent / 100, 656 * percent / 100), e->setVisible(true);
             auto* capture = new RepaintCapture(*e);
             e->setCachedComponentImage(capture); // the editor takes ownership
             const float scale = (float) percent / 50; // 2x pixels
-            juce::Image image(juce::Image::RGB, 1056 * percent / 50, 544 * percent / 50, true);
+            juce::Image image(juce::Image::RGB, 1056 * percent / 50, 656 * percent / 50, true);
             capture->consume(image, scale);
             int paints = 0;
             for (int frame = 0; frame < 60; ++frame)
@@ -1406,7 +1568,7 @@ static void testEditorEdges()
     dir.deleteRecursively();
 }
 
-// Mouse events at 100 % and 200 %: every control reacts at its hit region of cells, the regions of one page do not
+// Mouse events at 100 % and 200 %: every control reacts at its hit region of cells, the regions do not
 // overlap, dials drag with the slider's 250 px sensitivity, double-click resets, and clicking a value types one; the
 // selectors step both ways and wrap, and their slots are the longest name and a cell either side.
 static void testInteraction()
@@ -1418,7 +1580,7 @@ static void testInteraction()
         prepare(p, 48000, 512, 2);
         std::unique_ptr<juce::AudioProcessorEditor> e(p.createEditor());
         auto& timer = dynamic_cast<juce::Timer&>(*e);
-        e->setSize(1056 * percent / 100, 544 * percent / 100), e->setVisible(true); // getComponentAt skips hidden components
+        e->setSize(1056 * percent / 100, 656 * percent / 100), e->setVisible(true); // getComponentAt skips hidden components
         const auto click = [&](juce::Point<float> at) {
             // Through the component tree: the peer path hit-tests the on-screen window, which stays racy on macOS CI.
             auto* c = e->getComponentAt(at.roundToInt());
@@ -1438,75 +1600,82 @@ static void testInteraction()
         const auto centre = [&](juce::Component& c, juce::Rectangle<int> area) { return e->getLocalArea(&c, area).toFloat().getCentre(); };
         const auto at = [&](const juce::String& id) { auto* c = find(*e, id); CHECK(c != nullptr); return centre(*c, c->getLocalBounds()); };
         const auto cellsOf = [&](const juce::String& id) { const auto r = find(*e, id)->getBoundsInParent(); return juce::Rectangle<int>(r.getX() / 8, r.getY() / 16, r.getWidth() / 8, r.getHeight() / 16); };
-        // Hit regions where the wave frame puts them, the verb's 16 cells closed.
+        // Hit regions: the columns of 0.3.0 for crush, loss and low / high cut, two rows of dials.
         CHECK(cellsOf("A") == juce::Rectangle<int>(43, 1, 1, 1) && cellsOf("B") == juce::Rectangle<int>(45, 1, 1, 1) && cellsOf("randomize") == juce::Rectangle<int>(49, 1, 9, 1));
-        CHECK(find(*e, "C") == nullptr && find(*e, "D") == nullptr && find(*e, "verb") == nullptr);
-        CHECK(cellsOf("preamp").getX() == 4 && cellsOf("bits").getX() == 17 && cellsOf("loss").getX() == 48 && cellsOf("lowCut").getX() == 79 && cellsOf("mix").getX() == 100 && cellsOf("auto").getX() == 120);
-        CHECK(cellsOf("more") == juce::Rectangle<int>(102, 1, 6, 1) && cellsOf("on") == juce::Rectangle<int>(111, 1, 4, 1));
+        // no page to open, no auto knob, no bypass button, no other slots, no reverb
+        for (auto* gone : { "C", "D", "verb", "more", "on", "auto", "autoGain", "bypass", "fType", "cutoff" }) CHECK(find(*e, gone) == nullptr);
+        const std::tuple<const char*, const char*, int, int> dials[] = { { "preamp", "drive", 3, 21 }, { "gate", "gate", 3, 28 }, { "bits", "bits", 15, 21 }, { "rate", "rate", 26, 21 }, { "jitter", "jitter", 37, 21 }, { "dither", "dither", 15, 28 },
+            { "approxDev", "anti-alias", 26, 28 }, { "imagesShift", "anti-image", 37, 28 }, { "loss", "loss", 48, 21 }, { "speed", "speed", 58, 21 }, { "drop", "packet loss", 68, 21 }, { "lowCut", "low cut", 79, 21 }, { "highCut", "high cut", 89, 21 },
+            { "reso", "resonance", 99, 21 }, { "mix", "mix", 110, 21 }, { "output", "output", 120, 21 } };
         // `< name >`: longest name + a cell either side + the arrows, for every selector.
-        const std::tuple<const char*, juce::StringArray, int> selectors[] = { { "stereo", { "stereo", "joint", "mono" }, 2 }, { "dcShift", { "riser", "tread" }, 2 }, { "fill", { "gap", "hold" }, 0 },
-            { "fOrder", { "pre", "post" }, 0 }, { "keep", { "lost", "kept" }, 1 }, { "ear", { "ear", "flat" }, 1 }, { "invert", { "off", "on" }, 1 } };
-        for (auto& [id, names, page] : selectors)
+        const std::tuple<const char*, const char*, juce::StringArray, int, int> selectors[] = { { "stereo", "stereo", { "stereo", "joint", "mono" }, 3, 36 }, { "dcShift", "dc shift", { "off", "on" }, 32, 36 },
+            { "ear", "weighting", { "perceptual", "flat" }, 61, 30 }, { "fill", "packets", { "drop", "repeat" }, 61, 33 }, { "keep", "delta", { "off", "on" }, 61, 36 },
+            { "slope", "slope", { "6 dB", "12 dB", "18 dB", "24 dB", "36 dB", "48 dB", "72 dB", "96 dB" }, 94, 30 }, { "fOrder", "position", { "pre", "post" }, 94, 33 }, { "invert", "invert", { "off", "on" }, 94, 36 } };
+        juce::StringArray all { "prev", "preset", "next", "A", "B", "randomize" };
+        for (auto& [id, label, x, y] : dials)
+        {
+            all.add(id);
+            CHECK(cellsOf(id) == juce::Rectangle<int>(x, y, 10, 6) && dynamic_cast<juce::Slider*>(find(*e, id))->getTitle() == label);
+        }
+        for (auto& [id, label, names, x, y] : selectors)
         {
             int longest = 0;
             for (auto& n : names) longest = std::max(longest, n.length());
-            CHECK(cellsOf(juce::String(id) + "+").getRight() - cellsOf(juce::String(id) + "-").getX() == longest + 4);
+            const auto minus = cellsOf(juce::String(id) + "-"), plus = cellsOf(juce::String(id) + "+");
+            CHECK(minus.getPosition() == juce::Point<int>(x, y) && plus.getRight() - minus.getX() == longest + 4 && plus.getY() == y);
+            CHECK(dynamic_cast<juce::Button*>(find(*e, juce::String(id) + "+"))->getTitle() == juce::String("next ") + label);
+            all.add(juce::String(id) + "-"), all.add(juce::String(id) + "+");
         }
-        const char* const pages[2][13] = { { "preamp", "bits", "rate", "jitter", "loss", "speed", "drop", "lowCut", "highCut", "mix", "output", "auto", nullptr },
-                                           { "gate", "dither", "approxDev", "imagesShift", "loss", "speed", "drop", "reso", "slope", "mix", "output", "auto", nullptr } };
-        for (int page = 0; page < 2; ++page)
+        // every control is there at once: shown, inside the window, none over another, and nothing else
+        for (int i = 0; i < all.size(); ++i)
         {
-            if (page == 1) click(at("more"));
-            juce::StringArray all { "prev", "preset", "next", "A", "B", "randomize", "more", "on" };
-            for (auto* const* id = pages[page]; *id != nullptr; ++id) all.add(*id);
-            for (auto& [id, names, on] : selectors)
-                if (on == 2 || on == page) all.add(juce::String(id) + "-"), all.add(juce::String(id) + "+");
-            for (int i = 0; i < all.size(); ++i)
-                for (int j = i + 1; j < all.size(); ++j)
-                    CHECK(find(*e, all[i])->isVisible() && find(*e, all[j])->isVisible() && !find(*e, all[i])->getBoundsInParent().intersects(find(*e, all[j])->getBoundsInParent()));
-            for (auto* const* idp = pages[page]; *idp != nullptr; ++idp)
-            {
-                const juce::String id = *idp;
-                auto* slider = dynamic_cast<juce::Slider*>(find(*e, id));
-                auto* param = p.apvts.getParameter(id);
-                juce::Label* box = nullptr;
-                for (auto* child : slider->getChildren()) box = box != nullptr ? box : dynamic_cast<juce::Label*>(child);
-                CHECK(box != nullptr);
-                const auto dial = centre(*slider, slider->getLocalBounds().withTrimmedBottom(box->getHeight()));
-                set(p, "approxOn", 1), set(p, "imagesOn", 1);
-                param->setValueNotifyingHost(0.3f);
-                timer.timerCallback();
-                const double before = slider->getValue();
-                // Drag the Slider directly, like click().
-                const auto from = slider->getLocalPoint(e.get(), dial), to = slider->getLocalPoint(e.get(), dial - juce::Point<float>(0, 50.0f * (float) percent / 100)); // 50 design px up = 0.2 of the range
-                const auto time = juce::Time::getCurrentTime();
-                const auto event = [&](juce::Point<float> pos, int clicks = 1) { return juce::MouseEvent(juce::Desktop::getInstance().getMainMouseSource(), pos, juce::ModifierKeys::leftButtonModifier,
-                                                                                          1, 0, 0, 0, 0, slider, slider, time, from, time, clicks, pos != from); };
-                slider->mouseDown(event(from)), slider->mouseDrag(event(to)), slider->mouseUp(event(to));
-                CHECK(std::abs(slider->getValue() - before - 0.2 * slider->getRange().getLength()) < 0.01);
-                CHECK(id == "slope" || id == "bits" || id == "approxDev" || id == "imagesShift" || std::abs(param->getValue() - 0.5f) < 0.011f);
-                slider->mouseDoubleClick(event(from, 2));
-                CHECK(id == "imagesShift" ? get(p, "imagesOn") == 0 : param->getValue() == param->getDefaultValue());
-                timer.timerCallback();
-                click(centre(*box, box->getLocalBounds()));
-                CHECK(box->isBeingEdited());
-                const auto typed = param->getText(0.7f, 0);
-                if (auto* editor = box->getCurrentTextEditor()) editor->setText(typed);
-                box->hideEditor(false);
-                CHECK(param->getCurrentValueAsText() == typed);
-            }
-            for (auto& [idc, names, on] : selectors)
-            {
-                if (on != 2 && on != page) continue;
-                const juce::String id = idc;
-                const int n = names.size();
-                set(p, idc, 0);
-                for (int k = 1; k <= n; ++k) click(at(id + "+")), CHECK((int) get(p, id) == k % n);
-                for (int k = 1; k <= n; ++k) click(at(id + "-")), CHECK((int) get(p, id) == (n - k) % n);
-                auto* key = find(*e, id + "+"); // the arrow keys step too
-                CHECK(key->keyPressed(juce::KeyPress(juce::KeyPress::rightKey)) && (int) get(p, id) == 1 % n);
-                CHECK(key->keyPressed(juce::KeyPress(juce::KeyPress::downKey)) && (int) get(p, id) == 0);
-            }
+            auto* c = find(*e, all[i]);
+            CHECK(c != nullptr && c->isVisible() && c->getParentComponent()->getLocalBounds().contains(c->getBoundsInParent()));
+            for (int j = i + 1; j < all.size(); ++j) CHECK(!c->getBoundsInParent().intersects(find(*e, all[j])->getBoundsInParent()));
+        }
+        CHECK(find(*e, "bits")->getParentComponent()->getNumChildComponents() == all.size() && all.size() == 6 + 16 + 16);
+        for (auto& [idc, label, x, y] : dials)
+        {
+            const juce::String id = idc;
+            auto* slider = dynamic_cast<juce::Slider*>(find(*e, id));
+            CHECK(slider->getSliderStyle() == juce::Slider::RotaryVerticalDrag); // a dial, no fader
+            auto* param = p.apvts.getParameter(id);
+            juce::Label* box = nullptr;
+            for (auto* child : slider->getChildren()) box = box != nullptr ? box : dynamic_cast<juce::Label*>(child);
+            CHECK(box != nullptr);
+            const auto dial = centre(*slider, slider->getLocalBounds().withTrimmedBottom(box->getHeight()));
+            set(p, "approxOn", 1), set(p, "imagesOn", 1);
+            param->setValueNotifyingHost(0.3f);
+            timer.timerCallback();
+            const double before = slider->getValue();
+            // Drag the Slider directly, like click().
+            const auto from = slider->getLocalPoint(e.get(), dial), to = slider->getLocalPoint(e.get(), dial - juce::Point<float>(0, 50.0f * (float) percent / 100)); // 50 design px up = 0.2 of the range
+            const auto time = juce::Time::getCurrentTime();
+            const auto event = [&](juce::Point<float> pos, int clicks = 1) { return juce::MouseEvent(juce::Desktop::getInstance().getMainMouseSource(), pos, juce::ModifierKeys::leftButtonModifier,
+                                                                                      1, 0, 0, 0, 0, slider, slider, time, from, time, clicks, pos != from); };
+            slider->mouseDown(event(from)), slider->mouseDrag(event(to)), slider->mouseUp(event(to));
+            CHECK(std::abs(slider->getValue() - before - 0.2 * slider->getRange().getLength()) < 0.01);
+            CHECK(id == "bits" || id == "approxDev" || id == "imagesShift" || std::abs(param->getValue() - 0.5f) < 0.011f);
+            slider->mouseDoubleClick(event(from, 2));
+            CHECK(id == "imagesShift" ? get(p, "imagesOn") == 0 : param->getValue() == param->getDefaultValue());
+            timer.timerCallback();
+            click(centre(*box, box->getLocalBounds()));
+            CHECK(box->isBeingEdited());
+            const auto typed = param->getText(0.7f, 0);
+            if (auto* editor = box->getCurrentTextEditor()) editor->setText(typed);
+            box->hideEditor(false);
+            CHECK(param->getCurrentValueAsText() == typed);
+        }
+        for (auto& [idc, label, names, x, y] : selectors)
+        {
+            const juce::String id = idc;
+            const int n = names.size();
+            set(p, idc, 0);
+            for (int k = 1; k <= n; ++k) click(at(id + "+")), CHECK((int) get(p, id) == k % n);
+            for (int k = 1; k <= n; ++k) click(at(id + "-")), CHECK((int) get(p, id) == (n - k) % n);
+            auto* key = find(*e, id + "+"); // the arrow keys step too
+            CHECK(key->keyPressed(juce::KeyPress(juce::KeyPress::rightKey)) && (int) get(p, id) == 1 % n);
+            CHECK(key->keyPressed(juce::KeyPress(juce::KeyPress::downKey)) && (int) get(p, id) == 0);
         }
         // off: past bits' top, under approx's and images' bottom, at gate's
         auto* bits = dynamic_cast<juce::Slider*>(find(*e, "bits"));
@@ -1520,19 +1689,17 @@ static void testInteraction()
         images->setValue(0.0, juce::sendNotificationSync), CHECK(get(p, "imagesOn") == 1 && get(p, "imagesShift") == 0);
         images->setValue(-0.06, juce::sendNotificationSync), CHECK(get(p, "imagesOn") == 0);
         // the top bar
-        click(at("on")), CHECK(get(p, "bypass") == 1), click(at("on")), CHECK(get(p, "bypass") == 0);
         p.setCurrentProgram(3);
         click(at("next")), CHECK(p.getCurrentProgram() == 4);
         click(at("prev")), click(at("prev")), CHECK(p.getCurrentProgram() == 2);
         click(at("B")), CHECK(p.abSlot() == 1);
         click(at("A")), CHECK(p.abSlot() == 0);
         click(at("randomize")), CHECK(p.presetName() == "random");
-        click(at("more")), CHECK(find(*e, "preamp")->isVisible() && !find(*e, "gate")->isVisible());
     }
     folder.deleteRecursively();
 }
 
-// A 0.2 session in the editor: the band and auto dials show its filter and switch, and editing one moves them over.
+// A 0.2 session in the editor: the filter's controls show its filter, and editing one moves it over.
 static void testLegacyEditor()
 {
     Proc p;
@@ -1541,40 +1708,69 @@ static void testLegacyEditor()
     std::unique_ptr<juce::AudioProcessorEditor> e(p.createEditor());
     dynamic_cast<juce::Timer&>(*e).timerCallback();
     auto knob = [&](const char* id) { return dynamic_cast<juce::Slider*>(find(*e, id)); };
-    CHECK(knob("highCut")->getTextFromValue(0) == "3.4 kHz" && knob("lowCut")->getTextFromValue(0) == "20 Hz" && knob("auto")->getTextFromValue(0) == "0%");
+    CHECK(knob("highCut")->getTextFromValue(0) == "3.4 kHz" && knob("lowCut")->getTextFromValue(0) == "20 Hz");
     knob("lowCut")->onDragStart(), knob("lowCut")->setValue(0.3, juce::sendNotificationSync), knob("lowCut")->onDragEnd();
     CHECK(get(p, "fType") == 0 && std::abs(get(p, "highCut") - 3400) < 1 && get(p, "lowCut") > 100);
-    knob("auto")->onDragStart(), knob("auto")->setValue(0.5, juce::sendNotificationSync), knob("auto")->onDragEnd();
-    CHECK(get(p, "autoGain") == 1 && get(p, "auto") == 50);
+    load(p, v2Fixture()), p.selectAb(0);
+    dynamic_cast<juce::Button*>(find(*e, "slope+"))->onClick();
+    CHECK(get(p, "fType") == 0 && std::abs(get(p, "highCut") - 3400) < 1 && get(p, "slope") == 2);
 }
 
-// The editor draws the audio: the output level and clip read what left the plug-in, and the picture changes with the
-// sound and only with it.
+// The editor draws the audio: the output's peak and the clip meters read what left the plug-in, the picture changes with the
+// sound and only with it, and nothing is lit once it stops.
 static void testMeter()
 {
+    const juce::Colour hot(0xffff2424);
+    const juce::Rectangle<int> picture(24, 80, 1008, 192), light(888, 448, 144, 16), drive(888, 480, 144, 16), output(888, 528, 144, 16), peak(888, 576, 144, 16);
     Proc p;
     p.scope.clock = testClock, testMs = 0;
-    prepare(p, 48000, 512, 2), set(p, "bypass", 1);
-    run(p, 512, 2, 4800, [](int) { return 0.5f; });
-    CHECK(std::abs(p.scope.peak.load() - 0.5f) < 1e-6f && p.scope.clipAt.load() < 0);
+    set(p, cleanCrush), prepare(p, 48000, 512, 2);
     std::unique_ptr<juce::AudioProcessorEditor> e(p.createEditor());
     auto& timer = dynamic_cast<juce::Timer&>(*e);
-    const juce::Rectangle<int> picture(24, 80, 1008, 192), readout(808, 464, 224, 16);
     const auto shot = [&](juce::Rectangle<int> r) { return pixels(e->createComponentSnapshot(r)); };
-    run(p, 512, 2, 512, [](int) { return 1.25f; });
-    testMs += 30, timer.timerCallback();
-    const auto clipping = shot(readout);
-    for (int k = 0; k < 60; ++k) testMs += 1000.0 / 30, timer.timerCallback();
-    CHECK(clipping != shot(readout) && p.scope.clipAt.load() == 0);
+    const auto lit = [&](juce::Rectangle<int> r) { // cells of r with a pixel of the hot ink
+        const auto image = e->createComponentSnapshot(r);
+        int n = 0;
+        for (int cy = 0; cy < r.getHeight() / 16; ++cy)
+            for (int cx = 0; cx < r.getWidth() / 8; ++cx)
+            {
+                bool any = false;
+                for (int y = 0; y < 16; ++y)
+                    for (int x = 0; x < 8; ++x) { const auto c = image.getPixelAt(cx * 8 + x, cy * 16 + y); any = any || (c.getRed() > 150 && c.getGreen() < 60 && c.getBlue() < 60); }
+                n += any;
+            }
+        return n;
+    };
+    const auto play = [&](const Settings& s, float level, int frames = 10) {
+        set(p, s);
+        for (int f = 0; f < frames; ++f) run(p, 512, 2, 1600, [&](int i) { return level * (float) std::sin(i * 0.05); }), testMs += 1000.0 / 30, timer.timerCallback();
+    };
+    const auto stop = [&] { for (int k = 0; k < 10; ++k) testMs += 1000.0 / 30, timer.timerCallback(); };
+    timer.timerCallback();
     const auto flat = shot(picture);
+    CHECK(lit(picture) == 0 && lit(light) == 0 && lit(drive) == 0 && lit(output) == 0);
+    play({}, 0.8f); // under full scale: nothing clips
+    CHECK(shot(picture) != flat && lit(picture) == 0 && lit(light) == 0 && lit(drive) == 0 && lit(output) == 0);
+    play({ { "preamp", 6 } }, 0.8f); // 1.6 x full scale: 4.2 dB off: the drive's meter and the crests
+    CHECK(lit(picture) > 4 && lit(light) == 1 && lit(drive) == 4 && lit(output) == 0);
+    play({ { "preamp", 48 } }, 0.8f);
+    CHECK(lit(drive) == 11); // the meter's end
+    play({ { "preamp", 0 }, { "output", 3 } }, 0.95f, 40); // the output past 0 dBFS by 2.5 dB: its meter and the rails
+    CHECK(lit(drive) == 0 && lit(output) >= 2 && lit(output) <= 3 && lit(light) == 1 && lit(picture.withHeight(16)) > 4);
+    set(p, "output", 0); // held 0.6 s, then dark, while it plays on
+    play({}, 0.5f, 6), CHECK(lit(output) >= 2 && lit(light) == 1);
+    play({}, 0.5f, 20), CHECK(lit(output) == 0 && lit(light) == 0);
+    play({ { "output", 12 }, { "preamp", 12 } }, 0.8f);
+    CHECK(lit(drive) > 0 && lit(output) > 0);
+    stop();
+    CHECK(shot(picture) == flat && lit(picture) == 0 && lit(light) == 0 && lit(drive) == 0 && lit(output) == 0); // stopped: the flat line, nothing lit
+    const auto inf = shot(peak);
     testMs += 1000, timer.timerCallback();
-    CHECK(shot(picture) == flat); // nothing plays, nothing moves
-    run(p, 512, 2, 4800, [](int i) { return groove(i); });
-    testMs += 30, timer.timerCallback();
-    const auto playing = shot(picture);
-    CHECK(playing != flat);
-    for (int k = 0; k < 10; ++k) testMs += 1000.0 / 30, timer.timerCallback();
-    CHECK(shot(picture) == flat); // stopped: the flat line again
+    CHECK(shot(picture) == flat && shot(peak) == inf); // nothing plays, nothing moves
+    play({ { "bypass", 1 }, { "preamp", 30 } }, 0.8f, 20);
+    CHECK(lit(drive) == 0 && shot(peak) != inf); // bypassed: the drive is not heard
+    run(p, 512, 2, 512, [](int) { return 0.5f; });
+    CHECK(std::abs(p.scope.peak.load() - 0.5f) < 1e-6f);
 }
 
 static void testEditorState()
@@ -1582,16 +1778,16 @@ static void testEditorState()
     Proc p;
     prepare(p, 48000, 128, 2);
     std::unique_ptr<juce::AudioProcessorEditor> e(p.createEditor());
-    CHECK(e->getWidth() == 1056 && e->getHeight() == 544 && e->isResizable());
+    CHECK(e->getWidth() == 1056 && e->getHeight() == 656 && e->isResizable());
     for (int pct : { 50, 200, 100 }) // scaled 50-200 %, aspect kept; the size is stored for the next editor
     {
-        e->setSize(1056 * pct / 100, 544 * pct / 100);
-        CHECK(e->getWidth() == 1056 * pct / 100 && e->getHeight() == 544 * pct / 100 && p.editorWidth == e->getWidth());
+        e->setSize(1056 * pct / 100, 656 * pct / 100);
+        CHECK(e->getWidth() == 1056 * pct / 100 && e->getHeight() == 656 * pct / 100 && p.editorWidth == e->getWidth());
         CHECK(e->createComponentSnapshot(e->getLocalBounds()).isValid());
     }
-    e->setSize(1584, 816);
+    e->setSize(1584, 984);
     e.reset(p.createEditor());
-    CHECK(e->getWidth() == 1584 && e->getHeight() == 816);
+    CHECK(e->getWidth() == 1584 && e->getHeight() == 984);
 
     // Dials follow the parameters: host changes (message thread and other threads), presets, A/B, state loads.
     auto& ed = *e;
@@ -1599,7 +1795,7 @@ static void testEditorState()
     const auto dialsMatch = [&] {
         timer.timerCallback();
         bool ok = true;
-        for (auto* id : { "preamp", "rate", "jitter", "loss", "speed", "drop", "mix", "output", "gate", "dither", "reso", "slope" })
+        for (auto* id : { "preamp", "rate", "jitter", "loss", "speed", "drop", "mix", "output", "gate", "dither", "reso" })
             ok = ok && std::abs(dynamic_cast<juce::Slider*>(find(ed, id))->getValue() - p.apvts.getParameter(id)->getValue()) < 1e-5;
         return ok;
     };
@@ -1673,19 +1869,19 @@ static float groove(int i)
 }
 
 // The screenshot fixture: 56k stream after a drum + bass loop, then one second of 30 fps editor frames. Variants: main,
-// more (its page open, B), quiet (no audio), crush (a crushed preset: the sample zoom).
-enum Variant { mainPage, morePage, quiet, crush };
+// clipping (driven hard, output up), quiet (no audio), crush (a crushed preset: the sample zoom).
+enum Variant { mainPage, clipping, quiet, crush };
 static std::unique_ptr<juce::AudioProcessorEditor> fixture(Proc& p, Variant variant = mainPage, int width = 1056)
 {
     p.setCurrentProgram(variant == crush ? 3 : SCREENSHOT_PRESET);
     if (variant == crush) set(p, { { "bits", 4 }, { "rate", 6000 } });
+    if (variant == clipping) set(p, { { "preamp", 14 }, { "output", 12 } });
     prepare(p, 48000, 512, 2);
     p.scope.clock = testClock, testMs = 0;
     const bool play = variant != quiet;
     if (play) run(p, 512, 2, 24000, groove);
     std::unique_ptr<juce::AudioProcessorEditor> e(p.createEditor());
-    e->setSize(width, juce::roundToInt(width * 544 / 1056.0));
-    if (variant == morePage) dynamic_cast<juce::Button*>(find(*e, "more"))->onClick();
+    e->setSize(width, juce::roundToInt(width * 656 / 1056.0));
     for (int frame = 0; frame < 30; ++frame)
     {
         testMs += 1000.0 / 30;
@@ -1711,19 +1907,19 @@ static std::vector<float> loadFloats(const juce::String& path)
     return v;
 }
 // --render / --feed: the plug-in's own processor over a file, for tools/fidelity.mjs. --picture out.png width scale in.f32
-// frames preset [more]: the editor after that many 1536-sample frames of the file (the site's picture, tools/qa/crumb-native.mjs).
+// frames preset [id=value ...]: the editor after that many 1536-sample frames of the file (the site's picture, tools/qa/crumb-native.mjs).
 static int picture(const juce::StringArray& a)
 {
     const auto in = loadFloats(a[4]);
     const int width = a[2].getIntValue();
     Proc p;
     p.setCurrentProgram(a[6].getIntValue());
+    for (int k = 7; k < a.size(); ++k) set(p, a[k].upToFirstOccurrenceOf("=", false, false).toRawUTF8(), a[k].fromFirstOccurrenceOf("=", false, false).getFloatValue());
     prepare(p, 48000, 128, 2);
     p.scope.clock = testClock, testMs = 0;
     std::unique_ptr<juce::AudioProcessorEditor> e(p.createEditor());
     dynamic_cast<juce::Timer&>(*e).stopTimer();
-    e->setSize(width, juce::roundToInt(width * 544 / 1056.0));
-    if (a[7] == "more") dynamic_cast<juce::Button*>(find(*e, "more"))->onClick();
+    e->setSize(width, juce::roundToInt(width * 656 / 1056.0));
     juce::AudioBuffer<float> b(2, 128);
     juce::MidiBuffer midi;
     for (int frame = 0, at = 0; frame < a[5].getIntValue(); ++frame)
@@ -1767,7 +1963,7 @@ static int renderFile(const juce::StringArray& args)
             if (feed)
             {
                 const auto at = (w + i) & (crumb::Scope::size - 1);
-                for (float v : { p.scope.dry[at].load(), p.scope.wet[at].load(), p.scope.gone[at].load(), (float) p.scope.mark[at].load() }) out.writeFloat(v);
+                for (float v : { p.scope.dry[at].load(), p.scope.wet[at].load(), p.scope.gone[at].load(), (float) p.scope.mark[at].load(), p.scope.cut[at].load(), p.scope.over[at].load() }) out.writeFloat(v);
             }
             else
                 for (int c = 0; c < 2; ++c) out.writeFloat(b.getSample(c, (int) i));
@@ -1803,7 +1999,10 @@ static juce::String render(int program, int channels)
     if (program != -3)
         set(p, "autoGain", 0);
     if (program >= 0)
+    {
         p.setCurrentProgram(program);
+        for (auto& b : baked) if (b.program == program) set(p, { { "mix", b.mix }, { "output", b.output } }); // as 0.2 and 0.3 had it
+    }
     else if (program == -3)
         load(p, v1Fixture());
     else
@@ -1875,15 +2074,15 @@ struct Golden { int program, channels; const char* hash; };
     { 23, 2, "3dd38314799190f0b3a37c7cdacbc1465a9fc03864e2b7a1ba2d85def5c6e6e6" },
     { 24, 2, "4a59ca93339bccf65af8b3c5d2fead29d818041909037212529c3291d908666e" },
 };
-// Editor snapshots of the 0.3.0 wave UI, same environment gate as the audio.
+// Editor snapshots of the 0.4.0 wave UI, same environment gate as the audio.
 struct Shot { Variant variant; int percent; const char* hash; };
 [[maybe_unused]] static const Shot shots[] = {
-    { mainPage, 100, "9522d799a243ed0f9e2d2ef9f609f40694a7c5ac92a923ddbc9f71816e36d6a5" },
-    { mainPage, 50, "c6f49a77c911c12661ab11d7c63dcb9fdc97515a908bcc02ec9f3abbc1e5d9fa" },
-    { mainPage, 200, "ee8e0b1e5100efa5562883b0ad164098fc00e08d0037cf1cd5a9ba106d2d0cb9" },
-    { morePage, 100, "369bb2fa87771d37cb97ec9ab59f22de0e454d522b8eb6f850e00177e3d56ad1" },
-    { quiet, 100, "cf417eddc42592c5d0f8c1af1deaffe567ba89a7ca2996132b00f51682979523" },
-    { crush, 100, "5955ef9f0f7e94238b4643074ce3c80452bcc4c7db139cccbf62195179a52dc3" },
+    { mainPage, 100, "b4bd1bbbb7be32a547991bfd6e1bb08c3aab7fa3b6ba96bebb864256a55843a3" },
+    { mainPage, 50, "9a260eb2935bff65ac8e9dbea6f3b856ae0eef9077915601fc9c3a7732202a5c" },
+    { mainPage, 200, "0ca994abc4efc2b70eafc25d1a9a2f92d02e5ad70ebda9d33bc76f30489b2c8b" },
+    { clipping, 100, "520190229da6b9096070aecec4972625c225d45a356537c1cdb30e82c93239f1" },
+    { quiet, 100, "a85b0094b40159e322cc3de3da498429900bc077599a529cc85e693ad54f1d6d" },
+    { crush, 100, "d4a4f48e6566c36d685ece1c133f0285a51f8de0c366d5e5a3f98c82ca71930d" },
 };
 static void testGoldens()
 {
@@ -1926,6 +2125,9 @@ static void testGoldens()
             Proc p;
             load(p, v2Fixture()), p.selectAb(slot);
             CHECK(playHash(p) == v2Hashes[slot]);
+            Proc q;
+            load(q, v3Fixture()), q.selectAb(slot);
+            CHECK(playHash(q) == v3Hashes[slot]); // and 0.3.0's as 0.3.0 did
         }
     if (matchingMath && matchingRenderer && !ci) // snapshots also contain the audio-driven scopes and meters
         for (const auto& s : shots)
@@ -1934,7 +2136,7 @@ static void testGoldens()
     std::cout << "Environment fingerprints: " << sha(math) << " / " << pixels(probe) << "\nChecked "
               << (matchingMath && !ci ? std::size(sounds) : 0) << " audio hashes and "
               << (matchingMath && matchingRenderer && !ci ? std::size(shots) : 0)
-              << " pixel hashes (audio from 81593d3 and 0.2.0, editor from 0.3.0)"
+              << " pixel hashes (audio from 81593d3, 0.2.0 and 0.3.0, editor from 0.4.0)"
               << (ci ? " (skipped on GitHub Actions)\n" : " (matching environments only)\n");
 #endif
 }
@@ -1985,7 +2187,7 @@ static int benchEditor()
     {
         Proc p;
         auto e = fixture(p);
-        e->setSize(1056 * percent / 100, 544 * percent / 100), e->setVisible(true);
+        e->setSize(1056 * percent / 100, 656 * percent / 100), e->setVisible(true);
         auto* capture = new RepaintCapture(*e);
         e->setCachedComponentImage(capture);
         juce::Image image(juce::Image::ARGB, e->getWidth(), e->getHeight(), true);
@@ -2037,7 +2239,7 @@ int main(int argc, char** argv)
     if (args.size() >= 2 && args[0] == "--screenshot")
     {
         Proc p;
-        const auto e = fixture(p, args[3] == "more" ? morePage : args[3] == "quiet" ? quiet : args[3] == "crush" ? crush : mainPage, args.size() > 2 ? args[2].getIntValue() : 1056);
+        const auto e = fixture(p, args[3] == "clip" ? clipping : args[3] == "quiet" ? quiet : args[3] == "crush" ? crush : mainPage, args.size() > 2 ? args[2].getIntValue() : 1056);
         return savePng(e->createComponentSnapshot(e->getLocalBounds()), juce::File::getCurrentWorkingDirectory().getChildFile(args[1]));
     }
     if (args.size() == 2 && args[0] == "--plates")
@@ -2055,6 +2257,7 @@ int main(int argc, char** argv)
     testIdentity();
     testState();
     testMigration();
+    testBaked();
     testRandomize();
     testCodec();
     testBand();
@@ -2070,6 +2273,7 @@ int main(int argc, char** argv)
     testEditor();
     testPresets();
     testScopeFifo();
+    testClipFeed();
     testScopeRepaints();
     testEditorEdges();
     testInteraction();
