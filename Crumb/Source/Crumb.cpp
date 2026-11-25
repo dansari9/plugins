@@ -841,6 +841,7 @@ void CrumbProcessor::stepPreset(int delta)
 void CrumbProcessor::randomize(int64_t seed)
 {
     Random r(seed);
+    r.nextInt();
     float v[numParams];
     for (int i = 0; i < numParams; ++i) v[i] = apvts.getParameter(ids[i])->convertFrom0to1(apvts.getParameter(ids[i])->getDefaultValue());
     const auto log = [&](float lo, float hi) { return lo * std::pow(hi / lo, r.nextFloat()); };

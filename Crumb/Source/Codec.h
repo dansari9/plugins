@@ -125,7 +125,7 @@ struct Codec
         std::vector<double> last[2]; // the last good frame's coefficients
         std::vector<uint8_t> mark;
         bool bad[2] {}, hasLast = false;
-        Lcg random;
+        Lcg random, grain; // frame losses; the frame's own noise, seeded by its place in time so no frame's decisions shift another's
         double eIn = 0, eOut = 0, gain = 1; // what the codec removed, for auto
     };
 
@@ -263,6 +263,7 @@ struct Codec
                 d[i] = -x(3 * n / 2 - 1 - i) - x(3 * n / 2 + i), d[n / 2 + i] = x(i) - x(n - 1 - i);
             z.mdct.dct4(d, scratch[0].data(), scratch[1].data(), scratch[2].data(), scratch[3].data());
         }
+        k.grain.seed = (now / (uint32_t) n) * 2654435761u ^ 0x51f7c0deu;
         const int all = channels;
         if (s.stereo == 2) channels = 1; // mono: both sides are the same, coded once
         const bool joint = channels == 2 && s.stereo == 1;
@@ -296,7 +297,7 @@ struct Codec
             for (int c = 0; c < channels; ++c)
                 for (int i = 0; i + 1 < n; i += 2)
                 {
-                    const double t = s.jitter * 1.57079632679489661923 * (2 * k.random.next() - 1), cs = std::cos(t), sn = std::sin(t);
+                    const double t = s.jitter * 1.57079632679489661923 * (2 * k.grain.next() - 1), cs = std::cos(t), sn = std::sin(t);
                     const double p = decoded[c][(size_t) i], q = decoded[c][(size_t) i + 1];
                     decoded[c][(size_t) i] = p * cs - q * sn, decoded[c][(size_t) i + 1] = p * sn + q * cs;
                 }
@@ -366,7 +367,7 @@ struct Codec
                         t = std::max(t, mean[c][o] * spread(b - o));
                 }
                 for (int i = z.edge[b]; i < z.edge[b + 1]; ++i)
-                    rank[(size_t) (c * n + i)] = i < limit ? x[i] * x[i] / t : 0;
+                    rank[(size_t) (c * n + i)] = i < limit ? x[i] * x[i] / t * (1 - 1e-6 * (i + 0.5 * c)) : 0; // ties (bands of one coefficient): the lower first
             }
         }
         const int total = channels * n, keep = std::clamp((int) std::floor(std::exp(-4.4228486291941369 * curve) * total + 0.5), 1, total); // 0.012 of them at 100 %
@@ -393,7 +394,7 @@ struct Codec
                 }
                 if (!any && fill > 0) // an emptied band: a faint noise at its own level
                     for (int i = z.edge[b]; i < std::min(limit, z.edge[b + 1]); ++i)
-                        x[i] = (k.random.next() < 0.5 ? -fill : fill) * root[c][b];
+                        x[i] = (k.grain.next() < 0.5 ? -fill : fill) * root[c][b];
             }
         }
     }
