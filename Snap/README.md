@@ -1,6 +1,6 @@
 # snap
 
-A one-screen drum multi-FX by daveydidit. Version 0.5.2. Mono or stereo.
+A one-screen drum multi-FX by daveydidit. Version 0.5.3. Mono or stereo.
 
 The 0.2 chain is six modules plus a master section, with one **Magnitude** macro that scales the
 module amounts and the master's continuous controls toward neutral:
@@ -27,9 +27,14 @@ samples.
 
 The editor is one screen (1440 x 840 at 100 %, resizable 75–200 % from the corner or the ≡ menu): the top bar
 (presets, dice, save, Magnitude, menu), six module columns in chain order (drag a middle column's ⋮⋮ grip to
-reorder), the amount row (on/off, the big dial, hover for the lock), and the master strip, one group under each column (0.5.1: no bottom bar; snapshots A–D sit in the top bar). Every dial and fader: drag (Shift finer), Alt/Cmd-click resets,
+reorder), the amount row (on/off, the big dial, hover for the lock), and the master strip, one group under each column (0.5.1: no bottom bar; snapshots A and B sit in the top bar). Every dial and fader: drag (Shift finer), Alt/Cmd-click resets,
 double-click types a value with units, the wheel nudges, right-click opens a menu. The preset name opens the
 browser over the module columns; click a row to audition, ok keeps it, cancel goes back.
+
+## 0.5.3
+
+- The compare slots are A and B (David: "I only need A B"); randomize, save, undo and redo close the gap. A session's C and D
+  stay in its state.
 
 ## 0.5.2
 

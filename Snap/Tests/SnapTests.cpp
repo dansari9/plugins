@@ -320,7 +320,7 @@ static void testIdentity() // (4)
     CHECK(juce::String(JUCE_STRINGIFY(JucePlugin_AUMainType)) == "'aufx'");
     CHECK(juce::String(JUCE_STRINGIFY(JucePlugin_CFBundleIdentifier)) == "com.dripworks.snap");
     CHECK(juce::String(JucePlugin_Name) == "snap" && juce::String(JucePlugin_Manufacturer) == "daveydidit");
-    CHECK(juce::String(JucePlugin_VersionString) == "0.5.2");
+    CHECK(juce::String(JucePlugin_VersionString) == "0.5.3");
     // The wrappers derive the VST3 class IDs and the AU/VST3 numeric parameter IDs from the codes and IDs only under these settings.
     static_assert(JUCE_VST3_CAN_REPLACE_VST2 == 0 && JUCE_FORCE_USE_LEGACY_PARAM_IDS == 0, "frozen host-facing IDs");
     CHECK(!JucePlugin_IsSynth && !JucePlugin_WantsMidiInput);
@@ -1058,12 +1058,12 @@ static void testEditor()
     click(ed, "next tone shape"), click(ed, "next tone shape");
     CHECK(p.apvts.getRawParameterValue("tone_shape")->load() == 2);
 
-    // v3 layout, 0.5.1 top bar (as silt's): < preset > A B C D randomize save undo redo on one row, magnitude by the menu,
+    // v3 layout, 0.5.1 top bar (as silt's): < preset > A B randomize save undo redo on one row, magnitude by the menu,
     // master in / out are the big dials, segmented choices step with the arrow keys (clamped) and the `< >` selectors wrap.
     {
         using snap::ui::Key;
         auto *save = find<Key>(ed, "save preset"), *undo = find<Key>(ed, "undo"), *redo = find<Key>(ed, "redo"), *menu = find<Key>(ed, "menu");
-        auto *next = find<Key>(ed, "next preset"), *a = find<Key>(ed, "snapshot A"), *d = find<Key>(ed, "snapshot D"), *random = find<Key>(ed, "random preset");
+        auto *next = find<Key>(ed, "next preset"), *a = find<Key>(ed, "snapshot A"), *d = find<Key>(ed, "snapshot B"), *random = find<Key>(ed, "random preset");
         auto* magnitude = find<snap::ui::Control>(ed, "magnitude");
         CHECK(save != nullptr && undo != nullptr && redo != nullptr && menu != nullptr && magnitude != nullptr && next != nullptr && a != nullptr && d != nullptr
               && random != nullptr);
@@ -1075,6 +1075,9 @@ static void testEditor()
                   && undo->getX() >= save->getRight() && redo->getX() >= undo->getRight());
             CHECK(magnitude->getX() > redo->getRight() + 300 && menu->getX() - magnitude->getRight() < 64);
         }
+        CHECK(find<Key>(ed, "snapshot C") == nullptr && find<Key>(ed, "snapshot D") == nullptr); // 0.5.3: A and B only
+        if (a != nullptr && d != nullptr && random != nullptr && next != nullptr)
+            CHECK(a->getX() - next->getRight() == 14 && d->getX() - a->getX() == 16 && random->getX() - d->getX() == 30); // the spacing is the old one
         CHECK(find<Key>(ed, "bypass") == nullptr && find<Key>(ed, "store snapshot") == nullptr); // the help line's bar is gone
         for (const char* id : { "in_gain", "out_gain" })
         {

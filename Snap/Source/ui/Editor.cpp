@@ -340,10 +340,10 @@ struct Editor : AudioProcessorEditor, Timer
     void say(const String& s) { setHelpText(s); } // for screen readers: the window has no help line
 
     // ---- top bar --------------------------------------------------------------------------------------------------
-    // As silt's: snap < preset > A B C D randomize, then save / undo / redo; magnitude, the menu and the maker at the
+    // As silt's: snap < preset > A B randomize, then save / undo / redo; magnitude, the menu and the maker at the
     // right. Every text's centre is on y 24, as far over the rule at y 48 as the window's top is above it.
     Key *nameKey = nullptr, *prevKey = nullptr, *nextKey = nullptr, *randomKey = nullptr, *saveKey = nullptr, *undoKey = nullptr, *redoKey = nullptr;
-    std::array<Key*, 4> snapKeys {};
+    std::array<Key*, 2> snapKeys {}; // the state keeps four slots; sessions from before 0.5.3 keep what C and D held
     String presetName() const
     {
         const auto* p = store.find(currentKey());
@@ -370,7 +370,7 @@ struct Editor : AudioProcessorEditor, Timer
         nextKey = &key(layer, "next preset", { 184, 14, 16, 20 }, [](Graphics& g, Key& k) { text(g, ">", 4, 2, k.isMouseOver() ? primary : muted); },
                        [this](const ModifierKeys&) { step(1); });
         // Snapshots, as silt's A / B: the current one inverted; a click recalls (stores when empty), a right-click stores.
-        for (int i = 0; i < 4; ++i)
+        for (int i = 0; i < (int) snapKeys.size(); ++i)
         {
             const String label = String::charToString((juce_wchar) ('A' + i));
             snapKeys[(size_t) i] = &key(layer, "snapshot " + label, { 0, 14, 14, 20 },
@@ -426,9 +426,9 @@ struct Editor : AudioProcessorEditor, Timer
         const float w = nameWidth(), next = 104 + w;
         nameKey->setBounds(Rectangle<float>(104, 12, w, 24).toNearestInt());
         nextKey->setTopLeftPosition(roundToInt(next), 14);
-        for (int i = 0; i < 4; ++i)
+        for (int i = 0; i < (int) snapKeys.size(); ++i)
             snapKeys[(size_t) i]->setTopLeftPosition(roundToInt(next + 30 + 16 * (float) i), 14);
-        float x = next + 108;
+        float x = next + 76;
         for (auto* k : { randomKey, saveKey, undoKey, redoKey })
             k->setTopLeftPosition(roundToInt(x), 14), x += (float) k->getWidth() + 8;
     }
@@ -873,7 +873,7 @@ struct Editor : AudioProcessorEditor, Timer
               << (proc.undoManager.canUndo() ? "u" : "") << (proc.undoManager.canRedo() ? "r" : "");
         for (int i = 0; i < lockCount; ++i)
             state << (int) proc.locked(i);
-        for (int i = 0; i < 4; ++i)
+        for (int i = 0; i < (int) snapKeys.size(); ++i)
             state << (int) proc.hasSnapshot(i);
         state << roundToInt(d.pressDownDb.load() * 10) << roundToInt(d.pressUpDb.load() * 10) << roundToInt(d.pushLimitDb.load() * 10);
         if (hovered.getComponent() != under)
