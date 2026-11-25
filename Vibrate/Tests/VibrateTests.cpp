@@ -1004,7 +1004,7 @@ void testEditor()
 #if JUCE_LINUX && JUCE_INTEL && JUCE_64BIT
     // Goldens use the local Linux software renderer. Geometry and ink checks also run on the CI platforms.
     if (std::getenv("GITHUB_ACTIONS") == nullptr)
-        check(hashes == std::array<juce::String, 3> { "8752343e2882487a2084312d0bb0b10bb0117eb6185150b37764a51c177fc26b", "ceaeb412ef9e1edc2d669a4ac123318690284be881c3b66a35c2b153df5e5d20", "c361b83a65ff720fdd815a38b27b1d03627254f1a409523dc5277d8caa9893dd" }, "local pixel goldens");
+        check(hashes == std::array<juce::String, 3> { "8752343e2882487a2084312d0bb0b10bb0117eb6185150b37764a51c177fc26b", "7488750547c83f70ca63658ef05ceb700d76d4665b6f1847f746fa46e2fec81e", "c361b83a65ff720fdd815a38b27b1d03627254f1a409523dc5277d8caa9893dd" }, "local pixel goldens");
 #endif
 }
 

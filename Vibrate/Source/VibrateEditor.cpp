@@ -54,7 +54,14 @@ struct Grid
                 if (isPositiveAndBelow(x + k, C) && isPositiveAndBelow(y, R))
                     at[y][x + k] = { k < s.length() ? s[k] : ' ', fg, {}, bold, at[y][x + k].edge, k > 0 ? s[k - 1] : ' ' };
     }
-    void right(int x, int y, const String& s, Colour fg, bool bold = false) { put(x - s.length() + 1, y, s, fg, bold); }
+    void right(int x, int y, const String& s, Colour fg, bool bold = false, bool fixed = false)
+    {
+        const int from = x - s.length() + 1;
+        put(from, y, s, fg, bold);
+        if (fixed)
+            for (int cell = from; cell <= x; ++cell)
+                at[y][cell].fixedInk = true;
+    }
     void edge(int x0, int x1, int y, uint8 kind)
     {
         for (int x = x0; x < x1; ++x) at[y][x].edge = kind;
@@ -410,7 +417,7 @@ struct Editor final : AudioProcessorEditor, Timer
                 for (std::size_t i = 0; i < readouts[lane].size(); ++i)
                 {
                     const auto& text = readouts[lane][i];
-                    g.right(vibrate::readoutX, origin + 1 + static_cast<int>(i), text, color, true);
+                    g.right(vibrate::readoutX, origin + 1 + static_cast<int>(i), text, color, true, true);
                 }
             }
             knob(g, 116, origin, drawnValues[lane], vibrate::ids[lane], parameter(lane)->getCurrentValueAsText(), false);
