@@ -1275,6 +1275,18 @@ const silt::Preset silt::presets[] {
     {"chorale",  {100,0,300,1,24,600,35,0,0,0,1,45,1,0,0,0,0,0, 100,0,3,5,0,0,0,0.3f,0,0,0,0,1200,0,0,100,0,0,0,0,0}},
 };
 
+const std::vector<silt::PresetGroup>& silt::presetGroups()
+{
+    static const std::vector<PresetGroup> groups {
+        { "texture", { 0, 1, 8, 10 } },
+        { "bright", { 2, 6, 7, 16 } },
+        { "pad", { 4, 3, 5, 9, 19, 11 } },
+        { "space", { 12, 17 } },
+        { "time", { 13, 15, 14, 18 } },
+    };
+    return groups;
+}
+
 void SiltProcessor::setAll(const float* normalised)
 {
     for (int k = 0; k < silt::numParams; ++k)

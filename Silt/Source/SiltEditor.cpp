@@ -4,6 +4,7 @@
 // 0.4.1 deletes the macro row (grid row 3): the window shows the other 48 rows, everything under it one row up, and the
 // motion / texture / bloom / chaos parameters stay (hidden, automatable, saved, at 0 they do nothing).
 #include "BinaryData.h"
+#include "PresetMenu.h"
 #include "Silt.h"
 #include <tuple>
 using namespace juce;
@@ -330,6 +331,9 @@ struct Header : Group
         nextPreset.setTitle("next preset");
         picker.setTitle("preset list");
         picker.wheel = [this](int d) { p.stepPreset(d); };
+        menu.cw = cw, menu.ch = ch, menu.drop = 0.5f; // under the header's rule
+        menu.font = [](float size, bool bold) { return mono(size, bold); };
+        menu.onChoose = [this](int id) { id < silt::numPresets ? p.setCurrentProgram(id) : p.loadUserPreset(listed[id - silt::numPresets]); };
         key("save", 26, 1, 6, [this](const ModifierKeys&) {
             if (const auto file = p.saveUserPreset(); file != File())
                 tell(u("saved · ") + file.getFileNameWithoutExtension());
@@ -351,23 +355,29 @@ struct Header : Group
             oversampling[(size_t) i] = &word(row, i, qualityColumn(i), 1, 2 + (i == 0), meanings[i]);
     }
     static int qualityColumn(int index) { return index ? 76 + 3 * index : 75; }
+    // The preset list (the editor's, over everything): the factory's groups, then the user's files.
+    PresetMenu menu;
+    Array<File> listed;
     void showPresets()
     {
-        PopupMenu menu;
-        auto files = p.presetFolder().findChildFiles(File::findFiles, false, "*.xml");
-        files.sort();
-        for (int i = 0; i < silt::numPresets; ++i)
-            menu.addItem(i + 1, String(i + 1).paddedLeft('0', 2) + " " + silt::presets[i].name, true, p.preset == i);
-        if (!files.isEmpty()) menu.addSeparator();
-        for (int i = 0; i < files.size(); ++i)
-            menu.addItem(silt::numPresets + i + 1, files[i].getFileNameWithoutExtension(), true, p.preset < 0 && files[i].getFileNameWithoutExtension() == name);
-        menu.showMenuAsync(PopupMenu::Options().withTargetComponent(&picker), [self = SafePointer<Header>(this), files = std::move(files)](int r) {
-            if (self && r > 0)
-            {
-                if (r <= silt::numPresets) self->p.setCurrentProgram(r - 1);
-                else self->p.loadUserPreset(files[r - silt::numPresets - 1]);
-            }
-        });
+        if (menu.isVisible()) return menu.close();
+        std::vector<PresetMenu::Group> groups;
+        for (const auto& g : silt::presetGroups())
+        {
+            groups.push_back({ g.name, {} });
+            for (int i : g.presets) groups.back().items.push_back({ silt::presets[i].name, i });
+        }
+        listed = p.presetFolder().findChildFiles(File::findFiles, false, "*.xml");
+        listed.sort();
+        groups.push_back({ "user", {} });
+        int current = p.preset;
+        for (int k = 0; k < listed.size(); ++k)
+        {
+            const auto user = listed[k].getFileNameWithoutExtension();
+            groups.back().items.push_back({ user, silt::numPresets + k });
+            if (p.preset < 0 && user == p.presetName()) current = silt::numPresets + k;
+        }
+        menu.open(std::move(groups), current, { 3, 2, C - 6, RS - 4 });
     }
     void tell(String message) { notice = std::move(message), noticeTime = Time::getMillisecondCounter(); }
     static constexpr int nameCells = 9; // the longest name shown (names are cut to it)
@@ -956,6 +966,7 @@ struct Editor : AudioProcessorEditor, Timer
                     if (c->getY() >= roundToInt(ch * (gone + 1)))
                         c->setBounds(up(c->getBounds()));
         }
+        layer.addChildComponent(header.menu);
         // Stepped wheels: pitch by a semitone, size in sync by a note value.
         auto& pitch = *dial("pitch");
         pitch.step = [q = pitch.q.getNormalisableRange()](double n, int d) { return (double) q.convertTo0to1(jlimit(q.start, q.end, std::round(q.convertFrom0to1((float) n)) + (float) d)); };

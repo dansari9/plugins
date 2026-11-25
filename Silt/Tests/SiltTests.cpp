@@ -5,7 +5,10 @@
 #include <functional>
 #include <iomanip>
 #include <iostream>
+#include <map>
+#include <memory>
 #include <new>
+#include <set>
 
 // Real-time check: count heap allocations made on a thread flagged as "audio" (as gulp).
 static thread_local bool onAudioThread = false;
@@ -165,7 +168,7 @@ static void testContract()
     CHECK(juce::String(JUCE_STRINGIFY(JucePlugin_AUMainType))=="'aumf'");
     CHECK(juce::String(JUCE_STRINGIFY(JucePlugin_CFBundleIdentifier))=="com.dripworks.silt");
     CHECK(juce::String(JucePlugin_Name)=="silt" && juce::String(JucePlugin_Manufacturer)=="daveydidit");
-    CHECK(juce::String(JucePlugin_VersionString)=="0.4.2" && juce::String(JucePlugin_Vst3Category)=="Fx");
+    CHECK(juce::String(JucePlugin_VersionString)=="0.4.3" && juce::String(JucePlugin_Vst3Category)=="Fx");
     CHECK(!JucePlugin_IsSynth && JucePlugin_WantsMidiInput && !JucePlugin_ProducesMidiOutput);
     Proc p;
     CHECK(p.getParameters().size()==(int)std::size(contract) && p.stateVersion==2 && p.getNumPrograms()==20);
@@ -1296,6 +1299,77 @@ struct RepaintCapture : juce::CachedComponentImage
     }
 };
 
+// The preset list: a click on the name opens it, every factory preset once in its group, the current one inverted; a click
+// loads and closes; esc, the name again or a click outside close it; the keys walk it; the user's files are in it.
+static void testPresetMenu()
+{
+    const auto folder = juce::File::getSpecialLocation(juce::File::tempDirectory).getNonexistentChildFile("silt-menu", "", false);
+    folder.createDirectory();
+    Proc p(folder);
+    std::set<int> grouped;
+    int total = 0;
+    for (auto& g : silt::presetGroups())
+    {
+        CHECK(g.presets.size() > 1 && juce::String(g.name) == juce::String(g.name).toLowerCase() && juce::String(g.name).length() <= 12);
+        for (int i : g.presets) grouped.insert(i), ++total;
+    }
+    CHECK(total == silt::numPresets && (int) grouped.size() == silt::numPresets && *grouped.rbegin() == silt::numPresets - 1);
+    std::unique_ptr<juce::AudioProcessorEditor> e(p.createEditor());
+    e->setVisible(true);
+    auto* menu = find(*e, "presetMenu");
+    const auto open = [&] { auto* b = dynamic_cast<juce::Button*>(find(*e, "presets")); b->triggerClick(); const auto done = std::make_shared<bool>(false); juce::MessageManager::callAsync([done] { *done = true; }); pumpUntil([&] { return *done; }); };
+    const auto items = [&] {
+        std::map<int, juce::Component*> m;
+        for (auto* c : menu->getChildren()) CHECK(m.emplace(c->getComponentID().substring(6).getIntValue(), c).second);
+        return m;
+    };
+    const auto inverted = [&](int id) { return menu->createComponentSnapshot(items()[id]->getBounds()).getPixelAt(1, 1) == juce::Colour(0xffefe6d2); };
+    CHECK(menu != nullptr && !menu->isVisible());
+    open();
+    CHECK(menu->isVisible() && menu->getBounds() == menu->getParentComponent()->getLocalBounds());
+    auto all = items();
+    CHECK((int) all.size() == silt::numPresets);
+    for (auto& [id, c] : all)
+    {
+        CHECK(c->isVisible() && menu->getLocalBounds().contains(c->getBounds()) && dynamic_cast<juce::Button*>(c)->getName() == p.getProgramName(id));
+        for (auto& [other, d] : all) CHECK(other == id || !c->getBounds().intersects(d->getBounds()));
+    }
+    const int n = silt::numPresets;
+    for (int i = 0; i < n; ++i)
+    {
+        if (!menu->isVisible()) open();
+        dynamic_cast<juce::Button*>(items()[i])->onClick();
+        CHECK(!menu->isVisible() && p.getCurrentProgram() == i && p.preset == i);
+        open();
+        for (int k = 0; k < n; ++k) CHECK(inverted(k) == (k == i));
+        CHECK(menu->keyPressed(juce::KeyPress(juce::KeyPress::escapeKey)) && !menu->isVisible() && p.preset == i);
+    }
+    open(), open(), CHECK(!menu->isVisible()); // the name again
+    const auto mouse = [&](juce::Point<float> at) {
+        const auto now = juce::Time::getCurrentTime();
+        menu->mouseDown({ juce::Desktop::getInstance().getMainMouseSource(), at, juce::ModifierKeys::leftButtonModifier, 1, 0, 0, 0, 0, menu, menu, now, at, now, 1, false });
+    };
+    open();
+    const auto first = items()[silt::presetGroups()[0].presets[0]]->getPosition().toFloat();
+    mouse({ first.x + 20, first.y - 8 }), CHECK(menu->isVisible()); // a group's name: stays
+    mouse({ (float) menu->getWidth() - 4, (float) menu->getHeight() - 4 }), CHECK(!menu->isVisible());
+    p.setCurrentProgram(silt::presetGroups()[0].presets[0]), open();
+    CHECK(menu->keyPressed(juce::KeyPress(juce::KeyPress::downKey)) && menu->keyPressed(juce::KeyPress(juce::KeyPress::returnKey)) && p.preset == silt::presetGroups()[0].presets[1] && !menu->isVisible());
+    // saving as before; the user's files are listed, load and are marked; many of them scroll
+    CHECK(p.saveUserPreset().existsAsFile());
+    p.setCurrentProgram(2), open(), all = items();
+    CHECK((int) all.size() == n + 1 && all.count(n) == 1);
+    dynamic_cast<juce::Button*>(all[n])->onClick();
+    CHECK(p.preset == -1 && p.presetName() == "user 01");
+    open(), CHECK(inverted(n)), menu->keyPressed(juce::KeyPress(juce::KeyPress::escapeKey));
+    for (int k = 2; k < 400; ++k) folder.getChildFile("user " + juce::String(k).paddedLeft('0', 2) + ".xml").replaceWithText("<SILT/>");
+    open(), all = items();
+    CHECK((int) all.size() == n + 399 && std::any_of(all.begin(), all.end(), [](auto& x) { return !x.second->isVisible(); }));
+    menu->keyPressed(juce::KeyPress(juce::KeyPress::endKey)), CHECK(items()[n + 398]->isVisible());
+    menu->keyPressed(juce::KeyPress(juce::KeyPress::homeKey)), CHECK(items()[silt::presetGroups()[0].presets[0]]->isVisible());
+    folder.deleteRecursively();
+}
+
 static void testEditor()
 {
     const auto folder=juce::File::getSpecialLocation(juce::File::tempDirectory).getNonexistentChildFile("silt-ui","",false);
@@ -1811,9 +1885,21 @@ int main(int argc,char** argv)
         return output.openedOk() && juce::PNGImageFormat().writeImageToStream(snapshot(100,mode=="--screenshot-freeze",scale,mode=="--screenshot-v6"),output)?0:1;
     }
     if(argc>=2 && (juce::String(argv[1])=="--bench" || juce::String(argv[1])=="--profile")){bench(juce::String(argv[1])=="--profile");return failures?1:0;}
+    if(argc==3 && juce::String(argv[1])=="--screenshot-menu")
+    {
+        Proc p;prepare(p);run(p,230400);
+        std::unique_ptr<juce::AudioProcessorEditor> e(p.createEditor());
+        auto* b=dynamic_cast<juce::Button*>(find(*e,"presets"));b->triggerClick();
+        const auto done=std::make_shared<bool>(false);
+        juce::MessageManager::callAsync([done]{*done=true;});
+        pumpUntil([&]{return *done;});
+        const juce::File file=juce::File::getCurrentWorkingDirectory().getChildFile(argv[2]);file.deleteFile();
+        juce::FileOutputStream out(file);
+        return out.openedOk() && juce::PNGImageFormat().writeImageToStream(e->createComponentSnapshot(e->getLocalBounds(),true,2.0f),out)?0:1;
+    }
     if(argc>=3 && juce::String(argv[1])=="--renders"){renderFiles(juce::File(argv[2]));return failures?1:0;}
     if(argc>=2 && juce::String(argv[1])=="--benchmark"){testPerformance();return failures?1:0;}
-    if(argc>=2 && juce::String(argv[1])=="--editor"){testEditor();testSkin();return failures?1:0;}
+    if(argc>=2 && juce::String(argv[1])=="--editor"){testEditor();testPresetMenu();testSkin();return failures?1:0;}
     if(argc>=2 && juce::String(argv[1])=="--goldens"){testGoldens(true);return failures?1:0;}
     if(argc>=2 && juce::String(argv[1])=="--loudness"){testLoudness(true);return failures?1:0;}
     // Make sure the allocation probe itself works, then clear its calibration allocation.
@@ -1821,7 +1907,7 @@ int main(int argc,char** argv)
     CHECK(audioAllocations>0);audioAllocations=0;
     testContract();testParameterText();testState();testPresets();testPitchSnap();testDryAndLifecycle();testTimingAndMidi();testRatios();testOnsetsAndSource();testFreezeAndWindows();
     testGrainFeatures();testHeadsAndLock();testColourAndSpace();testSound();testEdges();testDenseBlocks();
-    if(argc<2 || juce::String(argv[1])!="--core")testEditor(),testSkin(),testGoldens(),testPerformance(),testWindowAudible(),testLoudness();
+    if(argc<2 || juce::String(argv[1])!="--core")testEditor(),testPresetMenu(),testSkin(),testGoldens(),testPerformance(),testWindowAudible(),testLoudness();
     CHECK(audioAllocations==0);
     std::cout<<"Audio allocations: "<<audioAllocations<<"\n"<<(failures?"Silt tests FAILED\n":"All Silt tests passed\n");
     return failures?1:0;

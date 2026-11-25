@@ -60,6 +60,8 @@ struct Preset
     float v[numParams]; // plain values in ID order, choices and switches by index
 };
 extern const Preset presets[numPresets];
+struct PresetGroup { const char* name; std::vector<int> presets; };
+const std::vector<PresetGroup>& presetGroups(); // the preset list's: every factory preset once, by what it does
 } // namespace silt
 
 class SiltProcessor : public juce::AudioProcessor
