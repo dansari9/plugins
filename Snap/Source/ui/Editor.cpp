@@ -9,6 +9,7 @@
 #include "Braille.h"
 #include "Layout.h"
 #include "PresetBrowser.h"
+#include "PresetMenu.h"
 #include "Riso.h"
 #include "Visualizers.h"
 #include "Widgets.h"
@@ -107,6 +108,8 @@ struct Editor : AudioProcessorEditor, Timer
     std::array<Control*, 6> amounts {};
     OwnedArray<Component> parts;    // layer-level widgets
     PresetBrowser browser;
+    PresetMenu presetMenu;
+    StringArray listed; // the presets in it, by key
     std::vector<float> drawnParams;
     String tip = defaultTip, drawnState;
     int tab = 0, snapshot = 0, dragging = -1;
@@ -126,6 +129,15 @@ struct Editor : AudioProcessorEditor, Timer
         buildMaster();
         layer.draw = [this](Graphics& g) { paintLayer(g); };
         layer.addChildComponent(browser), browser.setBounds(24, 58, 1392, (int) columnH + 2);
+        layer.addChildComponent(presetMenu);
+        presetMenu.font = [](float size, bool bold) { return mono(size, bold); };
+        presetMenu.onChoose = [this](int id) {
+            if (id == browseId)
+                toggleBrowser();
+            else if (const auto* preset = store.find(listed[id]))
+                load(*preset);
+            repaintAll();
+        };
         browser.onClose = [this] { browser.setVisible(false), repaintAll(); };
         place();
         const double scale = jlimit(0.75, 2.0, (double) proc.apvts.state.getProperty("ui_scale", 1.0));
@@ -357,7 +369,7 @@ struct Editor : AudioProcessorEditor, Timer
             .hint = "about snap";
         prevKey = &key(layer, "previous preset", { 88, 14, 16, 20 }, [](Graphics& g, Key& k) { text(g, "<", 4, 2, k.isMouseOver() ? primary : muted); },
                        [this](const ModifierKeys&) { step(-1); });
-        nameKey = &key(layer, "preset browser", { 104, 12, 80, 24 },
+        nameKey = &key(layer, "presets", { 104, 12, 80, 24 },
                        [this](Graphics& g, Key& k) {
                            if (browser.isVisible())
                                g.setColour(tag), g.fillRect(k.getLocalBounds().toFloat().withTrimmedLeft(-20).withTrimmedRight(-20));
@@ -366,7 +378,7 @@ struct Editor : AudioProcessorEditor, Timer
                                name = name.substring(0, fits - 2) + "..";
                            centred(g, name, 0, 4, (float) k.getWidth(), primary, 12, true);
                        },
-                       [this](const ModifierKeys&) { toggleBrowser(); });
+                       [this](const ModifierKeys&) { browser.isVisible() ? toggleBrowser() : showPresets(); });
         nextKey = &key(layer, "next preset", { 184, 14, 16, 20 }, [](Graphics& g, Key& k) { text(g, ">", 4, 2, k.isMouseOver() ? primary : muted); },
                        [this](const ModifierKeys&) { step(1); });
         // Snapshots, as silt's A / B: the current one inverted; a click recalls (stores when empty), a right-click stores.
@@ -402,7 +414,7 @@ struct Editor : AudioProcessorEditor, Timer
                        [this](const ModifierKeys&) { proc.undo(); });
         redoKey = &key(layer, "redo", { 0, 14, 40, 20 }, [this](Graphics& g, Key& k) { text(g, "redo", 4, 2, proc.undoManager.canRedo() && k.isMouseOver() ? primary : muted); },
                        [this](const ModifierKeys&) { proc.redo(); });
-        nameKey->hint = "open the preset browser", prevKey->hint = "previous preset", nextKey->hint = "next preset";
+        nameKey->hint = "list the presets", prevKey->hint = "previous preset", nextKey->hint = "next preset";
         randomKey->hint = "load a random preset", saveKey->hint = "save the current sound as a user preset";
         undoKey->hint = "undo the last change", redoKey->hint = "redo";
         control(layer, Control::Kind::fader, "magnitude", { 945, 18, 300, 12 }).hint = defaultTip;
@@ -431,6 +443,36 @@ struct Editor : AudioProcessorEditor, Timer
         float x = next + 76;
         for (auto* k : { randomKey, saveKey, undoKey, redoKey })
             k->setTopLeftPosition(roundToInt(x), 14), x += (float) k->getWidth() + 8;
+    }
+    // The preset list under the name: the factory presets in groups, then the user's and the browser (search, favourites,
+    // collections).
+    static constexpr int browseId = 1 << 20;
+    void showPresets()
+    {
+        if (presetMenu.isVisible())
+            return presetMenu.close();
+        std::vector<PresetMenu::Group> groups;
+        listed.clear();
+        int current = -1;
+        const auto add = [&](const Preset& p) {
+            if (p.key() == currentKey())
+                current = listed.size();
+            groups.back().items.push_back({ p.name, listed.size() });
+            listed.add(p.key());
+        };
+        for (const auto& g : presetGroups())
+        {
+            groups.push_back({ g.name, {} });
+            for (const auto* name : g.presets)
+                if (const auto* p = store.find("factory/" + String(name)))
+                    add(*p);
+        }
+        groups.push_back({ "user", {} });
+        for (const auto& p : store.presets())
+            if (!p.factory)
+                add(p);
+        groups.back().items.push_back({ "browse", browseId });
+        presetMenu.open(std::move(groups), current, { 3, 3, 174, 44 });
     }
     void toggleBrowser()
     {

@@ -1,6 +1,6 @@
 # snap
 
-A one-screen drum multi-FX by daveydidit. Version 0.5.3. Mono or stereo.
+A one-screen drum multi-FX by daveydidit. Version 0.5.4. Mono or stereo.
 
 The 0.2 chain is six modules plus a master section, with one **Magnitude** macro that scales the
 module amounts and the master's continuous controls toward neutral:
@@ -28,8 +28,14 @@ samples.
 The editor is one screen (1440 x 840 at 100 %, resizable 75–200 % from the corner or the ≡ menu): the top bar
 (presets, dice, save, Magnitude, menu), six module columns in chain order (drag a middle column's ⋮⋮ grip to
 reorder), the amount row (on/off, the big dial, hover for the lock), and the master strip, one group under each column (0.5.1: no bottom bar; snapshots A and B sit in the top bar). Every dial and fader: drag (Shift finer), Alt/Cmd-click resets,
-double-click types a value with units, the wheel nudges, right-click opens a menu. The preset name opens the
-browser over the module columns; click a row to audition, ok keeps it, cancel goes back.
+double-click types a value with units, the wheel nudges, right-click opens a menu. The preset name lists the
+presets; **browse** in the list opens the browser over the module columns: click a row to audition, ok keeps it, cancel goes back.
+
+## 0.5.4
+
+- The preset list: a click on the preset's name lists every factory preset in short groups, the current one inverted, then the user's and **browse** (the browser: search, favourites, collections). A click or return loads and
+closes; esc, the name again or a click outside closes; the arrow keys walk the list. The list is the same in gulp, silt, snap and crumb
+(`PresetMenu.h`). Nothing else changed.
 
 ## 0.5.3
 

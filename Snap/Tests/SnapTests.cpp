@@ -24,7 +24,10 @@
 #include <juce_audio_formats/juce_audio_formats.h>
 #include <cstdlib>
 #include <iostream>
+#include <map>
+#include <memory>
 #include <new>
+#include <set>
 #include <thread>
 
 // Real-time check: count heap allocations made on a thread flagged as "audio". operator new is
@@ -320,7 +323,7 @@ static void testIdentity() // (4)
     CHECK(juce::String(JUCE_STRINGIFY(JucePlugin_AUMainType)) == "'aufx'");
     CHECK(juce::String(JUCE_STRINGIFY(JucePlugin_CFBundleIdentifier)) == "com.dripworks.snap");
     CHECK(juce::String(JucePlugin_Name) == "snap" && juce::String(JucePlugin_Manufacturer) == "daveydidit");
-    CHECK(juce::String(JucePlugin_VersionString) == "0.5.3");
+    CHECK(juce::String(JucePlugin_VersionString) == "0.5.4");
     // The wrappers derive the VST3 class IDs and the AU/VST3 numeric parameter IDs from the codes and IDs only under these settings.
     static_assert(JUCE_VST3_CAN_REPLACE_VST2 == 0 && JUCE_FORCE_USE_LEGACY_PARAM_IDS == 0, "frozen host-facing IDs");
     CHECK(!JucePlugin_IsSynth && !JucePlugin_WantsMidiInput);
@@ -610,6 +613,17 @@ static void click(juce::Component& root, const juce::String& title, juce::Modifi
     if (k != nullptr)
         k->onClick(mods);
 }
+// A row of the preset list, by name; its search, favourites and collections are behind "browse".
+static void pick(juce::Component& root, const juce::String& name)
+{
+    auto* menu = find<juce::Component>(root, "presetMenu");
+    CHECK(menu != nullptr && menu->isVisible());
+    auto* row = menu != nullptr ? find<juce::Button>(*menu, name) : nullptr;
+    CHECK(row != nullptr);
+    if (row != nullptr)
+        row->onClick();
+}
+static void openBrowser(juce::Component& root) { click(root, "presets"), pick(root, "browse"); }
 static void tick(juce::AudioProcessorEditor& e)
 {
     if (auto* t = dynamic_cast<juce::Timer*>(&e))
@@ -1161,7 +1175,7 @@ static void testEditor()
     // The browser covers only the module columns; Esc closes it and leaves the sound alone.
     auto* browser = find<snap::ui::PresetBrowser>(ed, "preset browser");
     CHECK(browser != nullptr && !browser->isVisible());
-    click(ed, "preset browser");
+    openBrowser(ed);
     CHECK(browser != nullptr && browser->isVisible() && browser->getBounds() == juce::Rectangle<int>(24, 58, 1392, (int) snap::ui::layout::columnH + 2));
     if (browser != nullptr)
         browser->keyPressed(juce::KeyPress(juce::KeyPress::escapeKey));
@@ -1177,7 +1191,7 @@ static void testEditor()
         const auto key = p.apvts.state.getProperty("preset").toString();
         const auto before = std::vector<float> { p.apvts.getRawParameterValue("air")->load(), p.apvts.getRawParameterValue("sub_amt")->load(),
                                                  p.apvts.getRawParameterValue("press_amt")->load() };
-        click(ed, "preset browser");
+        openBrowser(ed);
         const int depth = p.undoManager.getUndoDescriptions().size();
         browser->keyPressed(juce::KeyPress(juce::KeyPress::downKey));
         browser->keyPressed(juce::KeyPress(juce::KeyPress::downKey));
@@ -1190,20 +1204,20 @@ static void testEditor()
               && p.apvts.getRawParameterValue("press_amt")->load() == before[2]);
         CHECK(p.undoManager.getUndoDescriptions().size() <= depth);
 
-        click(ed, "preset browser");
+        openBrowser(ed);
         browser->keyPressed(juce::KeyPress(juce::KeyPress::downKey));
         const auto chosen = p.apvts.state.getProperty("preset").toString();
         browser->keyPressed(juce::KeyPress(juce::KeyPress::returnKey));
         CHECK(!browser->isVisible() && chosen != key && p.apvts.state.getProperty("preset").toString() == chosen);
         CHECK(p.undo() && p.apvts.state.getProperty("preset").toString() == key);
         CHECK(p.redo() && p.apvts.state.getProperty("preset").toString() == chosen);
-        click(ed, "preset browser"), click(ed, "preset browser"); // the name key closes it like ok
+        openBrowser(ed), click(ed, "presets"); // the name key closes it like ok
         CHECK(!browser->isVisible());
     }
 
     // The preset stepper keeps its place: < and > stay put whatever the name, and the box fits the longest factory name.
     {
-        auto *prev = find<snap::ui::Key>(ed, "previous preset"), *next = find<snap::ui::Key>(ed, "next preset"), *name = find<snap::ui::Key>(ed, "preset browser");
+        auto *prev = find<snap::ui::Key>(ed, "previous preset"), *next = find<snap::ui::Key>(ed, "next preset"), *name = find<snap::ui::Key>(ed, "presets");
         CHECK(prev != nullptr && next != nullptr && name != nullptr);
         if (prev != nullptr && next != nullptr && name != nullptr)
         {
@@ -1358,7 +1372,72 @@ static void testDisplayFeed()
     CHECK(wet > 0.01f && in > 0.1f && added > 0.01f && pin > 0.1f && padded > 0.01f);
 }
 
-static int screenshot(const juce::File& file, bool browser)
+// The preset list under the name: every factory preset once in its group, the current one inverted; a click loads (one undo
+// step, as before) and closes; esc, the name again or a click outside close it; the keys walk it; the user's and the browser
+// are in it.
+static void testPresetMenu()
+{
+    const snap::PresetStore store;
+    std::set<juce::String> grouped;
+    int total = 0, factory = 0;
+    for (auto& p : store.presets())
+        factory += p.factory;
+    for (auto& g : snap::presetGroups())
+    {
+        CHECK(g.presets.size() > 1 && juce::String(g.name) == juce::String(g.name).toLowerCase() && juce::String(g.name).length() <= 12);
+        for (auto* name : g.presets)
+            grouped.insert(name), ++total, CHECK(store.find("factory/" + juce::String(name)) != nullptr);
+    }
+    CHECK(total == 50 && factory == 50 && grouped.size() == 50);
+    Proc p;
+    std::unique_ptr<juce::AudioProcessorEditor> e(p.createEditor());
+    e->setVisible(true);
+    auto* menu = find<juce::Component>(*e, "presetMenu");
+    CHECK(menu != nullptr && !menu->isVisible());
+    if (menu == nullptr)
+        return;
+    const auto key = [&] { return p.apvts.state.getProperty("preset").toString(); };
+    const auto rows = [&] {
+        std::map<juce::String, juce::Component*> m;
+        for (auto* c : menu->getChildren())
+            CHECK(m.emplace(dynamic_cast<juce::Button*>(c)->getName(), c).second || juce::File(store.defaultRoot()).exists()); // a user preset may share a factory name
+        return m;
+    };
+    click(*e, "presets");
+    CHECK(menu->isVisible() && menu->getBounds() == menu->getParentComponent()->getLocalBounds());
+    for (auto& name : grouped)
+        CHECK(rows().count(name) == 1);
+    CHECK(rows().count("browse") == 1);
+    for (auto* a : menu->getChildren())
+        for (auto* b : menu->getChildren())
+            CHECK(a == b || !a->isVisible() || !b->isVisible() || !a->getBounds().intersects(b->getBounds()));
+    for (auto& name : grouped)
+    {
+        if (!menu->isVisible())
+            click(*e, "presets");
+        pick(*e, name);
+        CHECK(!menu->isVisible() && key() == "factory/" + name);
+        click(*e, "presets");
+        for (auto& [other, row] : rows())
+            CHECK((menu->createComponentSnapshot(row->getBounds()).getPixelAt(1, 1) == juce::Colour(0xffefe6d2)) == (other == name));
+        CHECK(menu->keyPressed(juce::KeyPress(juce::KeyPress::escapeKey)) && !menu->isVisible() && key() == "factory/" + name);
+    }
+    click(*e, "presets"), pick(*e, "hit hard"), click(*e, "presets"), pick(*e, "tin goes soft");
+    CHECK(p.undo() && key() == "factory/hit hard");
+    CHECK(p.redo() && key() == "factory/tin goes soft");
+    click(*e, "presets"), click(*e, "presets"), CHECK(!menu->isVisible()); // the name again
+    const auto mouse = [&](juce::Point<float> at) {
+        const auto now = juce::Time::getCurrentTime();
+        menu->mouseDown({ juce::Desktop::getInstance().getMainMouseSource(), at, juce::ModifierKeys::leftButtonModifier, 1, 0, 0, 0, 0, menu, menu, now, at, now, 1, false });
+    };
+    click(*e, "presets"), mouse({ 60, 60 }), CHECK(menu->isVisible());
+    mouse({ 1400, 760 }), CHECK(!menu->isVisible());
+    click(*e, "presets"), pick(*e, "hit hard"), click(*e, "presets");
+    CHECK(menu->keyPressed(juce::KeyPress(juce::KeyPress::downKey)) && menu->keyPressed(juce::KeyPress(juce::KeyPress::returnKey)));
+    CHECK(!menu->isVisible() && key() == "factory/first coat of polish");
+}
+
+static int screenshot(const juce::File& file, bool browser, bool menu = false)
 {
     Proc p;
     for (auto [id, v] : std::initializer_list<std::pair<const char*, float>> {
@@ -1381,8 +1460,10 @@ static int screenshot(const juce::File& file, bool browser)
     for (int n = 0; n < 60; ++n) // 2 s of drums with the 30 Hz feed running
         run(p, 48000, 512, 2, 1.0 / 30), tick(*e);
     if (browser)
-        click(*e, "preset browser"), tick(*e);
-    const auto image = e->createComponentSnapshot(e->getLocalBounds(), true, 1.0f);
+        openBrowser(*e), tick(*e);
+    if (menu)
+        click(*e, "presets");
+    const auto image = e->createComponentSnapshot(e->getLocalBounds(), true, menu ? 2.0f : 1.0f);
     file.deleteFile();
     juce::FileOutputStream out(file);
     return out.openedOk() && juce::PNGImageFormat().writeImageToStream(image, out) ? 0 : 1;
@@ -1621,6 +1702,8 @@ int main(int argc, char** argv)
         return renderFile(argc, argv);
     if (argc == 3 && (juce::String(argv[1]) == "--screenshot" || juce::String(argv[1]) == "--screenshot-browser"))
         return screenshot(juce::File::getCurrentWorkingDirectory().getChildFile(argv[2]), juce::String(argv[1]) == "--screenshot-browser");
+    if (argc == 3 && juce::String(argv[1]) == "--screenshot-menu")
+        return screenshot(juce::File::getCurrentWorkingDirectory().getChildFile(argv[2]), false, true);
     if (argc == 2 && juce::String(argv[1]) == "--bench")
         return benchmark();
     if (argc == 2 && juce::String(argv[1]) == "--feed")
@@ -1628,7 +1711,7 @@ int main(int argc, char** argv)
     if (argc == 2 && juce::String(argv[1]) == "--audibility") // the control audibility check on its own
         return testAudibility(), failures == 0 ? 0 : 1;
     if (argc == 2 && juce::String(argv[1]) == "--editor") // the editor tests on their own
-        testBraille(), testRiso(), testEditor(), testVisualizerControls();
+        testBraille(), testRiso(), testEditor(), testPresetMenu(), testVisualizerControls();
     else
     if (argc == 3 && juce::String(argv[1]) == "--render")
         return render(juce::File::getCurrentWorkingDirectory().getChildFile(argv[2]));
@@ -1655,6 +1738,7 @@ int main(int argc, char** argv)
     testBraille();
     testRiso();
     testEditor();
+    testPresetMenu();
     testVisualizerControls();
     testModuleSwitches();
     testDisplayFeed();

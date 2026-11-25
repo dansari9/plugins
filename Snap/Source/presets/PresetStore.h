@@ -86,6 +86,9 @@ private:
     std::vector<std::pair<juce::String, juce::StringArray>> collectionList; // name, preset keys
 };
 
+struct PresetGroup { const char* name; std::vector<const char*> presets; };
+const std::vector<PresetGroup>& presetGroups(); // the preset list's: every factory preset once, by what it is for
+
 std::optional<Preset> parsePreset(const juce::String& xml, bool factory); // nullopt unless it is a <SNAP> with a name
 bool loadPresetXml(SnapProcessor&, const juce::String& xml);               // wraps the text as a state blob for loadPreset
 void loadDefaultPreset(SnapProcessor&);                                     // a new instance: the default preset, no undo step

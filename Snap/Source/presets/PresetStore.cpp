@@ -272,6 +272,21 @@ bool PresetStore::remove(const String& key)
 
 // The file is normalised through JUCE's parser first (any valid XML spelling reads the same), and a preset without a
 // version is a version 2 preset: the version 1 migration is for 0.1.x sessions only.
+const std::vector<PresetGroup>& presetGroups()
+{
+    static const std::vector<PresetGroup> groups {
+        { "drum bus", { "hit hard", "first coat of polish", "seams sit flush", "wood and skin", "rafters hold still", "soft rim around", "floor underfoot", "fist in velvet", "plaster shakes loose", "blown into confetti" } },
+        { "loop", { "shine between cracks", "floor breathes with you", "breaks run hot", "corners pull inward", "buckles at edges", "grit between hits", "dust in the grooves", "left on the dashboard", "sparks in dust", "tails crowd in" } },
+        { "kick", { "point on the thump", "heel clears gravel", "weight at heel", "thud through felt", "ground keeps humming", "sub learns to talk", "storm under concrete" } },
+        { "snare", { "crack from the rim", "plank snaps shut", "paper at wrist", "wires under the skin", "wire bites back", "hall door slams shut" } },
+        { "hats", { "foil catches light", "sparks scatter sideways", "glints on tin", "tin goes soft" } },
+        { "percussion", { "knuckles on chalk", "pebbles in palm", "hollow hide bends", "hollows answer back" } },
+        { "instrument", { "grain rests easy", "roots hold fast", "threads cross slowly", "breath between syllables" } },
+        { "fx", { "bottom falls out", "ceiling folds upward", "shards lose gravity", "teeth in the low end", "walls swallow sparks" } },
+    };
+    return groups;
+}
+
 bool loadPresetXml(SnapProcessor& processor, const String& text)
 {
     const auto parsed = XmlDocument::parse(text);
