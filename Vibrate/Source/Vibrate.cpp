@@ -11,7 +11,8 @@ AudioProcessorValueTreeState::ParameterLayout parameterLayout()
         return jlimit(low, high, std::round(value * 10.0f) / 10.0f);
     };
     const NormalisableRange<float> percent(0.0f, 100.0f,
-        [](float low, float high, float n) { return low + (high - low) * n; },
+        // APVTS initializes the raw parameter through this curve without calling snapToLegalValue.
+        [snap](float low, float high, float n) { return snap(low, high, low + (high - low) * n); },
         [](float low, float high, float value) { return (value - low) / (high - low); },
         snap);
     const auto attributes = AudioParameterFloatAttributes()
