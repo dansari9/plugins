@@ -526,16 +526,16 @@ void CrumbProcessor::processBlock(AudioBuffer<float>& buffer, MidiBuffer&)
             if (e > 0)
                 dry[c] += e * (delayed - dry[c]), y[c] += e * (coded[c] - y[c]);
         }
-        float in = 0, out = 0, lost = 0, over = 0;
+        float in = 0, out = 0, lost = 0, outputClip = 0;
         for (int c = 0; c < channels; ++c)
         {
             if (!d.bandPost.idle()) y[c] = d.bandPost.run(c, y[c]);
             x[c][i] = (float) ((dry[c] + mix * (y[c] * wet - dry[c])) * gain);
             in += (float) dry[c] / (float) channels, out += x[c][i] / (float) channels, peak = jmax(peak, std::abs(x[c][i]));
-            if (const float t = std::abs(x[c][i]); t > 1 && 20 * std::log10(t) > std::abs(over)) over = std::copysign(20 * std::log10(t), x[c][i]);
+            if (const float t = std::abs(x[c][i]); t > 1 && 20 * std::log10(t) > std::abs(outputClip)) outputClip = std::copysign(20 * std::log10(t), x[c][i]);
             lost += (float) (e * gone[c] * wet) / (float) channels;
         }
-        scope.push(w + (uint32_t) i, in, out, lost, e > 0.5 ? (uint8_t) mark : (uint8_t) 0, cut, over, mix > 0 ? d.preRing[into] : in, mix > 0 ? d.heldRing[crush] : in);
+        scope.push(w + (uint32_t) i, in, out, lost, e > 0.5 ? (uint8_t) mark : (uint8_t) 0, cut, outputClip, mix > 0 ? d.preRing[into] : in, mix > 0 ? d.heldRing[crush] : in);
     }
     scope.write.store(w + (uint32_t) n, std::memory_order_release);
     scope.loudest(peak);
@@ -732,7 +732,7 @@ void CrumbProcessor::setStateInformation(const void* data, int size)
             slots[k].clear();
     }
     ab = number(tree->getStringAttribute("ab")).value_or(0) > 0.5 ? 1 : 0;
-    viz = (int) jlimit(0.0, crumb::numViz - 1.0, number(tree->getStringAttribute("viz")).value_or(0));
+    viz = (int) jlimit(0.0, (double) (crumb::numViz - 1), number(tree->getStringAttribute("viz")).value_or(0));
     editorWidth = (int) jlimit(0.0, 4096.0, number(tree->getStringAttribute("editorWidth")).value_or(0));
     setIdentity((int) jlimit(-1.0, crumb::numPresets - 1.0, number(tree->getStringAttribute("preset")).value_or(-1)), tree->getStringAttribute("presetName")); // none: "custom"
 }

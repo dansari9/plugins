@@ -122,7 +122,7 @@ struct Wave
     {
         const double span = std::clamp(48 / std::min(fs, rate), 0.004, 0.04) * fs / columns;
         const int reach = (int) (0.04 * fs);
-        const auto at = [this](const std::vector<float>& v, int64_t i) { return i < 0 ? 0.0f : v[(size_t) (i & (capacity - 1))]; };
+        const auto at = [](const std::vector<float>& v, int64_t i) { return i < 0 ? 0.0f : v[(size_t) (i & (capacity - 1))]; };
         int64_t start = total - (int64_t) std::ceil(columns * span);
         for (int64_t i = start; i > std::max<int64_t>(1, start - reach); --i)
             if (at(pre, i - 1) <= 0 && at(pre, i) > 0)
