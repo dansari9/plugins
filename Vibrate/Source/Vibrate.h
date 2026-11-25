@@ -2,6 +2,7 @@
 
 #include <juce_audio_utils/juce_audio_utils.h>
 #include "Presets.h"
+#include "Feed.h"
 
 class VibrateProcessor final : public juce::AudioProcessor
 {
@@ -36,6 +37,9 @@ public:
     juce::AudioProcessorValueTreeState apvts;
     std::atomic<int> editorWidth { 0 };
     std::atomic<int> preset { 0 };
+    vibrate::Feed feed;
+    std::atomic<double> sampleRate { 48000 };
+    double (*clockMs)() = [] { return juce::Time::getMillisecondCounterHiRes(); };
 
     juce::String presetName() const;
     void stepPreset(int delta);
@@ -52,6 +56,7 @@ private:
     std::array<std::atomic<float>*, vibrate::ids.size()> parameters {};
     std::atomic<bool> resetPending { false };
     vibrate::Engine engine;
+    vibrate::Meter meter;
 
     using Slot = std::array<float, vibrate::numControls>;
     void setAll(const Slot& values);

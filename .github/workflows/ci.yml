@@ -11,6 +11,7 @@ concurrency:
 
 jobs:
   linux:
+    if: github.ref_name != 'vibrate' && github.head_ref != 'vibrate'
     name: Linux VST3 + Standalone
     runs-on: ubuntu-latest
     timeout-minutes: 90
@@ -49,6 +50,7 @@ jobs:
             SpringReverb/artifacts/spring_tank_impulse.wav
 
   macos:
+    if: github.ref_name != 'vibrate' && github.head_ref != 'vibrate'
     name: macOS AU + VST3
     runs-on: macos-latest
     timeout-minutes: 90
@@ -82,6 +84,7 @@ jobs:
             SpringReverb/artifacts/spring_tank_impulse.wav
 
   silt-linux:
+    if: github.ref_name != 'vibrate' && github.head_ref != 'vibrate'
     name: Silt Linux VST3 + tests + pluginval
     runs-on: ubuntu-latest
     timeout-minutes: 90
@@ -132,6 +135,7 @@ jobs:
           path: silt-linux.tar.gz
 
   silt-macos:
+    if: github.ref_name != 'vibrate' && github.head_ref != 'vibrate'
     name: Silt macOS universal AU + VST3 + auval
     runs-on: macos-latest
     timeout-minutes: 90
@@ -193,6 +197,7 @@ jobs:
             Silt-VST3-macos.zip
 
   gulp-linux:
+    if: github.ref_name != 'vibrate' && github.head_ref != 'vibrate'
     name: Gulp Linux VST3 + tests + pluginval
     runs-on: ubuntu-latest
     timeout-minutes: 90
@@ -243,6 +248,7 @@ jobs:
           path: gulp-linux.tar.gz
 
   gulp-macos:
+    if: github.ref_name != 'vibrate' && github.head_ref != 'vibrate'
     name: Gulp macOS universal AU + VST3 + auval
     runs-on: macos-latest
     timeout-minutes: 90
@@ -301,3 +307,105 @@ jobs:
           path: |
             Gulp-AU-macos.zip
             Gulp-VST3-macos.zip
+
+  vibrate-linux:
+    name: Vibrate Linux VST3 + tests + pluginval
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake ninja-build pkg-config xvfb unzip \
+            libasound2-dev libfreetype6-dev libfontconfig1-dev \
+            libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxext-dev \
+            libgtk-3-dev
+
+      - name: Configure
+        run: cmake -S Vibrate -B Vibrate/build -G Ninja -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build Vibrate/build --parallel --target Vibrate_VST3 Vibrate_Standalone VibrateTests
+
+      - name: Unit tests
+        run: xvfb-run -a Vibrate/build/VibrateTests
+
+      - name: Unit tests under ASan + UBSan
+        run: |
+          S="-fsanitize=address,undefined,float-cast-overflow -fno-sanitize-recover=all -fno-omit-frame-pointer"
+          cmake -S Vibrate -B Vibrate/build-asan -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            "-DCMAKE_C_FLAGS=$S" "-DCMAKE_CXX_FLAGS=$S" "-DCMAKE_EXE_LINKER_FLAGS=-fsanitize=address,undefined"
+          cmake --build Vibrate/build-asan --parallel 2 --target VibrateTests
+          xvfb-run -a Vibrate/build-asan/VibrateTests
+
+      - name: pluginval (strictness 10)
+        run: |
+          curl -fsSL -o pluginval.zip https://github.com/Tracktion/pluginval/releases/latest/download/pluginval_Linux.zip
+          unzip -q pluginval.zip
+          xvfb-run -a ./pluginval --strictness-level 10 --validate-in-process \
+            --validate Vibrate/build/Vibrate_artefacts/Release/VST3/vibrate.vst3
+
+      - name: Package (tar keeps the executable bit)
+        run: tar -C Vibrate/build/Vibrate_artefacts/Release -czf vibrate-linux.tar.gz VST3 Standalone
+
+      - name: Upload VST3 + Standalone
+        uses: actions/upload-artifact@v4
+        with:
+          name: vibrate-linux
+          if-no-files-found: error
+          path: vibrate-linux.tar.gz
+
+  vibrate-macos:
+    name: Vibrate macOS universal AU + VST3 + auval
+    runs-on: macos-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake -S Vibrate -B Vibrate/build -G Xcode -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"
+
+      - name: Build AU, VST3, tests
+        run: cmake --build Vibrate/build --config Release --parallel --target Vibrate_AU Vibrate_VST3 VibrateTests
+
+      - name: Ad-hoc sign and verify AU and VST3
+        run: |
+          codesign --force --sign - --timestamp=none Vibrate/build/Vibrate_artefacts/Release/AU/vibrate.component
+          codesign --verify --deep --strict --verbose=2 Vibrate/build/Vibrate_artefacts/Release/AU/vibrate.component
+          codesign --force --sign - --timestamp=none Vibrate/build/Vibrate_artefacts/Release/VST3/vibrate.vst3
+          codesign --verify --deep --strict --verbose=2 Vibrate/build/Vibrate_artefacts/Release/VST3/vibrate.vst3
+
+      - name: Unit tests
+        run: |
+          BIN="$(find Vibrate/build -type f -name VibrateTests -perm +111 | head -n 1)"
+          test -n "$BIN"
+          "$BIN"
+
+      - name: Universal binary check
+        run: |
+          lipo Vibrate/build/Vibrate_artefacts/Release/AU/vibrate.component/Contents/MacOS/vibrate -verify_arch arm64 x86_64
+          lipo Vibrate/build/Vibrate_artefacts/Release/VST3/vibrate.vst3/Contents/MacOS/vibrate -verify_arch arm64 x86_64
+
+      - name: auval
+        run: |
+          mkdir -p ~/Library/Audio/Plug-Ins/Components
+          cp -R Vibrate/build/Vibrate_artefacts/Release/AU/vibrate.component ~/Library/Audio/Plug-Ins/Components/
+          killall -9 AudioComponentRegistrar 2>/dev/null || true
+          sleep 3
+          auval -a | grep -i Dwks || true
+          auval -v aufx Vbrt Dwks
+
+      - name: Package (zip keeps bundle permissions)
+        run: cd Vibrate/build/Vibrate_artefacts/Release && ditto -c -k --keepParent AU/vibrate.component "$GITHUB_WORKSPACE/Vibrate-AU-macos.zip" && ditto -c -k --keepParent VST3/vibrate.vst3 "$GITHUB_WORKSPACE/Vibrate-VST3-macos.zip"
+
+      - name: Upload AU + VST3
+        uses: actions/upload-artifact@v4
+        with:
+          name: vibrate-macos-universal
+          if-no-files-found: error
+          path: |
+            Vibrate-AU-macos.zip
+            Vibrate-VST3-macos.zip

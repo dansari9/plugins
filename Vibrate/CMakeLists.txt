@@ -52,7 +52,8 @@ target_sources(Vibrate PRIVATE Source/Vibrate.cpp Source/VibrateEditor.cpp Sourc
 
 # Geist Mono (SIL OFL 1.1, Assets/Fonts/OFL.txt), the same faces as Rootnote.
 juce_add_binary_data(VibrateFonts SOURCES
-    Assets/Fonts/GeistMono-Regular.ttf Assets/Fonts/GeistMono-Medium.ttf Assets/Fonts/GeistMono-SemiBold.ttf)
+    Assets/Fonts/GeistMono-Regular.ttf Assets/Fonts/GeistMono-Medium.ttf Assets/Fonts/GeistMono-SemiBold.ttf
+    Assets/Riso/vibrate-ink.png Assets/Riso/vibrate-paper.png)
 set_target_properties(VibrateFonts PROPERTIES POSITION_INDEPENDENT_CODE TRUE)
 
 target_compile_definitions(Vibrate

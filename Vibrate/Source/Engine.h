@@ -138,6 +138,7 @@ struct Sample
     Stereo out;
     Controls terms;
     double pitch1, pitch2, panGain, delay1, delay2, phase1, phase2;
+    unsigned enabled;
 };
 
 struct IgnoreSample { void operator()(const Sample&) const {} };
@@ -273,7 +274,12 @@ public:
             out.left = static_cast<float>(left + q);
             out.right = static_cast<float>(right - q);
         }
-        observe({ input, x, out, { p, a, dl, h, s, q }, pitch1, pitch2, panGain, delay1, delay2, phase1, phase2 });
+        unsigned enabled = 0;
+        for (unsigned lane = 0; lane < numControls; ++lane)
+            if (g[lane] > 0)
+                enabled |= (1u << lane);
+        observe({ input, x, out, { p, a, dl, h, s, q }, pitch1, pitch2, panGain, delay1, delay2, phase1, phase2,
+                  enabled & (lanes | (1u << mix)) });
         return out;
     }
 

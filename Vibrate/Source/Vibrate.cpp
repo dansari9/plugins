@@ -63,6 +63,7 @@ bool VibrateProcessor::isBusesLayoutSupported(const BusesLayout& layout) const
 
 void VibrateProcessor::prepareToPlay(double rate, int)
 {
+    sampleRate = rate;
     engine.prepare(rate, controls(), bypassed());
     reset();
 }
@@ -76,19 +77,34 @@ void VibrateProcessor::process(AudioBuffer<float>& audio, bool hostBypass)
     const bool bypass = hostBypass || bypassed();
     const auto values = controls();
     if (resetPending.exchange(false, std::memory_order_acq_rel))
+    {
         engine.reset(values, bypass);
+        meter.reset(sampleRate);
+    }
     else
         engine.setControls(values, bypass);
 
     auto* left = audio.getWritePointer(0);
     auto* right = audio.getWritePointer(1);
     const bool stereo = getTotalNumInputChannels() == 2;
-    for (int i = 0; i < audio.getNumSamples(); ++i)
+    const int count = audio.getNumSamples();
+    const auto render = [&](const auto& observe) {
+        for (int i = 0; i < count; ++i)
+        {
+            const auto sample = engine.process(left[i], stereo ? right[i] : left[i], observe);
+            left[i] = sample.left;
+            right[i] = sample.right;
+        }
+    };
+    if (feed.hasRoom())
+        render([this](const vibrate::Sample& sample) { meter.add(sample, feed); });
+    else
     {
-        const auto sample = engine.process(left[i], stereo ? right[i] : left[i]);
-        left[i] = sample.left;
-        right[i] = sample.right;
+        render(vibrate::IgnoreSample {});
+        meter.skip(count);
     }
+    if (count > 0)
+        feed.lastBlockMs.store(clockMs(), std::memory_order_release);
 }
 
 AudioProcessor* JUCE_CALLTYPE createPluginFilter() { return new VibrateProcessor(); }
