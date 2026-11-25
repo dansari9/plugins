@@ -438,7 +438,7 @@ void CrumbProcessor::processBlock(AudioBuffer<float>& buffer, MidiBuffer&)
     auto& d = *dsp;
     const bool driven = d.raw[Preamp]->load() > 0;
     if (resetPending.exchange(false, std::memory_order_acquire))
-        d.hot = 0, d.clipOn = driven ? 1 : 0, d.reset();
+        d.hot = 0, d.clipOn = driven ? 1 : 0, d.reset(), scope.origin.store(scope.write.load(std::memory_order_relaxed), std::memory_order_relaxed);
     d.targets(false);
     Frame f;
     f.bits = (int) d.raw[Bits]->load(), f.tread = d.raw[DcShift]->load() > 0.5f;

@@ -39,8 +39,9 @@ struct Wave
     std::vector<std::pair<int, int>> water; // cells inside the output
 
     // span: samples per step, a step is `width` columns wide. triggered: the window starts where the dry input last rose
-    // through zero, so it stands still; otherwise it scrolls in whole steps. reach: how far back to look, in samples.
-    void build(double span, int width, bool triggered, int reach)
+    // through zero, so it stands still (reach: how far back to look, in samples); otherwise it scrolls in whole steps, whose
+    // edges are the multiples of span on a count of samples (the codec's frames) that stands at `count` now.
+    void build(double span, int width, bool triggered, int reach, int64_t count = 0)
     {
         const int steps = columns / width;
         int64_t start;
@@ -56,7 +57,7 @@ struct Wave
                 }
         }
         else
-            start = (int64_t) std::floor((double) total / span) - steps; // in steps
+            start = (int64_t) std::floor((double) count / span) - steps; // in steps
         float loudest = triggered ? 0.02f : 0.1f;
         for (int k = 0; k < columns; ++k)
         {
@@ -66,8 +67,8 @@ struct Wave
                 continue;
             }
             const int n = k / width;
-            const int64_t from = triggered ? start + (int64_t) std::floor(n * span) : (int64_t) std::floor((double) (start + n) * span);
-            const int64_t to = std::max(from + 1, triggered ? start + (int64_t) std::floor((n + 1) * span) : (int64_t) std::floor((double) (start + n + 1) * span));
+            const int64_t from = triggered ? start + (int64_t) std::floor(n * span) : (int64_t) std::floor((double) (start + n) * span) + total - count;
+            const int64_t to = std::max(from + 1, triggered ? start + (int64_t) std::floor((n + 1) * span) : (int64_t) std::floor((double) (start + n + 1) * span) + total - count);
             Column c;
             bool first = true;
             for (int64_t s = from; s < to; ++s)

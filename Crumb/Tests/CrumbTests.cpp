@@ -1256,7 +1256,7 @@ static void testWave()
 {
     crumb::Wave w;
     for (int i = 0; i < 40000; ++i) w.add(0.5f * (float) std::sin(0.02 * i), i % 600 < 300 ? 0.25f : -0.5f, 0, i >= 25000 && i < 26000 ? 2 : 0);
-    w.build(256, 3, false, 0);
+    w.build(256, 3, false, 0, 40000);
     CHECK(std::abs(w.peak - 0.5f) < 0.01f && !w.lost.empty() && !w.line.empty() && w.taken.empty());
     for (int k = 0; k < crumb::Wave::columns; ++k)
     {
@@ -1266,6 +1266,10 @@ static void testWave()
             lo = std::min(lo, i % 600 < 300 ? 0.25f : -0.5f), hi = std::max(hi, i % 600 < 300 ? 0.25f : -0.5f), mark = mark || (i >= 25000 && i < 26000);
         CHECK(w.column[(size_t) k].wet.lo == lo && w.column[(size_t) k].wet.hi == hi && (w.column[(size_t) k].mark != 0) == mark);
     }
+    // steps stand on the codec's frames wherever its count began: lost frames fill whole steps
+    w.build(1000, 3, false, 0, 39000);
+    for (int k = 0; k < crumb::Wave::columns; ++k)
+        CHECK((w.column[(size_t) k].mark != 0) == (39 - 84 + k / 3 == 24));
     // a hold of 8 samples at 4 columns a hold: flat runs of 4 columns or more, one row each
     crumb::Wave h;
     for (int i = 0; i < 20000; ++i) h.add(0.5f * (float) std::sin(0.01 * i), 0.5f * (float) std::sin(0.01 * (i - i % 8)), 0, 0);
@@ -1702,8 +1706,34 @@ static std::vector<float> loadFloats(const juce::String& path)
     std::memcpy(v.data(), m.getData(), v.size() * 4);
     return v;
 }
-// --render / --feed / --picture: the plug-in's own processor over a file, for tools/fidelity.mjs and the site's picture test.
-// --picture in.f32 out.txt frames ...: the dots the editor would draw after the file.
+// --render / --feed: the plug-in's own processor over a file, for tools/fidelity.mjs. --picture out.png width scale in.f32
+// frames preset [more]: the editor after that many 1536-sample frames of the file (the site's picture, tools/qa/crumb-native.mjs).
+static int picture(const juce::StringArray& a)
+{
+    const auto in = loadFloats(a[4]);
+    const int width = a[2].getIntValue();
+    Proc p;
+    p.setCurrentProgram(a[6].getIntValue());
+    prepare(p, 48000, 128, 2);
+    p.scope.clock = testClock, testMs = 0;
+    std::unique_ptr<juce::AudioProcessorEditor> e(p.createEditor());
+    dynamic_cast<juce::Timer&>(*e).stopTimer();
+    e->setSize(width, juce::roundToInt(width * 544 / 1056.0));
+    if (a[7] == "more") dynamic_cast<juce::Button*>(find(*e, "more"))->onClick();
+    juce::AudioBuffer<float> b(2, 128);
+    juce::MidiBuffer midi;
+    for (int frame = 0, at = 0; frame < a[5].getIntValue(); ++frame)
+    {
+        for (int k = 0; k < 12; ++k, at += 128)
+        {
+            for (int i = 0; i < 128; ++i)
+                for (int c = 0; c < 2; ++c) b.setSample(c, i, in[(size_t) ((2 * (at + i) + c) % (int) in.size())]);
+            p.processBlock(b, midi);
+        }
+        testMs += 32, dynamic_cast<juce::Timer&>(*e).timerCallback();
+    }
+    return savePng(e->createComponentSnapshot(e->getLocalBounds(), true, a[3].getFloatValue()), juce::File::getCurrentWorkingDirectory().getChildFile(a[1]));
+}
 static int renderFile(const juce::StringArray& args)
 {
     const auto in = loadFloats(args[1]);
@@ -1844,10 +1874,10 @@ static const Golden sounds[] = {
 // Editor snapshots of the 0.3.0 wave UI, same environment gate as the audio.
 struct Shot { Variant variant; int percent; const char* hash; };
 static const Shot shots[] = {
-    { mainPage, 100, "823f7ec45b2c1090198a472c05ee001176b330c2c6492ff8cc5c279c3ace7557" },
-    { mainPage, 50, "758ee58476c0b6cd6a62c1bf0d0515e4c14c802b24130ab326a78f1c9eed5429" },
-    { mainPage, 200, "eadd664a33eca22d9d334bd355d48c55c4c4f031d31c0c7d6270cbda8248f603" },
-    { morePage, 100, "ef85a244801b554f43e6aec1a8706a181197088e65c0ed2214fdaf88ae30d541" },
+    { mainPage, 100, "9522d799a243ed0f9e2d2ef9f609f40694a7c5ac92a923ddbc9f71816e36d6a5" },
+    { mainPage, 50, "c6f49a77c911c12661ab11d7c63dcb9fdc97515a908bcc02ec9f3abbc1e5d9fa" },
+    { mainPage, 200, "ee8e0b1e5100efa5562883b0ad164098fc00e08d0037cf1cd5a9ba106d2d0cb9" },
+    { morePage, 100, "369bb2fa87771d37cb97ec9ab59f22de0e454d522b8eb6f850e00177e3d56ad1" },
     { quiet, 100, "cf417eddc42592c5d0f8c1af1deaffe567ba89a7ca2996132b00f51682979523" },
     { crush, 100, "5955ef9f0f7e94238b4643074ce3c80452bcc4c7db139cccbf62195179a52dc3" },
 };
@@ -2012,6 +2042,7 @@ int main(int argc, char** argv)
         for (int k = 0; k < 3; ++k) bad += savePng(crumb::plate(k), juce::File::getCurrentWorkingDirectory().getChildFile(args[1]).getChildFile(k == 0 ? "crumb-ink.png" : k == 1 ? "crumb-tint.png" : "crumb-paper.png"));
         return bad;
     }
+    if (args.size() >= 7 && args[0] == "--picture") return picture(args);
     if (args.size() >= 3 && (args[0] == "--render" || args[0] == "--feed")) return renderFile(args);
     if (argc == 2 && juce::String(argv[1]) == "--bench") return bench();
     if (argc == 2 && juce::String(argv[1]) == "--bench-editor") return benchEditor();

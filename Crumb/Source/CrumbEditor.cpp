@@ -479,7 +479,9 @@ struct Editor : AudioProcessorEditor, Timer
         if (showsFrames())
         {
             const int scale = crumb::rateScale(fs), hop = crumb::hops[crumb::speedIndex(value("speed") / 100)];
-            wave.build(hop * ((255 + hop) / hop) * scale, 3, false, 0);
+            // a frame shows from a latency and half a hop after it was coded
+            const auto coded = (int64_t) (uint32_t) (seen - proc.scope.origin.load(std::memory_order_relaxed)) - 2048 * scale - hop * scale / 2;
+            wave.build(hop * ((255 + hop) / hop) * scale, 3, false, 0, coded);
         }
         else
             wave.build(jlimit(0.5, 0.04 * fs / crumb::Wave::columns, 0.25 * fs / jmin(fs, (double) value("rate"))), 1, true, (int) (0.04 * fs));

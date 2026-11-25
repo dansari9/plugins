@@ -33,7 +33,7 @@ struct Scope
     static constexpr int size = 1 << 15; // 170 ms at 192 kHz, 5 editor frames
     std::array<std::atomic<float>, size> dry {}, wet {}, gone {};
     std::array<std::atomic<uint8_t>, size> mark {};
-    std::atomic<uint32_t> write { 0 };
+    std::atomic<uint32_t> write { 0 }, origin { 0 }; // origin: where in that count the codec's own began
     std::atomic<float> peak { 0 };
     std::atomic<double> clipAt { -1e9 }; // clock() of the last output sample over 0 dBFS
     double (*clock)() = [] { return juce::Time::getMillisecondCounterHiRes(); }; // ms; tests substitute their own
