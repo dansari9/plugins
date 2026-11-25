@@ -11,6 +11,7 @@
 #include <limits>
 #include <iostream>
 #include <new>
+#include <map>
 #include <set>
 #include <thread>
 
@@ -182,7 +183,7 @@ static void testIdentity()
     CHECK(JucePlugin_ManufacturerCode == 0x44776b73); // 'Dwks'
     CHECK(juce::String(JUCE_STRINGIFY(JucePlugin_AUMainType)) == "'aumf'");
     CHECK(juce::String(JUCE_STRINGIFY(JucePlugin_CFBundleIdentifier)) == "com.dripworks.gulp");
-    CHECK(juce::String(JucePlugin_Name) == "gulp" && juce::String(JucePlugin_Manufacturer) == "daveydidit" && juce::String(JucePlugin_VersionString) == "0.4.1");
+    CHECK(juce::String(JucePlugin_Name) == "gulp" && juce::String(JucePlugin_Manufacturer) == "daveydidit" && juce::String(JucePlugin_VersionString) == "0.4.2");
     static_assert(JUCE_VST3_CAN_REPLACE_VST2 == 0 && JUCE_FORCE_USE_LEGACY_PARAM_IDS == 0, "frozen host-facing IDs");
     CHECK(!JucePlugin_IsSynth && JucePlugin_WantsMidiInput && !JucePlugin_ProducesMidiOutput);
     // Golden: id -> range and default (floats), item list and default (choices), default (switches).
@@ -1132,6 +1133,77 @@ static void testTelemetry()
 // with the Slider's 250 px sensitivity, reset on Slider::mouseDoubleClick and type on Label::showEditor; the slope's
 // handle (found by getComponentAt) drags sideways and stays under the cursor; words, toggles, curve rows, the rate
 // stepper, the held peak and the header are Button clicks. Visible controls never overlap.
+// The preset list: a click on the name opens it, every factory preset once in its group, the current one inverted; a click
+// loads and closes; esc, the name again or a click outside close it; the keys walk it; the user's files are in it.
+static void testPresetMenu()
+{
+    const auto folder = juce::File::getSpecialLocation(juce::File::tempDirectory).getNonexistentChildFile("gulp-menu", "", false);
+    folder.createDirectory();
+    Proc p(folder);
+    std::set<int> grouped;
+    int total = 0;
+    for (auto& g : gulp::presetGroups())
+    {
+        CHECK(g.presets.size() > 1 && juce::String(g.name) == juce::String(g.name).toLowerCase() && juce::String(g.name).length() <= 12);
+        for (int i : g.presets) grouped.insert(i), ++total;
+    }
+    CHECK(total == gulp::numPresets && (int) grouped.size() == gulp::numPresets && *grouped.rbegin() == gulp::numPresets - 1);
+    std::unique_ptr<juce::AudioProcessorEditor> e(p.createEditor());
+    e->setVisible(true);
+    auto* menu = find(*e, "presetMenu");
+    const auto open = [&] { dynamic_cast<juce::Button*>(find(*e, "preset"))->onClick(); };
+    const auto items = [&] {
+        std::map<int, juce::Component*> m;
+        for (auto* c : menu->getChildren()) CHECK(m.emplace(c->getComponentID().substring(6).getIntValue(), c).second);
+        return m;
+    };
+    const auto inverted = [&](int id) { return menu->createComponentSnapshot(items()[id]->getBounds()).getPixelAt(1, 1) == juce::Colour(0xffefe6d2); };
+    CHECK(menu != nullptr && !menu->isVisible());
+    open();
+    CHECK(menu->isVisible() && menu->getBounds() == menu->getParentComponent()->getLocalBounds());
+    auto all = items();
+    CHECK((int) all.size() == gulp::numPresets);
+    for (auto& [id, c] : all)
+    {
+        CHECK(c->isVisible() && menu->getLocalBounds().contains(c->getBounds()) && dynamic_cast<juce::Button*>(c)->getName() == p.getProgramName(id));
+        for (auto& [other, d] : all) CHECK(other == id || !c->getBounds().intersects(d->getBounds()));
+    }
+    const int n = gulp::numPresets;
+    for (int i = 0; i < n; ++i)
+    {
+        if (!menu->isVisible()) open();
+        dynamic_cast<juce::Button*>(items()[i])->onClick();
+        CHECK(!menu->isVisible() && p.getCurrentProgram() == i && p.preset == i);
+        open();
+        for (int k = 0; k < n; ++k) CHECK(inverted(k) == (k == i));
+        CHECK(menu->keyPressed(juce::KeyPress(juce::KeyPress::escapeKey)) && !menu->isVisible() && p.preset == i);
+    }
+    open(), open(), CHECK(!menu->isVisible()); // the name again
+    const auto mouse = [&](juce::Point<float> at) {
+        const auto now = juce::Time::getCurrentTime();
+        menu->mouseDown({ juce::Desktop::getInstance().getMainMouseSource(), at, juce::ModifierKeys::leftButtonModifier, 1, 0, 0, 0, 0, menu, menu, now, at, now, 1, false });
+    };
+    open();
+    const auto first = items()[gulp::presetGroups()[0].presets[0]]->getPosition().toFloat();
+    mouse({ first.x + 20, first.y - 8 }), CHECK(menu->isVisible()); // a group's name: stays
+    mouse({ (float) menu->getWidth() - 4, (float) menu->getHeight() - 4 }), CHECK(!menu->isVisible());
+    p.setCurrentProgram(gulp::presetGroups()[0].presets[0]), open();
+    CHECK(menu->keyPressed(juce::KeyPress(juce::KeyPress::downKey)) && menu->keyPressed(juce::KeyPress(juce::KeyPress::returnKey)) && p.preset == gulp::presetGroups()[0].presets[1] && !menu->isVisible());
+    // saving as before; the user's files are listed, load and are marked; many of them scroll
+    CHECK(p.saveUserPreset().existsAsFile());
+    p.setCurrentProgram(2), open(), all = items();
+    CHECK((int) all.size() == n + 1 && all.count(n) == 1);
+    dynamic_cast<juce::Button*>(all[n])->onClick();
+    CHECK(p.preset == -1 && p.presetName() == "user 01");
+    open(), CHECK(inverted(n)), menu->keyPressed(juce::KeyPress(juce::KeyPress::escapeKey));
+    for (int k = 2; k < 400; ++k) folder.getChildFile("user " + juce::String(k).paddedLeft('0', 2) + ".xml").replaceWithText("<GULP/>");
+    open(), all = items();
+    CHECK((int) all.size() == n + 399 && std::any_of(all.begin(), all.end(), [](auto& x) { return !x.second->isVisible(); }));
+    menu->keyPressed(juce::KeyPress(juce::KeyPress::endKey)), CHECK(items()[n + 398]->isVisible());
+    menu->keyPressed(juce::KeyPress(juce::KeyPress::homeKey)), CHECK(items()[gulp::presetGroups()[0].presets[0]]->isVisible());
+    folder.deleteRecursively();
+}
+
 static void testInteraction()
 {
     const auto folder = juce::File::getSpecialLocation(juce::File::tempDirectory).getNonexistentChildFile("gulp-ui", "", false);
@@ -1550,6 +1622,17 @@ int main(int argc, char** argv)
     ignoreXErrors();
 #endif
     const juce::ScopedJuceInitialiser_GUI gui;
+    if (argc == 3 && juce::String(argv[1]) == "--screenshot-menu")
+    {
+        Proc p;
+        p.setCurrentProgram(3), prepare(p, 48000, 512);
+        std::unique_ptr<juce::AudioProcessorEditor> e(p.createEditor());
+        dynamic_cast<juce::Button*>(find(*e, "preset"))->onClick();
+        const juce::File file = juce::File::getCurrentWorkingDirectory().getChildFile(argv[2]);
+        file.deleteFile();
+        juce::FileOutputStream out(file);
+        return out.openedOk() && juce::PNGImageFormat().writeImageToStream(e->createComponentSnapshot(e->getLocalBounds(), true, 2.0f), out) ? 0 : 1;
+    }
     if (argc >= 3 && juce::String(argv[1]) == "--screenshot")
         return screenshot(juce::File::getCurrentWorkingDirectory().getChildFile(argv[2]), juce::StringArray(argv + 3, argc - 3));
     testGoldens();
@@ -1572,6 +1655,7 @@ int main(int argc, char** argv)
     testEditorSizes();
     testTelemetry();
     testInteraction();
+    testPresetMenu();
     testDisplayNames();
     testInks();
     std::cout << (failures == 0 ? "All Gulp tests passed\n" : "Gulp tests FAILED\n");

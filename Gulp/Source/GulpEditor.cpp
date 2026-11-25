@@ -9,6 +9,7 @@
 // re-inks every pixel they drew from plates built once per image size, so nothing moves.
 #include "BinaryData.h"
 #include "Gulp.h"
+#include "PresetMenu.h"
 #include <cstring>
 #include <numeric>
 
@@ -250,9 +251,11 @@ struct Editor : AudioProcessorEditor, Timer
     Slider knobs[6];
     RateValue freeHz;
     Handle slope;
-    Key prev { "prev" }, next { "next" }, save { "save" }, slotA { "A" }, slotB { "B" }, invert { "invert" }, loop { "loop" }, ahead { "lookahead" }, free { "free" }, sync { "sync" }, down { "rate-" }, up { "rate+" }, peak { "peak" };
+    Key prev { "prev" }, next { "next" }, name { "preset" }, save { "save" }, slotA { "A" }, slotB { "B" }, invert { "invert" }, loop { "loop" }, ahead { "lookahead" }, free { "free" }, sync { "sync" }, down { "rate-" }, up { "rate+" }, peak { "peak" };
     Key triggerPrev { "trigger-" }, triggerNext { "trigger+" }, stereoPrev { "stereo-" }, stereoNext { "stereo+" };
     OwnedArray<Key> curves, colours;
+    PresetMenu menu;
+    Array<File> listed; // the user's files in it
     // Attachments after the components they drive, so they are destroyed first.
     std::vector<std::unique_ptr<AudioProcessorValueTreeState::SliderAttachment>> sliderAtt;
     std::vector<std::unique_ptr<ParameterAttachment>> keyAtt;
@@ -288,11 +291,12 @@ struct Editor : AudioProcessorEditor, Timer
 
         prev.onClick = [this] { proc.stepPreset(-1); };
         next.onClick = [this] { proc.stepPreset(1); };
+        name.onClick = [this] { showPresets(); }, name.setTitle("presets");
         save.onClick = [this] { proc.saveUserPreset(); };
         slotA.onClick = [this] { proc.selectAb(0); };
         slotB.onClick = [this] { proc.selectAb(1); };
         peak.onClick = [this] { proc.feed.held = 0; };
-        for (auto [key, x, w] : { std::tuple { &prev, 30, 2 }, { &next, 62, 2 }, { &save, 67, 4 }, { &slotA, 76, 1 }, { &slotB, 78, 1 } })
+        for (auto [key, x, w] : { std::tuple { &prev, 30, 2 }, { &name, 33, 29 }, { &next, 62, 2 }, { &save, 67, 4 }, { &slotA, 76, 1 }, { &slotB, 78, 1 } })
             layer.addAndMakeVisible(*key), key->setBounds(cells(x, 1, w, 1));
         // Keys never toggle themselves: the attachment sets them from the parameter, a click only asks for a value.
         const auto bind = [&](const char* id, std::vector<Key*> keys) {
@@ -342,6 +346,10 @@ struct Editor : AudioProcessorEditor, Timer
                     to = f;
             hz->setValueAsCompleteGesture(to);
         };
+        layer.addChildComponent(menu);
+        menu.cw = cw, menu.ch = ch, menu.drop = 0.5f; // under the header's rule
+        menu.font = [](float size, bool bold) { return mono(size, bold); };
+        menu.onChoose = [this](int id) { id < gulp::numPresets ? proc.setCurrentProgram(id) : proc.loadUserPreset(listed[id - gulp::numPresets]); };
         down.onClick = [step] { step(-1); };
         up.onClick = [step] { step(1); };
         for (auto [key, r] : { std::pair { &invert, cells(invertX, TY, 8, 1) }, { &loop, cells(AX, secondaryY, 6, 1) }, { &ahead, cells(audioX, secondaryY, 11, 1) }, { &peak, cells(AX, TY, 20, 1) },
@@ -376,6 +384,27 @@ struct Editor : AudioProcessorEditor, Timer
     }
 
     static int hoverOf(const Key& before, const Key& after) { return before.isMouseOver() ? -1 : after.isMouseOver() ? 1 : 0; }
+    // The preset list: the factory's groups, then the user's files.
+    void showPresets()
+    {
+        if (menu.isVisible()) return menu.close();
+        std::vector<PresetMenu::Group> groups;
+        for (const auto& g : gulp::presetGroups())
+        {
+            groups.push_back({ g.name, {} });
+            for (int i : g.presets) groups.back().items.push_back({ proc.getProgramName(i), i });
+        }
+        listed = proc.userPresets();
+        groups.push_back({ "user", {} });
+        int current = proc.preset;
+        for (int k = 0; k < listed.size(); ++k)
+        {
+            const auto user = listed[k].getFileNameWithoutExtension();
+            groups.back().items.push_back({ user, gulp::numPresets + k });
+            if (proc.preset < 0 && user == proc.presetName()) current = gulp::numPresets + k;
+        }
+        menu.open(std::move(groups), current, { 2, 2, C - 4, R - 5 });
+    }
     void timerCallback() override
     {
         std::vector<float> now;

@@ -46,6 +46,8 @@ struct Preset
     float v[numParams]; // plain values in ID order, choices and switches by index
 };
 extern const Preset presets[numPresets];
+struct PresetGroup { const char* name; std::vector<int> presets; };
+const std::vector<PresetGroup>& presetGroups(); // the preset list's: every factory preset once, by what it does
 } // namespace gulp
 
 class GulpProcessor : public juce::AudioProcessor, private juce::AudioProcessorValueTreeState::Listener, private juce::Timer
@@ -86,6 +88,8 @@ public:
     juce::File presetFolder() const;
     void stepPreset(int delta); // through the factory presets, then the user files
     juce::File saveUserPreset();
+    void loadUserPreset(const juce::File&);
+    juce::Array<juce::File> userPresets() const; // in the arrows' order
     juce::String presetName() const;
     std::atomic<int> preset { 0 };
     int abSlot() const { return ab.load(); }

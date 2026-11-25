@@ -585,6 +585,12 @@ const gulp::Preset gulp::presets[] = {
     { "fx \xc2\xb7 grit gate", { 0, 1, 2, 2, 5, 0, 0, 100, 0, 0, -24, 0, 120, -2, 7, 50, 0, 0, 0 } },
 };
 
+const std::vector<gulp::PresetGroup>& gulp::presetGroups()
+{
+    static const std::vector<PresetGroup> groups { { "pump", { 0, 3, 1, 2 } }, { "kick", { 4, 5 } }, { "bus", { 7, 8 } }, { "fx", { 6, 9 } } };
+    return groups;
+}
+
 void GulpProcessor::setAll(const float* normalised)
 {
     for (int k = 0; k < gulp::numParams; ++k)
@@ -621,8 +627,7 @@ String GulpProcessor::presetName() const
 
 void GulpProcessor::stepPreset(int delta)
 {
-    auto files = presetFolder().findChildFiles(File::findFiles, false, "*.xml");
-    files.sort();
+    const auto files = userPresets();
     const auto current = presetName();
     const int count = gulp::numPresets + files.size();
     int at = preset;
@@ -631,8 +636,20 @@ void GulpProcessor::stepPreset(int delta)
     at = (jmax(0, at) + delta + count) % count; // an unknown position steps from "init"
     if (at < gulp::numPresets)
         return setCurrentProgram(at);
-    if (const auto xml = parseXML(files[at - gulp::numPresets]); xml != nullptr && xml->hasTagName("GULP"))
-        applyParams(*xml), setIdentity(-1, files[at - gulp::numPresets].getFileNameWithoutExtension());
+    loadUserPreset(files[at - gulp::numPresets]);
+}
+
+Array<File> GulpProcessor::userPresets() const
+{
+    auto files = presetFolder().findChildFiles(File::findFiles, false, "*.xml");
+    files.sort();
+    return files;
+}
+
+void GulpProcessor::loadUserPreset(const File& file)
+{
+    if (const auto xml = parseXML(file); xml != nullptr && xml->hasTagName("GULP"))
+        applyParams(*xml), setIdentity(-1, file.getFileNameWithoutExtension());
 }
 
 File GulpProcessor::saveUserPreset()

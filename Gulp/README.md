@@ -1,6 +1,6 @@
 # gulp
 
-Sidechain pumping and ducking for dance music, by daveydidit. Version 0.4.1. Zero latency unless audio-trigger lookahead
+Sidechain pumping and ducking for dance music, by daveydidit. Version 0.4.2. Zero latency unless audio-trigger lookahead
 is on (5 ms), mono or stereo, with an optional mono or stereo sidechain input. One screen, no menus: 12 curves, 10 factory presets, user
 presets and A/B.
 
@@ -12,6 +12,12 @@ does with the mode: **vol** (level), **lows** / **highs** (only below / above th
 channels, the mid or the side. **soothe** rounds the curve's hard corners (the same blur in the graph and the audio), so
 the attack eases in; MIDI/audio envelopes also taper to full level at the cycle boundaries. Changes to a soothed
 shape crossfade over 20 ms to avoid automation steps; soothe at zero preserves the original DSP.
+
+## 0.4.2
+
+- The preset list: a click on the preset's name lists every factory preset in short groups, the current one inverted, then the user's. A click or return loads and
+closes; esc, the name again or a click outside closes; the arrow keys walk the list. The list is the same in gulp, silt, snap and crumb
+(`PresetMenu.h`). Nothing else changed.
 
 ## 0.4.1
 
