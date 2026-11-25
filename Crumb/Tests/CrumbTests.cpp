@@ -336,7 +336,7 @@ static std::vector<double> spectrum(const Settings& s, double freq, double fs = 
         }
     else if (reference == 1)
         for (int i = 0; i < size + skip; ++i)
-            y.push_back((float) (amp * std::sin(w * std::floor(i * s[0].second / fs) * fs / s[0].second)));
+            y.push_back((float) (amp * std::sin(w * std::floor(i * (double) s[0].second / fs) * fs / s[0].second)));
     else
     {
         Proc p;
@@ -1005,9 +1005,13 @@ static void testCodec()
         prepare(q, fs, 256, 2), load(q, m);
         CHECK(q.getLatencySamples() == want);
         // mix 0 and bypass: the latency-aligned input, exactly
-        set(q, q.apvts.getParameter("mix")->paramID.toRawUTF8(), 0), set(q, "loss", 80), prepare(q, fs, 256, 2);
-        const auto y = run(q, 256, 2, 3 * want, [fs](int i) { return signal(i, fs); });
-        for (int i = want; i < 3 * want; ++i) CHECK(y[(size_t) i] == signal(i - want, fs));
+        for (bool bypassed : { false, true })
+        {
+            set(q, { { "mix", bypassed ? 100.0f : 0.0f }, { "bypass", bypassed ? 1.0f : 0.0f }, { "loss", 80 } }), prepare(q, fs, 256, 2);
+            const double rate = fs;
+            const auto y = run(q, 256, 2, 3 * want, [rate](int i) { return signal(i, rate); });
+            for (int i = want; i < 3 * want; ++i) CHECK(y[(size_t) i] == signal(i - want, rate));
+        }
     }
     // More loss throws away more: the residual grows, the energy kept (auto off) falls; auto brings the level back.
     const auto render = [](const Settings& s, double rate = 44100, int seconds = 1) {
@@ -1186,7 +1190,7 @@ static void testBand()
 // filter), and the hashes of what 0.2.0 played: 0.3.0 loads it, keeps the parameters and sounds the same.
 static juce::String sha(const juce::MemoryOutputStream&);
 static float groove(int i);
-static juce::String playHash(Proc& p)
+[[maybe_unused]] static juce::String playHash(Proc& p)
 {
     prepare(p, 48000, 512, 2);
     juce::AudioBuffer<float> buffer(2, 512);
@@ -1205,7 +1209,7 @@ static juce::MemoryBlock v2Fixture()
 {
     return blob(R"(<?xml version="1.0" encoding="UTF-8"?> <CRUMB stateVersion="2" preset="18" ab="1" slotA="5;0.291666657,0.416666657,0,0,0.853275359,0.219999999,1,0.349999994,1,0,0.25,1,0.743482947,0.349999994,1,0.666666687,0" slotNameA=""><PARAM id="approxDev" value="0.0"/><PARAM id="approxOn" value="1.0"/><PARAM id="autoGain" value="1.0"/><PARAM id="bits" value="8.0"/><PARAM id="bypass" value="0.0"/><PARAM id="cutoff" value="1800.0"/><PARAM id="dcShift" value="0.0"/><PARAM id="dither" value="20.0"/><PARAM id="fOrder" value="1.0"/><PARAM id="fType" value="2.0"/><PARAM id="imagesOn" value="1.0"/><PARAM id="imagesShift" value="0.0"/><PARAM id="jitter" value="0.0"/><PARAM id="mix" value="80.0"/><PARAM id="output" value="-2.0"/><PARAM id="preamp" value="10.0"/><PARAM id="rate" value="11025.0"/><PARAM id="reso" value="40.0"/></CRUMB>)");
 }
-static const char* const v2Hashes[] = { "7f8de87d275eeccf9f725e86dcb315a3a7b2b72c7522d10f8438b7b25c0796ef", "825925806d27227a109e96d879c513dd67cf52a8174dee1e02eb4305bb232acb" };
+[[maybe_unused]] static const char* const v2Hashes[] = { "7f8de87d275eeccf9f725e86dcb315a3a7b2b72c7522d10f8438b7b25c0796ef", "825925806d27227a109e96d879c513dd67cf52a8174dee1e02eb4305bb232acb" };
 static void testMigration()
 {
     Proc p;
@@ -1840,7 +1844,7 @@ static juce::String pixels(const juce::Image& image)
     return sha(m);
 }
 struct Golden { int program, channels; const char* hash; };
-static const Golden sounds[] = {
+[[maybe_unused]] static const Golden sounds[] = {
     { -2, 2, "6b4a7e3db119bd7953b329a5a71f07bf5c5e02f5050930ea45c399f2cc6a9e7f" },
     { -1, 2, "445d8085bf79a75d05fe72045b84b65e4c8aa564bd33a06d2f08e4b152a95311" },
     { -1, 1, "4119ae083e0464e315bb483ba720446203b872edbd4426f44fbb5bc78abb0597" },
@@ -1873,7 +1877,7 @@ static const Golden sounds[] = {
 };
 // Editor snapshots of the 0.3.0 wave UI, same environment gate as the audio.
 struct Shot { Variant variant; int percent; const char* hash; };
-static const Shot shots[] = {
+[[maybe_unused]] static const Shot shots[] = {
     { mainPage, 100, "9522d799a243ed0f9e2d2ef9f609f40694a7c5ac92a923ddbc9f71816e36d6a5" },
     { mainPage, 50, "c6f49a77c911c12661ab11d7c63dcb9fdc97515a908bcc02ec9f3abbc1e5d9fa" },
     { mainPage, 200, "ee8e0b1e5100efa5562883b0ad164098fc00e08d0037cf1cd5a9ba106d2d0cb9" },

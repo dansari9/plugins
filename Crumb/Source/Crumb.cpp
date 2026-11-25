@@ -32,8 +32,8 @@ AudioProcessorValueTreeState::ParameterLayout layout()
     const auto snap = [](float s, float e, float v) { return jlimit(s, e, std::round(v * 10) / 10 + 0.0f); };
     // Display text as on the panel ("26.0 kHz", "+12.0 dB", "35%"); typed text may use k for kHz.
     auto trim = [](float v) { return String(v, std::abs(v - std::round(v)) < 0.05f ? 0 : 1); };
-    auto text = [trim](const char* unit) {
-        return [unit = String(unit), trim](float v, int) {
+    auto text = [trim](const char* kind) {
+        return [unit = String(kind), trim](float v, int) {
             if (unit == "Hz")
                 return v >= 999.5f ? String(v / 1000, 1) + " kHz" : String(roundToInt(v)) + " Hz";
             if (unit == "gate")
