@@ -1,12 +1,12 @@
 # crumb
 
-A bit crusher and lossy codec by daveydidit. Version 0.4.0. Mono or stereo. Zero latency while the codec is off; while loss
+A bit crusher and lossy codec by daveydidit. Version 0.5.0. Mono or stereo. Zero latency while the codec is off; while loss
 or drop is up it reports one long frame (2048 samples at 44.1 / 48 kHz, 4096 at 88.2 / 96, 8192 above). One screen, 41 factory
 presets, user presets, A / B.
 
-Signal path: drive (0 … +48 dB) into a soft ADC clip → filter (pre) → **crush** (dither, quantizer and DAC with fixed vintage
-ladder errors → anti-alias lowpass → sample & hold on a jittered clock → anti-image lowpass → DC coupling) → gate → **loss** (frame
-codec → packet loss) → filter (post) → mix → output.
+Signal path: drive (0 … +48 dB) into a soft ADC clip → **crush** (dither, quantizer and DAC with fixed vintage
+ladder errors → anti-alias lowpass → sample & hold on a jittered clock → anti-image lowpass → DC coupling) → **loss** (frame codec →
+packet loss) → filter → mix → output.
 
 The crush stage is 0.2's, bit for bit: antiderivative antialiased clip, hold steps bandlimited with a minimum-phase BLEP, the
 virtual ADC reading through the same kernel, so the only aliasing is the emulated fold-down. Clean settings null.
@@ -23,10 +23,9 @@ virtual ADC reading through the same kernel, so the only aliasing is the emulate
 - **stereo**: sides coded and lost separately; `joint`: mid / side, lost together; `mono`: the sum.
 - **jitter** also rotates the codec's coefficients and wobbles its clock.
 
-## Filter, gate
+## Filter
 
-Low and high cut, Butterworth 6 … 96 dB / oct with resonant edges, before the crush or after the codec; `invert` cuts what lies between
-them. Both edges open is the input, bit for bit. The gate silences the wet path under its threshold.
+Low and high cut, Butterworth 6 … 96 dB / oct with resonant edges, after the codec. Both edges open is the input, bit for bit.
 
 ## Parameters
 
@@ -35,15 +34,13 @@ The IDs are frozen; the names on the panel and in the host are 0.4.0's.
 | ID | Control | Range | Default |
 | --- | --- | --- | --- |
 | `preamp` | drive | 0 … 48 dB | 0 dB |
-| `gate` | gate | −96 (off) … 0 dB | off |
 | `stereo` | (stereo mode) | stereo / joint / mono | stereo |
 | `bits` | bits | 0 (off), 1 … 24 | 12 |
-| `rate` | rate | 44 Hz … 44.1 kHz (log) | 26.04 kHz |
+| `rate` | rate | 44 Hz … 44.1 kHz (log); the dial turns down, 44.1 kHz at its left end | 26.04 kHz |
 | `jitter` | jitter | 0 … 100 % (up to ±3 % of the rate) | 0 % |
 | `dither` | dither | 0 … 100 % of ½ LSB | 0 % |
 | `approxOn`, `approxDev` | anti-alias | off, −100 … +100 % = cutoff Nyquist(rate) · 2^(±1 oct) | 0 % |
 | `imagesOn`, `imagesShift` | anti-image | off, 0 … 100 % = cutoff Nyquist(rate) · 2^(0 … 2 oct) | off |
-| `dcShift` | dc shift | off (mid-riser) / on (mid-tread) | off |
 | `loss`, `speed`, `drop` | loss, speed, packet loss | 0 … 100 % | 0, 100, 0 % |
 | `ear` | weighting | perceptual / flat | perceptual |
 | `fill` | packets | drop / repeat | drop |
@@ -51,11 +48,10 @@ The IDs are frozen; the names on the panel and in the host are 0.4.0's.
 | `lowCut`, `highCut` | low cut, high cut | 20 Hz … 20 kHz (log) | open |
 | `reso` | resonance | 0 … 100 % | 0 % |
 | `slope` | slope | 6, 12, 18, 24, 36, 48, 72, 96 dB / oct | 24 |
-| `fOrder` | position | pre / post | post |
-| `invert` | invert | off / on | off |
 | `mix` | mix | 0 … 100 % | 100 % |
 | `output` | output | −24 … +12 dB | 0 dB |
 | `bypass` | (the host's bypass, not on the panel) | on / off | off |
+| `gate`, `dcShift`, `fOrder`, `invert` | (gate, DC shift, filter position and invert until 0.4.0, not on the panel) | −96 (off) … 0 dB; off / on; pre / post; off / on | off, off, post, off |
 | `autoGain`, `auto` | (auto gain until 0.3.0, not on the panel) | on / off, 0 … 100 % | off, 100 % |
 | `fType`, `cutoff` | (0.2's filter, not on the panel) | off, lp, bp, hp, br; 20 Hz … 20 kHz | off |
 
@@ -63,15 +59,28 @@ The IDs are frozen; the names on the panel and in the host are 0.4.0's.
 slot or user preset that stored it on still runs it and sounds as it did; loading a factory preset or randomize turns it off. The
 factory presets have what it did to them baked in: drive's share exactly (mix and output), the codec's as a fixed output gain.
 
+**Gate, DC shift, position and invert** left the panel in 0.5.0 the same way: registered, at rest in a new instance, every factory
+preset and randomize; a session, A/B slot or user preset that stored another value runs it and sounds as it did.
+
+**rate** keeps its values: only the dial is reversed, in the editor. A host's lane, a stored session and its text are what they were.
+
 ## Editor
 
-One monospace character grid (132 × 41 cells, 1056 × 656 at 100 %): `crumb < preset > A B randomize`, the picture, and every control on
-one page by section (in · crush · loss · filter · out): two rows of dials, loss's and filter's `< name >` selectors stacked under
-their dials, the clip meters and the output's peak under out. A selector's slot is the longest of its names and a cell either
-side; its arrows click, wheel and key-step, and wrap. Dials: drag, double-click = default, click the value to type; past the end
-of bits, anti-alias and anti-image lies off. A click on the preset's name lists them all and saves.
+One monospace character grid (132 × 41 cells, 1056 × 656 at 100 %): `crumb < preset > A B randomize`, the picture under its own
+`< name >`, and every control on one page by section (in · crush · loss · filter · out, a rule down between them): two rows of
+dials, the `< name >` selectors beside the lower one, the clip meters and the output's peak under out. A selector's slot is the
+longest of its names and a cell either side; its arrows click, wheel and key-step, and wrap. Dials: drag, double-click = default,
+click the value to type; past the end of bits, anti-alias and anti-image lies off.
 
-**The picture** (`Source/Wave.h`) is drawn from what the audio thread wrote for every sample and nothing else: the dry input lined
+A click on the preset's name opens the list (`Source/PresetMenu.h`, the same in gulp, silt and snap): every factory preset in short
+groups, the user's files and save; the current one is inverted. A click or return loads; esc, the name or a click outside closes.
+
+Four pictures, one language: warm is what comes out, cool is what was there before. The choice is saved with the session and is no
+part of the sound. **wave** is below. **spectrum**: the output's bars, 40 Hz … 20 kHz, and over each what is missing up to the
+input's, capped. **steps**: the crush stage, 48 holds wide: what went into the converter and the steps that came out of it.
+**packets**: a bar a codec packet under its input's height; a repeat is bright, a lost one is its empty outline.
+
+**wave** (`Source/Wave.h`) is drawn from what the audio thread wrote for every sample and nothing else: the dry input lined
 up with the output (the dim ghost), the output itself (the outline in the ink), what the codec took away (the dots inside) and the
 codec's own decision for the frame the sample came from (a lost frame prints in the cool ink: flat when a gap, the repeat when
 held). While the codec runs a step is one of its frames, its true lowest and highest sample; otherwise the samples themselves are

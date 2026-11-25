@@ -309,7 +309,8 @@ struct Editor : AudioProcessorEditor, Timer
             k.onDragStart = [this, i] { gesture(i, true); };
             k.onDragEnd = [this, i] { gesture(i, false); };
             k.onValueChange = [this, i] { setKnob(i, knobs[i].getValue()); };
-            k.setBounds(cells(knobX(s) - 1, knobRow(s) - 1, 10, 6));
+            const bool tight = sections[s.section].pitch == 9; // two dials side by side share no cell
+            k.setBounds(cells(knobX(s) - (tight ? 0 : 1), knobRow(s) - 1, tight ? 9 : 10, 6));
             layer.addAndMakeVisible(k);
         }
         prev.onClick = [this] { proc.stepPreset(-1), zoom = automatic; };

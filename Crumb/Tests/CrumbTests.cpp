@@ -1289,6 +1289,13 @@ static juce::MemoryBlock v3Fixture()
     return blob(R"(<?xml version="1.0" encoding="UTF-8"?> <CRUMB stateVersion="3" preset="1" ab="1" slotA="39;0.375,0.208333328,1,0,0.71133244,0.0799999982,0,0.5,0,0,0,1,1,0.349999994,0.850000024,0.5,1,0.819999993,0.75,0.100000001,1,0,1,0.479166657,1,0.392030418,0.743482947,0.571428597,0,0.600000024" slotNameA="" editorWidth="1320"><PARAM id="approxDev" value="0.0"/><PARAM id="approxOn" value="1.0"/><PARAM id="auto" value="60.0"/><PARAM id="autoGain" value="1.0"/><PARAM id="bits" value="12.0"/><PARAM id="bypass" value="0.0"/><PARAM id="cutoff" value="11000.0"/><PARAM id="dcShift" value="0.0"/><PARAM id="dither" value="0.0"/><PARAM id="drop" value="8.0"/><PARAM id="ear" value="1.0"/><PARAM id="fOrder" value="1.0"/><PARAM id="fType" value="1.0"/><PARAM id="fill" value="1.0"/><PARAM id="gate" value="-96.0"/><PARAM id="highCut" value="20000.0"/><PARAM id="imagesOn" value="1.0"/><PARAM id="imagesShift" value="10.0"/><PARAM id="invert" value="0.0"/><PARAM id="jitter" value="4.0"/><PARAM id="keep" value="1.0"/><PARAM id="loss" value="30.0"/><PARAM id="lowCut" value="20.0"/><PARAM id="mix" value="100.0"/><PARAM id="output" value="-1.0"/><PARAM id="preamp" value="15.0"/><PARAM id="rate" value="26040.0"/><PARAM id="reso" value="8.0"/><PARAM id="slope" value="3.0"/><PARAM id="speed" value="40.0"/><PARAM id="stereo" value="1.0"/></CRUMB>)");
 }
 [[maybe_unused]] static const char* const v3Hashes[] = { "08bf8e3ba625613df74bf502b9f79e728b6d0b82865cd800f89b8e2c499bb6a1", "03a649c3c3725f97aaa7695f98db32838047c68c818c440175f991c92609112d" };
+// And from 0.4.0 itself, both slots with the controls 0.5.0 took off the panel: slot A dial tone with a gate at -30 dB, the
+// filter inverted and before the crush, DC shift on; slot B (current) 56k stream at 5 bits with the same three and a gate at -24 dB.
+static juce::MemoryBlock v4Fixture()
+{
+    return blob(R"(<?xml version="1.0" encoding="UTF-8"?> <CRUMB stateVersion="4" preset="28" ab="1" slotA="39;0.375,0.208333328,1,0,0.770010233,0.0799999982,0,0.5,0,0,0,0,1,0.349999994,1,0,0,0.819999993,0.75,0.100000001,1,0,1,0.6875,1,0.392030418,0.743482947,0.571428597,1,1" slotNameA=""><PARAM id="approxDev" value="0.0"/><PARAM id="approxOn" value="1.0"/><PARAM id="auto" value="100.0"/><PARAM id="autoGain" value="0.0"/><PARAM id="bits" value="5.0"/><PARAM id="bypass" value="0.0"/><PARAM id="cutoff" value="20000.0"/><PARAM id="dcShift" value="1.0"/><PARAM id="dither" value="0.0"/><PARAM id="drop" value="6.0"/><PARAM id="ear" value="0.0"/><PARAM id="fOrder" value="0.0"/><PARAM id="fType" value="0.0"/><PARAM id="fill" value="1.0"/><PARAM id="gate" value="-24.0"/><PARAM id="highCut" value="5000.0"/><PARAM id="imagesOn" value="0.0"/><PARAM id="imagesShift" value="0.0"/><PARAM id="invert" value="1.0"/><PARAM id="jitter" value="4.0"/><PARAM id="keep" value="0.0"/><PARAM id="loss" value="70.0"/><PARAM id="lowCut" value="200.0"/><PARAM id="mix" value="100.0"/><PARAM id="output" value="2.599999904632568"/><PARAM id="preamp" value="3.0"/><PARAM id="rate" value="6000.0"/><PARAM id="reso" value="0.0"/><PARAM id="slope" value="3.0"/><PARAM id="speed" value="40.0"/><PARAM id="stereo" value="0.0"/></CRUMB>)");
+}
+[[maybe_unused]] static const char* const v4Hashes[] = { "9feeb231e56a5e79f6e4c70bcf4481b8ecd8ddaccddef6e1b906c042ca573065", "5c68b13b9418e2aafa0ee4b1ba818b832fb93ff739aa4c7eeb0a0bc1602d1b75" };
 static void testMigration()
 {
     Proc p;
@@ -1347,6 +1354,49 @@ static void testMigration()
     Proc mine(folder);
     mine.loadUserPreset("mine"), CHECK(get(mine, "preamp") == 12 && get(mine, "autoGain") == 1 && get(mine, "auto") == 80 && get(mine, "loss") == 20);
     folder.deleteRecursively();
+}
+
+// The controls 0.5.0 took off the panel: registered as ever, held by sessions, slots and user presets that stored them (through
+// a save too, heard by testGoldens' hashes), at rest in every factory preset, a new instance and randomize.
+static void testRemoved()
+{
+    const Settings slotA { { "gate", -30 }, { "invert", 1 }, { "dcShift", 1 }, { "fOrder", 0 }, { "rate", 9000 } }, slotB { { "gate", -24 }, { "invert", 1 }, { "dcShift", 1 }, { "fOrder", 0 }, { "bits", 5 }, { "rate", 6000 } };
+    const Settings rest { { "gate", -96 }, { "invert", 0 }, { "dcShift", 0 }, { "fOrder", 1 } };
+    const auto holds = [](Proc& q, const Settings& want) {
+        for (auto& [id, v] : want)
+            if (std::abs(get(q, id) - v) > 1e-3f * std::max(1.0f, std::abs(v))) return false;
+        return true;
+    };
+    Proc fresh;
+    CHECK(holds(fresh, rest));
+    Proc a, c;
+    juce::MemoryBlock m, m2;
+    load(a, v4Fixture());
+    CHECK(a.abSlot() == 1 && a.getCurrentProgram() == 28 && holds(a, slotB) && a.viz == 0);
+    a.selectAb(0), CHECK(holds(a, slotA)), a.selectAb(1);
+    a.getStateInformation(m), load(c, m), c.getStateInformation(m2);
+    CHECK(m == m2 && holds(c, slotB));
+    { // the editor leaves them alone, its filter's controls included
+        std::unique_ptr<juce::AudioProcessorEditor> e(c.createEditor());
+        dynamic_cast<juce::Timer&>(*e).timerCallback();
+        CHECK(holds(c, slotB));
+    }
+    c.selectAb(0), CHECK(holds(c, slotA));
+    for (int i = 0; i < crumb::numPresets; ++i) load(c, m), c.setCurrentProgram(i), CHECK(holds(c, rest));
+    for (int k = 0; k < 30; ++k) load(c, m), c.randomize(k), CHECK(holds(c, rest));
+    c.selectAb(0), CHECK(holds(c, slotA)); // the other slot keeps its own
+    const auto folder = juce::File::getSpecialLocation(juce::File::tempDirectory).getNonexistentChildFile("crumb-v4", "", false);
+    folder.createDirectory(), folder.getChildFile("mine.xml").replaceWithText("<CRUMB stateVersion='4'><PARAM id='gate' value='-40'/><PARAM id='invert' value='1'/><PARAM id='dcShift' value='1'/><PARAM id='fOrder' value='0'/><PARAM id='lowCut' value='300'/></CRUMB>");
+    Proc mine(folder);
+    mine.loadUserPreset("mine"), CHECK(holds(mine, { { "gate", -40 }, { "invert", 1 }, { "dcShift", 1 }, { "fOrder", 0 }, { "lowCut", 300 } }));
+    folder.deleteRecursively();
+    // and they run: each one alone changes what a loaded session plays
+    for (auto& [id, v] : rest)
+    {
+        Proc x, y;
+        load(x, v4Fixture()), load(y, v4Fixture()), set(y, id, v);
+        CHECK(playHash(x) != playHash(y));
+    }
 }
 
 // 0.3.0's mix and output of every preset that auto gain (on by default until then) turned down or up: 0.4.0 bakes that in.
@@ -1442,7 +1492,7 @@ static void testWave()
     }
     z.build(256, 3, false, 0, 40000);
     std::map<int, std::pair<int, int>> dots; // per column: dots above and below the middle
-    for (auto [k, row] : z.hot) ++(row < 24 ? dots[k].first : dots[k].second);
+    for (auto [k, row] : z.hot) ++(row < 32 ? dots[k].first : dots[k].second);
     for (int k = 0; k < crumb::Wave::columns; ++k)
     {
         const int from = (40000 / 256 - 84 + k / 3) * 256, to = from + 256;
@@ -1453,7 +1503,7 @@ static void testWave()
     w.clear(), w.build(256, 3, false, 0), CHECK(w.hot.empty());
     // silence, and no audio at all: one flat line, no ghost fill, nothing taken
     w.clear(), w.build(256, 3, false, 0);
-    for (auto [k, row] : w.line) CHECK(row == 23 || row == 24);
+    for (auto [k, row] : w.line) CHECK(row == 31 || row == 32);
     CHECK(w.line.size() == 2 * crumb::Wave::columns && w.lost.empty() && w.taken.empty() && w.water.empty());
 }
 
@@ -1603,19 +1653,19 @@ static void testInteraction()
         // Hit regions: the columns of 0.3.0 for crush, loss and low / high cut, two rows of dials.
         CHECK(cellsOf("A") == juce::Rectangle<int>(43, 1, 1, 1) && cellsOf("B") == juce::Rectangle<int>(45, 1, 1, 1) && cellsOf("randomize") == juce::Rectangle<int>(49, 1, 9, 1));
         // no page to open, no auto knob, no bypass button, no other slots, no reverb
-        for (auto* gone : { "C", "D", "verb", "more", "on", "auto", "autoGain", "bypass", "fType", "cutoff" }) CHECK(find(*e, gone) == nullptr);
-        const std::tuple<const char*, const char*, int, int> dials[] = { { "preamp", "drive", 3, 21 }, { "gate", "gate", 3, 28 }, { "bits", "bits", 15, 21 }, { "rate", "rate", 26, 21 }, { "jitter", "jitter", 37, 21 }, { "dither", "dither", 15, 28 },
-            { "approxDev", "anti-alias", 26, 28 }, { "imagesShift", "anti-image", 37, 28 }, { "loss", "loss", 48, 21 }, { "speed", "speed", 58, 21 }, { "drop", "packet loss", 68, 21 }, { "lowCut", "low cut", 79, 21 }, { "highCut", "high cut", 89, 21 },
-            { "reso", "resonance", 99, 21 }, { "mix", "mix", 110, 21 }, { "output", "output", 120, 21 } };
+        for (auto* gone : { "C", "D", "verb", "more", "on", "auto", "autoGain", "bypass", "fType", "cutoff", "gate", "dcShift-", "dcShift+", "fOrder-", "fOrder+", "invert-", "invert+" }) CHECK(find(*e, gone) == nullptr);
+        const std::tuple<const char*, const char*, int, int> dials[] = { { "preamp", "drive", 3, 24 }, { "bits", "bits", 15, 24 }, { "rate", "rate", 26, 24 }, { "jitter", "jitter", 37, 24 }, { "dither", "dither", 15, 31 },
+            { "approxDev", "anti-alias", 26, 31 }, { "imagesShift", "anti-image", 37, 31 }, { "loss", "loss", 50, 24 }, { "speed", "speed", 59, 24 }, { "drop", "packet loss", 68, 24 }, { "lowCut", "low cut", 79, 24 }, { "highCut", "high cut", 89, 24 },
+            { "reso", "resonance", 99, 24 }, { "mix", "mix", 112, 24 }, { "output", "output", 121, 24 } };
         // `< name >`: longest name + a cell either side + the arrows, for every selector.
-        const std::tuple<const char*, const char*, juce::StringArray, int, int> selectors[] = { { "stereo", "stereo", { "stereo", "joint", "mono" }, 3, 36 }, { "dcShift", "dc shift", { "off", "on" }, 32, 36 },
-            { "ear", "weighting", { "perceptual", "flat" }, 61, 30 }, { "fill", "packets", { "drop", "repeat" }, 61, 33 }, { "keep", "delta", { "off", "on" }, 61, 36 },
-            { "slope", "slope", { "6 dB", "12 dB", "18 dB", "24 dB", "36 dB", "48 dB", "72 dB", "96 dB" }, 94, 30 }, { "fOrder", "position", { "pre", "post" }, 94, 33 }, { "invert", "invert", { "off", "on" }, 94, 36 } };
-        juce::StringArray all { "prev", "preset", "next", "A", "B", "randomize" };
+        const std::tuple<const char*, const char*, juce::StringArray, int, int> selectors[] = { { "stereo", "stereo", { "stereo", "joint", "mono" }, 3, 34 },
+            { "ear", "weighting", { "perceptual", "flat" }, 61, 32 }, { "fill", "packets", { "drop", "repeat" }, 61, 34 }, { "keep", "delta", { "off", "on" }, 61, 36 },
+            { "slope", "slope", { "6 dB", "12 dB", "18 dB", "24 dB", "36 dB", "48 dB", "72 dB", "96 dB" }, 93, 34 } };
+        juce::StringArray all { "prev", "preset", "next", "A", "B", "randomize", "viz-", "viz", "viz+" };
         for (auto& [id, label, x, y] : dials)
         {
             all.add(id);
-            CHECK(cellsOf(id) == juce::Rectangle<int>(x, y, 10, 6) && dynamic_cast<juce::Slider*>(find(*e, id))->getTitle() == label);
+            CHECK(cellsOf(id) == juce::Rectangle<int>(x, y, (x >= 50 && x < 70) || x > 110 ? 9 : 10, 6) && dynamic_cast<juce::Slider*>(find(*e, id))->getTitle() == label);
         }
         for (auto& [id, label, names, x, y] : selectors)
         {
@@ -1633,7 +1683,8 @@ static void testInteraction()
             CHECK(c != nullptr && c->isVisible() && c->getParentComponent()->getLocalBounds().contains(c->getBoundsInParent()));
             for (int j = i + 1; j < all.size(); ++j) CHECK(!c->getBoundsInParent().intersects(find(*e, all[j])->getBoundsInParent()));
         }
-        CHECK(find(*e, "bits")->getParentComponent()->getNumChildComponents() == all.size() && all.size() == 6 + 16 + 16);
+        CHECK(find(*e, "bits")->getParentComponent()->getNumChildComponents() == all.size() + 1 && all.size() == 9 + 15 + 10); // and the preset list, closed
+        CHECK(!find(*e, "presetMenu")->isVisible() && cellsOf("viz-") == juce::Rectangle<int>(3, 4, 2, 1) && cellsOf("viz") == juce::Rectangle<int>(5, 4, 8, 1) && cellsOf("viz+") == juce::Rectangle<int>(13, 4, 2, 1));
         for (auto& [idc, label, x, y] : dials)
         {
             const juce::String id = idc;
@@ -1655,7 +1706,7 @@ static void testInteraction()
                                                                                       1, 0, 0, 0, 0, slider, slider, time, from, time, clicks, pos != from); };
             slider->mouseDown(event(from)), slider->mouseDrag(event(to)), slider->mouseUp(event(to));
             CHECK(std::abs(slider->getValue() - before - 0.2 * slider->getRange().getLength()) < 0.01);
-            CHECK(id == "bits" || id == "approxDev" || id == "imagesShift" || std::abs(param->getValue() - 0.5f) < 0.011f);
+            CHECK(id == "bits" || id == "approxDev" || id == "imagesShift" || std::abs(param->getValue() - (id == "rate" ? 0.1f : 0.5f)) < 0.011f); // rate turns down
             slider->mouseDoubleClick(event(from, 2));
             CHECK(id == "imagesShift" ? get(p, "imagesOn") == 0 : param->getValue() == param->getDefaultValue());
             timer.timerCallback();
@@ -1699,6 +1750,248 @@ static void testInteraction()
     folder.deleteRecursively();
 }
 
+// Rate turns down: full left is the full rate, full right the lowest; the parameter, its text and what a session, a preset or
+// a lane stored are as they were (0 = 44 Hz, 1 = 44.1 kHz).
+static void testRateDial()
+{
+    Proc p;
+    auto* param = p.apvts.getParameter("rate");
+    CHECK(param->convertTo0to1(44) == 0 && param->convertTo0to1(44100) == 1 && param->getDefaultValue() == param->convertTo0to1(26040));
+    std::unique_ptr<juce::AudioProcessorEditor> e(p.createEditor());
+    auto& timer = dynamic_cast<juce::Timer&>(*e);
+    auto* dial = dynamic_cast<juce::Slider*>(find(*e, "rate"));
+    dial->setValue(dial->getMinimum(), juce::sendNotificationSync), CHECK(get(p, "rate") == 44100 && dial->getTextFromValue(0) == "44.1 kHz");
+    dial->setValue(dial->getMaximum(), juce::sendNotificationSync), CHECK(get(p, "rate") == 44 && dial->getTextFromValue(0) == "44 Hz");
+    float last = 1e9f;
+    for (double v = 0; v <= 1; v += 0.05) dial->setValue(v, juce::sendNotificationSync), CHECK(get(p, "rate") < last), last = get(p, "rate");
+    param->setValueNotifyingHost(0.25f), timer.timerCallback(); // a host's lane: the dial follows, the value stays
+    CHECK(std::abs(dial->getValue() - 0.75) < 1e-4 && std::abs(param->getValue() - 0.25f) < 1e-3f);
+    load(p, v4Fixture()), timer.timerCallback();
+    CHECK(get(p, "rate") == 6000 && std::abs(dial->getValue() - (1 - param->convertTo0to1(6000))) < 1e-5);
+    dial->setValue(dial->getValueFromText("11k"), juce::sendNotificationSync), CHECK(get(p, "rate") == 11000);
+    dial->setValue(dial->getDoubleClickReturnValue(), juce::sendNotificationSync), CHECK(get(p, "rate") == 26040);
+}
+
+// The other pictures, from the samples alone.
+static void testPictures()
+{
+    // spectrum: a bar's height is the output's level there, the cap over it the input's; silence is one row of dots
+    const auto tops = [](const crumb::Wave::Dots& dots) {
+        std::map<int, int> top; // bar -> height
+        for (auto [x, y] : dots) top[x / 4] = std::max(top[x / 4], crumb::Wave::rows - y);
+        return top;
+    };
+    const auto bar = [](double hz) { return (int) (crumb::Wave::bars * std::log(hz / 40) / std::log(500.0)); };
+    for (double fs : { 44100.0, 48000.0, 96000.0, 192000.0 })
+    {
+        crumb::Wave w;
+        for (int i = 0; i < 40000; ++i)
+            w.add((float) (0.25 * std::sin(2 * juce::MathConstants<double>::pi * 500 * i / fs) + 0.25 * std::sin(2 * juce::MathConstants<double>::pi * 8000 * i / fs)),
+                  (float) (0.25 * std::sin(2 * juce::MathConstants<double>::pi * 500 * i / fs)), 0, 0);
+        w.spectrum(fs);
+        auto line = tops(w.line), caps = tops(w.ghost);
+        CHECK(std::abs(w.after[bar(500)] - 59.96) < 0.8 && w.after[bar(8000)] < 1 && std::abs(w.before[bar(8000)] - 59.96) < 0.8); // 0.25 is -12 dBFS: the top
+        CHECK(line[bar(500)] >= 60 && line[bar(8000)] == 1 && caps[bar(8000)] >= 60 && caps.count(bar(500)) == 0 && !w.taken.empty());
+        for (auto [x, y] : w.taken) CHECK(std::abs(x / 4 - bar(8000)) <= 2);
+        for (int k = 0; k < 60; ++k) w.add(0, 0, 0, 0);
+        const double was = w.after[bar(500)];
+        w.spectrum(fs), CHECK(w.after[bar(500)] >= was - 1.5 - 1e-9);
+        w.clear(), w.spectrum(fs);
+        CHECK(w.line.size() == 63 * 3 && w.ghost.empty() && w.taken.empty() && w.lost.empty() && w.hot.empty());
+    }
+    // steps: the held values are flat runs that stand on the rows of their levels; what went in is the curve around them
+    crumb::Wave h;
+    const auto in = [](int i) { return 0.5f * (float) std::sin(0.02 * i); };
+    for (int i = 0; i < 20000; ++i) h.add(0, 0, 0, 0, 0, 0, in(i), in(i - i % 12));
+    h.steps(48000, 4000);
+    CHECK(std::abs(h.peak - 0.5f) < 0.01f && h.lost.empty() && h.hot.empty() && !h.taken.empty());
+    std::map<int, std::set<int>> rows; // column -> the rows of the step
+    for (auto [x, y] : h.line) rows[x].insert(y);
+    int flat = 0, risers = 0;
+    for (int k = 0; k < crumb::Wave::columns; ++k) flat += rows[k].size() == 2, risers += rows[k].size() > 4;
+    CHECK(flat > 190 && risers >= 30 && risers <= 49); // 48 holds across
+    for (auto [x, y] : h.ghost) CHECK(std::abs((crumb::Wave::middle - y) - std::floor((double) h.state[(size_t) (4 * x)] * 0.92 / h.peak * 31 + 0.5)) <= 3);
+    h.clear(), h.steps(48000, 4000);
+    for (auto [x, y] : h.line) CHECK(y == 31 || y == 32);
+    for (auto [x, y] : h.ghost) CHECK(y == 32);
+    CHECK(h.taken.empty());
+    // packets: a bar each, kept, repeated or lost as marked, on the codec's count; tall as the samples
+    crumb::Wave q;
+    for (int i = 0; i < 100000; ++i) q.add(0.5f, i / 1000 % 3 == 0 ? 0.25f : 0.5f, 0, (uint8_t) (i / 1000 % 10 == 4 ? 1 : i / 1000 % 10 == 7 ? 2 : 0));
+    q.packets(1000, 100000);
+    std::map<int, int> kept, repeated, hollow;
+    for (auto [x, y] : q.line) CHECK(x % 6 < 5), ++kept[x / 6];
+    for (auto [x, y] : q.lost) ++repeated[x / 6];
+    for (auto [x, y] : q.taken) ++hollow[x / 6];
+    for (int b = 0; b < crumb::Wave::packs; ++b)
+    {
+        const int n = 100 - crumb::Wave::packs + b, kind = n % 10 == 4 ? 1 : n % 10 == 7 ? 2 : 0;
+        const int full = 5 * 2 * 29, half = 5 * 2 * 14;
+        CHECK(kept[b] == (kind != 0 ? 0 : n % 3 == 0 ? half : full) && repeated[b] == (kind != 2 ? 0 : n % 3 == 0 ? half : full));
+        CHECK(kind == 1 ? hollow[b] == 2 * (2 * 29 + 3) : n % 3 == 0 ? hollow[b] > 50 : hollow[b] == 0); // lost: an outline
+    }
+    q.clear(), q.packets(1000, 100000);
+    CHECK(q.line.size() == 42 * 5 * 2 && q.lost.empty() && q.taken.empty());
+
+    // in the editor: the stepper goes round them, each is the real signal's and still without it; the session keeps the choice,
+    // presets, A / B, randomize and user presets do not touch it
+    const juce::Rectangle<int> picture(24, 80, 1008, 256);
+    Proc p;
+    p.scope.clock = testClock, testMs = 0;
+    p.setCurrentProgram(28), prepare(p, 48000, 512, 2);
+    std::unique_ptr<juce::AudioProcessorEditor> e(p.createEditor());
+    auto& timer = dynamic_cast<juce::Timer&>(*e);
+    timer.stopTimer();
+    const auto shot = [&] { return pixels(e->createComponentSnapshot(picture)); };
+    const auto press = [&](const char* id) { dynamic_cast<juce::Button*>(find(*e, id))->onClick(), timer.timerCallback(); };
+    std::set<juce::String> stills, moving;
+    for (int mode = 0; mode < crumb::numViz; ++mode)
+    {
+        CHECK(p.viz == mode);
+        for (int k = 0; k < 10; ++k) testMs += 1000.0 / 30, timer.timerCallback();
+        const auto still = shot();
+        testMs += 3000, timer.timerCallback();
+        CHECK(shot() == still);
+        std::set<juce::String> frames;
+        for (int f = 0; f < 12; ++f)
+        {
+            run(p, 512, 2, 1600, [f](int i) { return groove(f * 1600 + i); }), testMs += 1000.0 / 30, timer.timerCallback();
+            if (f > 2) frames.insert(shot()); // past the codec's latency
+        }
+        CHECK(frames.size() > 5 && frames.count(still) == 0);
+        const auto playing = shot();
+        for (int k = 0; k < 10; ++k) testMs += 1000.0 / 30, timer.timerCallback();
+        CHECK(shot() == still); // stopped: as before it played
+        stills.insert(still), moving.insert(playing);
+        if (mode < 3) press("viz+");
+    }
+    CHECK(stills.size() == 4 && moving.size() == 4);
+    press("viz+"), CHECK(p.viz == 0);
+    press("viz-"), CHECK(p.viz == 3);
+    CHECK(find(*e, "viz+")->keyPressed(juce::KeyPress(juce::KeyPress::downKey)) && p.viz == 2);
+    press("viz"), CHECK(p.viz == 3);
+    p.setCurrentProgram(5), p.randomize(4), p.selectAb(1), p.setCurrentProgram(9), p.selectAb(0);
+    CHECK(p.viz == 3);
+    juce::MemoryBlock m;
+    p.getStateInformation(m);
+    Proc q2;
+    load(q2, m), CHECK(q2.viz == 3);
+    load(q2, v3Fixture()), CHECK(q2.viz == 0); // an older session: the wave
+    for (auto* t : { "9", "-1", "x" }) load(q2, blob(juce::String("<CRUMB viz=\"") + t + "\"/>")), CHECK(q2.viz >= 0 && q2.viz < crumb::numViz);
+    // what the crush stage is fed and holds is in the feed: with nothing crushed it is the input, at 4 bits a hold is 16 levels
+    Proc c;
+    set(c, cleanCrush), set(c, "rate", 44100), prepare(c, 44100, 512, 1);
+    const auto y = run(c, 512, 1, 4096, [](int i) { return 0.4f * (float) std::sin(0.03 * i); });
+    for (size_t i = 100; i < 4096; ++i) CHECK(std::abs(c.scope.pre[i].load() - 0.4f * (float) std::sin(0.03 * (double) i)) < 1e-6f && std::abs(c.scope.held[i].load() - c.scope.pre[i].load()) < 1e-6f);
+    Proc d;
+    set(d, { { "bits", 4 }, { "rate", 2000 }, { "approxOn", 0 } }), prepare(d, 48000, 512, 1);
+    run(d, 512, 1, 9600, [](int i) { return 0.4f * (float) std::sin(0.003 * i); });
+    int changes = 0;
+    for (size_t i = 4801; i < 9600; ++i) changes += std::abs(d.scope.held[i].load() - d.scope.held[i - 1].load()) > 0.02f;
+    CHECK(changes > 15 && changes <= 200); // 2 kHz: a new value every 24 samples at most
+    CHECK(audioAllocations.exchange(0) == 0);
+}
+
+// A rule down between every two sections, the header rule's ink and weight, clear of every glyph beside it.
+static void testDividers()
+{
+    Proc p;
+    std::unique_ptr<juce::AudioProcessorEditor> e(p.createEditor());
+    const auto image = e->createComponentSnapshot(e->getLocalBounds());
+    const auto ink = image.getPixelAt(90, 22 * 16 + 8); // in's header rule, 1 px
+    CHECK(ink == juce::Colour(0xff2c2c2c));
+    std::set<int> found;
+    for (int x = 24; x < 1032; ++x)
+    {
+        bool whole = true;
+        for (int y = 23 * 16; y < 37 * 16; ++y) whole = whole && image.getPixelAt(x, y) == ink;
+        if (whole) found.insert(x);
+    }
+    CHECK((found == std::set<int> { 14 * 8 + 4, 48 * 8 + 4, 78 * 8 + 4, 110 * 8 + 4 } || found == std::set<int> { 14 * 8 + 3, 48 * 8 + 3, 78 * 8 + 3, 110 * 8 + 3 }));
+    for (int x : found)
+        for (int y = 23 * 16; y < 37 * 16; ++y)
+            for (int dx = 1; dx <= 5; ++dx)
+                for (int by : { -dx, dx })
+                {
+                    const auto c = image.getPixelAt(x + by, y); // paper, or the dials' glow on it: no text, no ring
+                    CHECK(std::max({ c.getRed(), c.getGreen(), c.getBlue() }) < 0x30);
+                }
+}
+
+// The preset list: a click on the name opens it, every factory preset once in its group, the current one marked; a click
+// loads and closes; esc, the name again or a click outside close it; keys walk it; the user's files and save are in it.
+static void testPresetMenu()
+{
+    const auto folder = juce::File::getSpecialLocation(juce::File::tempDirectory).getNonexistentChildFile("crumb-menu", "", false);
+    Proc p(folder);
+    std::set<int> listed;
+    int total = 0;
+    for (auto& g : crumb::presetGroups())
+    {
+        CHECK(g.presets.size() > 1 && juce::String(g.name) == juce::String(g.name).toLowerCase() && juce::String(g.name).length() <= 12);
+        for (int i : g.presets) listed.insert(i), ++total;
+    }
+    CHECK(total == crumb::numPresets && (int) listed.size() == crumb::numPresets);
+    std::unique_ptr<juce::AudioProcessorEditor> e(p.createEditor());
+    e->setVisible(true);
+    auto* menu = find(*e, "presetMenu");
+    const auto open = [&] { dynamic_cast<juce::Button*>(find(*e, "preset"))->onClick(); };
+    const auto items = [&] {
+        std::map<int, juce::Component*> m;
+        for (auto* c : menu->getChildren()) CHECK(m.emplace(c->getComponentID().substring(6).getIntValue(), c).second);
+        return m;
+    };
+    CHECK(!menu->isVisible());
+    open();
+    CHECK(menu->isVisible() && menu->getBounds() == menu->getParentComponent()->getLocalBounds());
+    auto all = items();
+    CHECK((int) all.size() == crumb::numPresets + 1 && all.count(999) == 1); // and save
+    for (auto& [id, c] : all)
+    {
+        CHECK(c->isVisible() && menu->getLocalBounds().contains(c->getBounds()) && c->getY() >= 64);
+        if (id < 999) CHECK(dynamic_cast<juce::Button*>(c)->getName() == p.getProgramName(id));
+        for (auto& [other, d] : all) CHECK(other == id || !c->getBounds().intersects(d->getBounds()));
+    }
+    for (int i = 0; i < crumb::numPresets; ++i) // each one loads, and the list closes; open, the current one is inverted
+    {
+        if (!menu->isVisible()) open();
+        dynamic_cast<juce::Button*>(items()[i])->onClick();
+        CHECK(!menu->isVisible() && p.getCurrentProgram() == i && p.preset == i);
+        open();
+        const auto r = items()[i]->getBounds();
+        const auto snap = menu->createComponentSnapshot(r);
+        CHECK(snap.getPixelAt(1, 1) == juce::Colour(0xffefe6d2) && menu->createComponentSnapshot(items()[(i + 1) % crumb::numPresets]->getBounds()).getPixelAt(1, 1) == juce::Colour(0xff0d0d0d));
+        menu->keyPressed(juce::KeyPress(juce::KeyPress::escapeKey)), CHECK(!menu->isVisible() && p.preset == i);
+    }
+    open(), open(), CHECK(!menu->isVisible()); // the name again
+    const auto mouse = [&](juce::Point<float> at) {
+        const auto now = juce::Time::getCurrentTime();
+        menu->mouseDown({ juce::Desktop::getInstance().getMainMouseSource(), at, juce::ModifierKeys::leftButtonModifier, 1, 0, 0, 0, 0, menu, menu, now, at, now, 1, false });
+    };
+    open(), mouse({ 100, 70 }), CHECK(menu->isVisible()); // inside, between the rows: stays
+    mouse({ 1000, 600 }), CHECK(!menu->isVisible());
+    // keys: down and return load the next one of the group; right goes to the next column
+    p.setCurrentProgram(0), open();
+    CHECK(menu->keyPressed(juce::KeyPress(juce::KeyPress::downKey)) && menu->keyPressed(juce::KeyPress(juce::KeyPress::returnKey)) && p.preset == crumb::presetGroups()[0].presets[1] && !menu->isVisible());
+    open(), menu->keyPressed(juce::KeyPress(juce::KeyPress::rightKey)), menu->keyPressed(juce::KeyPress(juce::KeyPress::returnKey));
+    CHECK(p.preset == 7);
+    // save, and the user's files: listed, loaded, marked; many of them scroll
+    open(), dynamic_cast<juce::Button*>(items()[999])->onClick();
+    CHECK(p.presetName() == "user 01" && folder.getChildFile("user 01.xml").existsAsFile());
+    p.setCurrentProgram(2), open(), dynamic_cast<juce::Button*>(items()[1000])->onClick(), CHECK(p.presetName() == "user 01" && get(p, "bits") == 8);
+    open(), CHECK(menu->createComponentSnapshot(items()[1000]->getBounds()).getPixelAt(1, 1) == juce::Colour(0xffefe6d2)), menu->keyPressed(juce::KeyPress(juce::KeyPress::escapeKey));
+    for (int k = 2; k < 200; ++k) folder.getChildFile("user " + juce::String(k).paddedLeft('0', 2) + ".xml").replaceWithText("<CRUMB/>");
+    open(), all = items();
+    CHECK(all.size() == 41 + 199 + 1 && std::any_of(all.begin(), all.end(), [](auto& x) { return !x.second->isVisible(); }));
+    menu->keyPressed(juce::KeyPress(juce::KeyPress::endKey)), CHECK(items()[999]->isVisible());
+    juce::MouseWheelDetails wheel;
+    wheel.deltaY = 1;
+    const auto now = juce::Time::getCurrentTime();
+    for (int k = 0; k < 100; ++k) menu->mouseWheelMove({ juce::Desktop::getInstance().getMainMouseSource(), {}, {}, 0, 0, 0, 0, 0, menu, menu, now, {}, now, 0, false }, wheel);
+    CHECK(items()[0]->isVisible());
+    folder.deleteRecursively();
+}
+
 // A 0.2 session in the editor: the filter's controls show its filter, and editing one moves it over.
 static void testLegacyEditor()
 {
@@ -1721,7 +2014,7 @@ static void testLegacyEditor()
 static void testMeter()
 {
     const juce::Colour hot(0xffff2424);
-    const juce::Rectangle<int> picture(24, 80, 1008, 192), light(888, 448, 144, 16), drive(888, 480, 144, 16), output(888, 528, 144, 16), peak(888, 576, 144, 16);
+    const juce::Rectangle<int> picture(24, 80, 1008, 256), light(896, 512, 136, 16), drive(896, 528, 136, 16), output(896, 544, 136, 16), peak(896, 576, 136, 16);
     Proc p;
     p.scope.clock = testClock, testMs = 0;
     set(p, cleanCrush), prepare(p, 48000, 512, 2);
@@ -1754,7 +2047,7 @@ static void testMeter()
     play({ { "preamp", 6 } }, 0.8f); // 1.6 x full scale: 4.2 dB off: the drive's meter and the crests
     CHECK(lit(picture) > 4 && lit(light) == 1 && lit(drive) == 4 && lit(output) == 0);
     play({ { "preamp", 48 } }, 0.8f);
-    CHECK(lit(drive) == 11); // the meter's end
+    CHECK(lit(drive) == 10); // the meter's end
     play({ { "preamp", 0 }, { "output", 3 } }, 0.95f, 40); // the output past 0 dBFS by 2.5 dB: its meter and the rails
     CHECK(lit(drive) == 0 && lit(output) >= 2 && lit(output) <= 3 && lit(light) == 1 && lit(picture.withHeight(16)) > 4);
     set(p, "output", 0); // held 0.6 s, then dark, while it plays on
@@ -1795,8 +2088,11 @@ static void testEditorState()
     const auto dialsMatch = [&] {
         timer.timerCallback();
         bool ok = true;
-        for (auto* id : { "preamp", "rate", "jitter", "loss", "speed", "drop", "mix", "output", "gate", "dither", "reso" })
-            ok = ok && std::abs(dynamic_cast<juce::Slider*>(find(ed, id))->getValue() - p.apvts.getParameter(id)->getValue()) < 1e-5;
+        for (auto* id : { "preamp", "rate", "jitter", "loss", "speed", "drop", "mix", "output", "dither", "reso" })
+        {
+            const double v = p.apvts.getParameter(id)->getValue();
+            ok = ok && std::abs(dynamic_cast<juce::Slider*>(find(ed, id))->getValue() - (juce::String(id) == "rate" ? 1 - v : v)) < 1e-5;
+        }
         return ok;
     };
     CHECK(dialsMatch());
@@ -1822,7 +2118,7 @@ static void testEditorState()
     CHECK(get(p, "rate") == 26040);
     // Exercise JUCE's actual mouse shortcuts, including its implicit Alt/Option single-click default reset.
     const auto mouseClick = [&](int modifiers, int clicks) {
-        knob->setValue(p.apvts.getParameter("rate")->convertTo0to1(9200), juce::sendNotificationSync);
+        knob->setValue(1 - p.apvts.getParameter("rate")->convertTo0to1(9200), juce::sendNotificationSync);
         const auto time = juce::Time::getCurrentTime();
         const juce::MouseEvent event(juce::Desktop::getInstance().getMainMouseSource(), { 30, 30 },
                                     juce::ModifierKeys(modifiers | juce::ModifierKeys::leftButtonModifier),
@@ -1869,12 +2165,13 @@ static float groove(int i)
 }
 
 // The screenshot fixture: 56k stream after a drum + bass loop, then one second of 30 fps editor frames. Variants: main,
-// clipping (driven hard, output up), quiet (no audio), crush (a crushed preset: the sample zoom).
-enum Variant { mainPage, clipping, quiet, crush };
+// clipping (driven hard, output up), quiet (no audio), crush (a crushed preset: the sample zoom), and the other pictures.
+enum Variant { mainPage, clipping, quiet, crush, spectrumOf, stepsOf, packetsOf };
 static std::unique_ptr<juce::AudioProcessorEditor> fixture(Proc& p, Variant variant = mainPage, int width = 1056)
 {
     p.setCurrentProgram(variant == crush ? 3 : SCREENSHOT_PRESET);
     if (variant == crush) set(p, { { "bits", 4 }, { "rate", 6000 } });
+    if (variant >= spectrumOf) p.viz = variant - spectrumOf + 1;
     if (variant == clipping) set(p, { { "preamp", 14 }, { "output", 12 } });
     prepare(p, 48000, 512, 2);
     p.scope.clock = testClock, testMs = 0;
@@ -2010,6 +2307,8 @@ static juce::String render(int program, int channels)
     {
         p.setCurrentProgram(program);
         for (auto& b : baked) if (b.program == program) set(p, { { "mix", b.mix }, { "output", b.output } }); // as 0.2 and 0.3 had it
+        if (program == 8 || program == 19) set(p, "dcShift", 1); // until 0.4
+        if (program == 16) set(p, "fOrder", 0);
     }
     else if (program == -3)
         load(p, v1Fixture());
@@ -2082,15 +2381,18 @@ struct Golden { int program, channels; const char* hash; };
     { 23, 2, "3dd38314799190f0b3a37c7cdacbc1465a9fc03864e2b7a1ba2d85def5c6e6e6" },
     { 24, 2, "4a59ca93339bccf65af8b3c5d2fead29d818041909037212529c3291d908666e" },
 };
-// Editor snapshots of the 0.4.0 wave UI, same environment gate as the audio.
+// Editor snapshots of the 0.5.0 UI, same environment gate as the audio.
 struct Shot { Variant variant; int percent; const char* hash; };
 [[maybe_unused]] static const Shot shots[] = {
-    { mainPage, 100, "b4bd1bbbb7be32a547991bfd6e1bb08c3aab7fa3b6ba96bebb864256a55843a3" },
-    { mainPage, 50, "9a260eb2935bff65ac8e9dbea6f3b856ae0eef9077915601fc9c3a7732202a5c" },
-    { mainPage, 200, "0ca994abc4efc2b70eafc25d1a9a2f92d02e5ad70ebda9d33bc76f30489b2c8b" },
-    { clipping, 100, "520190229da6b9096070aecec4972625c225d45a356537c1cdb30e82c93239f1" },
-    { quiet, 100, "a85b0094b40159e322cc3de3da498429900bc077599a529cc85e693ad54f1d6d" },
-    { crush, 100, "d4a4f48e6566c36d685ece1c133f0285a51f8de0c366d5e5a3f98c82ca71930d" },
+    { mainPage, 100, "78ba892f4b723df22fc005b8be664ee6f937617aabc910a6280f953fbf48bca5" },
+    { mainPage, 50, "2a08b59a39b5fda4e060498b0166f45726515fe33abae475f06b04e8ac8b6b48" },
+    { mainPage, 200, "bb3e0eb0a3882b9b706085b98fc1bb485fa1ee99a9d37e5c051774b9c5b88877" },
+    { clipping, 100, "edccb663cd51af262ebd9043278c81b83588e00b22dd26b953d5c3160752fac1" },
+    { quiet, 100, "40170b5647d8ee71f30a773338b412528b97ec669f51bd638e006804e91a7675" },
+    { spectrumOf, 100, "4c8bbc1a54792e284ad4553d5ef91593d703d10b1d6349d0fb18486139381594" },
+    { stepsOf, 100, "dd57131559b5f540aeeab319a808ef831aa2119ed7d07b086bf0264c09fb4500" },
+    { packetsOf, 100, "282aa9d3bc2e499152898ed816c1ed0fd09e60320a4fd760c744a97ed2709946" },
+    { crush, 100, "48e5d35ed9c5885930c902f26577ddcbbecbcc2aca90f7c9916af7624b2203d9" },
 };
 static void testGoldens()
 {
@@ -2136,6 +2438,9 @@ static void testGoldens()
             Proc q;
             load(q, v3Fixture()), q.selectAb(slot);
             CHECK(playHash(q) == v3Hashes[slot]); // and 0.3.0's as 0.3.0 did
+            Proc r;
+            load(r, v4Fixture()), r.selectAb(slot);
+            CHECK(playHash(r) == v4Hashes[slot]); // and 0.4.0's, with the controls 0.5.0 took away
         }
     if (matchingMath && matchingRenderer && !ci) // snapshots also contain the audio-driven scopes and meters
         for (const auto& s : shots)
@@ -2144,7 +2449,7 @@ static void testGoldens()
     std::cout << "Environment fingerprints: " << sha(math) << " / " << pixels(probe) << "\nChecked "
               << (matchingMath && !ci ? std::size(sounds) : 0) << " audio hashes and "
               << (matchingMath && matchingRenderer && !ci ? std::size(shots) : 0)
-              << " pixel hashes (audio from 81593d3, 0.2.0 and 0.3.0, editor from 0.4.0)"
+              << " pixel hashes (audio from 81593d3, 0.2.0, 0.3.0 and 0.4.0, editor from 0.5.0)"
               << (ci ? " (skipped on GitHub Actions)\n" : " (matching environments only)\n");
 #endif
 }
@@ -2266,6 +2571,7 @@ int main(int argc, char** argv)
     testState();
     testMigration();
     testBaked();
+    testRemoved();
     testRandomize();
     testCodec();
     testBand();
@@ -2286,6 +2592,10 @@ int main(int argc, char** argv)
     testEditorEdges();
     testInteraction();
     testLegacyEditor();
+    testRateDial();
+    testPictures();
+    testDividers();
+    testPresetMenu();
     testMeter();
     testEditorState();
     std::cout << (failures == 0 ? "All Crumb tests passed\n" : "Crumb tests FAILED\n");
