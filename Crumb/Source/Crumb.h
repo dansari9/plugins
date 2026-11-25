@@ -34,9 +34,10 @@ inline float clipped(double x) { return std::abs(x) > 1 ? (float) std::copysign(
 struct Scope
 {
     static constexpr int size = 1 << 15; // 170 ms at 192 kHz, 5 editor frames
-    std::array<std::atomic<float>, size> dry {}, wet {}, gone {};
-    std::array<std::atomic<float>, size> cut {}, over {}; // clipping in dB, signed as the sample: what the drive's clip took off one past full scale, and how far the output is past 0 dBFS
-    std::array<std::atomic<uint8_t>, size> mark {};
+    using Feed = std::vector<std::atomic<float>>; // allocated with the processor, never resized
+    Feed dry = Feed((size_t) size), wet = Feed((size_t) size), gone = Feed((size_t) size);
+    Feed cut = Feed((size_t) size), over = Feed((size_t) size); // clipping in dB, signed as the sample: what the drive's clip took off one past full scale, and how far the output is past 0 dBFS
+    std::vector<std::atomic<uint8_t>> mark = std::vector<std::atomic<uint8_t>>((size_t) size);
     std::atomic<uint32_t> write { 0 }, origin { 0 }; // origin: where in that count the codec's own began
     std::atomic<float> peak { 0 };
     double (*clock)() = [] { return juce::Time::getMillisecondCounterHiRes(); }; // ms; tests substitute their own
