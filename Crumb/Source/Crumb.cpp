@@ -102,6 +102,7 @@ AudioProcessorValueTreeState::ParameterLayout layout()
 struct Kernel
 {
     std::vector<double> impulse, step;
+    double delay = 0; // host samples, the impulse's first moment
 };
 const Kernel& kernel()
 {
@@ -134,6 +135,8 @@ const Kernel& kernel()
             k.impulse[(size_t) i] = x[(size_t) i].real() * over / sum;
             k.step[(size_t) i] = (acc + 0.5 * x[(size_t) i].real()) / sum, acc += x[(size_t) i].real();
         }
+        for (int i = 0; i <= n; ++i)
+            k.delay += k.impulse[(size_t) i] / over * i / over;
         return k;
     }();
     return table;
@@ -157,7 +160,7 @@ double lerp(const double* table, double p)
 
 struct Frame
 {
-    double v[numSmoothed] {}, inc = 1, dcCoef = 0, jitCoef = 0, jitNorm = 0, lsb = 0, half = 0, gLow = 0, gHigh = 0;
+    double v[numSmoothed] {}, inc = 1, dcCoef = 0, jitCoef = 0, jitNorm = 0, lsb = 0, half = 0, gLow = 0, gHigh = 0, lag = 0;
     Coef approx[4], images[2], filter;
     int bits = 0, ladderBits = 0;
     bool tread = false, identity = false;
@@ -168,7 +171,7 @@ struct BlepWeights { double h[taps], b[taps]; int h0 = 0; bool tick = false; };
 struct Channel
 {
     Svf pre, post, approx[4], images[2];
-    double adcPrev = 0, adcPrevD = 0, hist[taps] {}, ring[taps] {}, phase = 0, held = 0, dc = 0, jw = 0;
+    double adcPrev = 0, adcPrevD = 0, hist[taps] {}, ring[taps] {}, phase = 0, held = 0, dc = 0, jw = 0, into = 0;
     const double *impulse = kernel().impulse.data(), *blep = kernel().step.data();
     int pos = 0; // shared by hist (newest sample) and ring (current output sample)
     uint32 seed = 1;
@@ -217,6 +220,7 @@ struct Channel
         double y = plain + f.v[SClip] * (adaa - plain);
         y += (1 - f.v[SOrder]) * (filter(pre, y, f) - y);
         if (!band.idle()) y = band.run(channel, y);
+        into = y;
         y = convert(y, f);
         double lp = y;
         for (int k = 0; k < 4; ++k)
@@ -300,7 +304,7 @@ struct CrumbProcessor::Dsp
     std::array<Channel, 2> ch;
     Band bandPre, bandPost;
     crumb::Codec codec;
-    std::vector<float> dryRing[2], cutRing; // the input, for the dry path beside the codec, and where the drive clipped it
+    std::vector<float> dryRing[2], cutRing, preRing, heldRing; // the input, for the dry path beside the codec, where the drive clipped it, and the crush stage's in and out
     int ringMask2 = 0, warm = 0;
     uint32 ringAt = 0;
     double engaged = 0, engageStep = 0; // the codec's crossfade, 0 = off (the 0.2 path bit for bit)
@@ -322,7 +326,8 @@ struct CrumbProcessor::Dsp
         codec.prepare(jmin(fs, 400000.0)); // allocates: prepareToPlay only
         ringMask2 = 2 * codec.latency - 1;
         for (auto& r : dryRing) r.assign((size_t) (2 * codec.latency), 0.0f);
-        cutRing.assign((size_t) (2 * codec.latency), 0.0f);
+        for (auto* r : { &cutRing, &heldRing }) r->assign((size_t) (2 * codec.latency), 0.0f);
+        preRing.assign((size_t) (4 * codec.latency), 0.0f);
         engageStep = 1 / (0.02 * fs);
         gateCoef = 1 - std::exp(-1 / (0.005 * fs)), gateAttack = 1 - std::exp(-1 / (0.001 * fs)), gateRelease = 1 - std::exp(-1 / (0.08 * fs));
     }
@@ -340,7 +345,7 @@ struct CrumbProcessor::Dsp
         bandPre.reset(fs, bandConfig(true)), bandPost.reset(fs, bandConfig(false));
         codec.reset();
         for (auto& r : dryRing) std::fill(r.begin(), r.end(), 0.0f);
-        std::fill(cutRing.begin(), cutRing.end(), 0.0f);
+        for (auto* r : { &cutRing, &preRing, &heldRing }) std::fill(r->begin(), r->end(), 0.0f);
         ringAt = 0, warm = 0, engaged = codecWanted() ? 1 : 0;
         gateEnv = 0, gateGain = 1;
         targets(true);
@@ -373,13 +378,14 @@ struct CrumbProcessor::Dsp
             for (int k = 0; k < 2; ++k)
                 cached.images[k] = svf(gi, imagesK[k]);
             cached.filter = svf(g(std::exp2(f.v[SCut])), 2 * std::pow(40.0, -f.v[SReso])); // Q 0.5 .. 20
+            cached.lag = (approxK[0] + approxK[1] + approxK[2] + approxK[3]) / (pi * fr * std::exp2(f.v[SDev])); // the anti-alias filter's delay in seconds
             cached.gLow = g(std::exp2(f.v[SLow])), cached.gHigh = g(std::exp2(f.v[SHigh]));
             coefKeys = keys, coefValid = true;
         }
         f.inc = cached.inc, f.identity = f.inc >= 1 - 1e-9 && f.v[SJitter] <= 0, f.dcCoef = dcCoef;
         std::copy(std::begin(cached.approx), std::end(cached.approx), f.approx);
         std::copy(std::begin(cached.images), std::end(cached.images), f.images);
-        f.filter = cached.filter, f.gLow = cached.gLow, f.gHigh = cached.gHigh;
+        f.filter = cached.filter, f.gLow = cached.gLow, f.gHigh = cached.gHigh, f.lag = f.v[SApprox] * cached.lag;
     }
 };
 
@@ -475,12 +481,13 @@ void CrumbProcessor::processBlock(AudioBuffer<float>& buffer, MidiBuffer&)
         for (int c = 0; c < channels; ++c) // non-finite input becomes silence; absurd levels are clipped
             dry[c] = std::isfinite(x[c][i]) ? jlimit(-1000.0f, 1000.0f, x[c][i]) : 0.0f, loudest = jmax(loudest, dry[c] * dry[c]);
         const double mono = channels == 2 ? f.v[SMono] : 0, middle = 0.5 * (dry[0] + dry[1]);
-        float cut = 0; // what the drive's clip takes off this sample, the louder side's
+        float cut = 0, pre = 0, held = 0; // what the drive's clip takes off this sample, the louder side's; the crush stage's in and out
         for (int c = 0; c < channels; ++c)
         {
             const double x0 = mono > 0 ? dry[c] + mono * (middle - dry[c]) : dry[c];
             if (const float t = crumb::clipped(x0 * f.v[SPre]); std::abs(t) > std::abs(cut)) cut = t;
             y[c] = d.ch[(size_t) c].process(x0, f, d.bandPre, c, locked && c == 1 ? &shared : nullptr, locked && c == 0 ? &shared : nullptr);
+            pre += (float) d.ch[(size_t) c].into / (float) channels, held += (float) (d.ch[(size_t) c].held - d.ch[(size_t) c].dc) / (float) channels;
         }
         // Gate: the louder side's 5 ms level against the threshold; closed, the crushed signal is silent.
         d.gateEnv += d.gateCoef * (loudest - d.gateEnv);
@@ -506,7 +513,11 @@ void CrumbProcessor::processBlock(AudioBuffer<float>& buffer, MidiBuffer&)
         const double e = d.engaged;
         if (d.gateGain < 0.5 || mix <= 0) cut = 0; // not heard
         d.cutRing[at] = cut;
+        d.preRing[(size_t) ((d.ringAt - 1) & (uint32) (4 * latency - 1))] = pre * (float) d.gateGain, d.heldRing[at] = held * (float) d.gateGain;
         if (e > 0.5) cut = d.cutRing[late];
+        // the steps stand late by the anti-alias filter's and the hold kernel's delay: what went in is shown as late
+        const double lag = f.lag * d.fs + (f.identity ? 0 : kernel().delay);
+        const auto crush = e > 0.5 ? late : at, into = (size_t) ((d.ringAt - 1 - (e > 0.5 ? (uint32) latency : 0u) - (uint32) jmin(2.0 * latency - 1, lag + 0.5)) & (uint32) (4 * latency - 1));
         for (int c = 0; c < channels; ++c)
         {
             auto& ring = d.dryRing[c];
@@ -524,7 +535,7 @@ void CrumbProcessor::processBlock(AudioBuffer<float>& buffer, MidiBuffer&)
             if (const float t = std::abs(x[c][i]); t > 1 && 20 * std::log10(t) > std::abs(over)) over = std::copysign(20 * std::log10(t), x[c][i]);
             lost += (float) (e * gone[c] * wet) / (float) channels;
         }
-        scope.push(w + (uint32_t) i, in, out, lost, e > 0.5 ? (uint8_t) mark : (uint8_t) 0, cut, over);
+        scope.push(w + (uint32_t) i, in, out, lost, e > 0.5 ? (uint8_t) mark : (uint8_t) 0, cut, over, mix > 0 ? d.preRing[into] : in, mix > 0 ? d.heldRing[crush] : in);
     }
     scope.write.store(w + (uint32_t) n, std::memory_order_release);
     scope.loudest(peak);
@@ -568,6 +579,8 @@ void CrumbProcessor::serialize(MemoryBlock& dest) // under stateLock
             state.setProperty(k == 0 ? "slotA" : "slotB", String(t.str()), nullptr);
             state.setProperty(k == 0 ? "slotNameA" : "slotNameB", slotName[k], nullptr);
         }
+    if (viz > 0)
+        state.setProperty("viz", viz.load(), nullptr);
     if (editorWidth > 0)
         state.setProperty("editorWidth", editorWidth.load(), nullptr);
     if (auto xml = state.createXml())
@@ -699,7 +712,8 @@ void CrumbProcessor::setStateInformation(const void* data, int size)
     // (0.2.x) and 1 lack 0.3.0's parameters: all load neutral (the codec and the band off, auto 100 % of the old switch), so
     // the sound is the old one; its filter type and cutoff keep working as parameters. Version 3 (0.3.0) holds every parameter
     // 4 (0.4.0) does: 0.4.0 took auto gain off the panel and turned its default off, but a session that had it on keeps it on
-    // and plays as it did, until a factory preset or randomize (a new sound) turns it off.
+    // and plays as it did, until a factory preset or randomize (a new sound) turns it off. 0.5.0 (still 4) did the same to gate,
+    // DC shift, the filter's position and its invert: off the panel, registered, and run unseen as a session stored them.
     applyParams(*tree, true);
     for (int k = 0; k < 2; ++k) // a slot counts only with a preset and all the normalised values of its version
     {
@@ -718,6 +732,7 @@ void CrumbProcessor::setStateInformation(const void* data, int size)
             slots[k].clear();
     }
     ab = number(tree->getStringAttribute("ab")).value_or(0) > 0.5 ? 1 : 0;
+    viz = (int) jlimit(0.0, crumb::numViz - 1.0, number(tree->getStringAttribute("viz")).value_or(0));
     editorWidth = (int) jlimit(0.0, 4096.0, number(tree->getStringAttribute("editorWidth")).value_or(0));
     setIdentity((int) jlimit(-1.0, crumb::numPresets - 1.0, number(tree->getStringAttribute("preset")).value_or(-1)), tree->getStringAttribute("presetName")); // none: "custom"
 }
@@ -728,6 +743,8 @@ void CrumbProcessor::setStateInformation(const void* data, int size)
 // 1-12: classic 8/12/16-bit sampler flavours (generic names), 13-24: by use. Names are "bits·rate flavour".
 // Then 0.3.0's: loss, speed, drop, fill (0 gap 1 hold), keep (0 lost 1 kept), ear (0 ear 1 flat), gate dB (-96 off), stereo
 // (0 stereo 1 joint 2 mono), low cut Hz, high cut Hz, slope (0 6 .. 3 24 .. 7 96 dB), invert; 0..24 leave them neutral.
+// DC shift, the gate, the filter's position (post) and invert left the panel in 0.5.0: every preset has them at rest. Until
+// 0.4.0 ten had DC shift on, three a gate (bad line, phone call, dial tone) and one the filter before (bass, sub grit).
 // Auto gain is off in every preset (0.4.0). Until 0.3.0 it was on by default, so each preset that it turned down or up has the
 // same change baked in: exactly, drive's share (mix and output; at mix m and drive p the wet share is m / p of 1 - m + m / p),
 // and the codec's as a fixed output gain, what it averaged over the demo loop and the tests'
@@ -742,7 +759,7 @@ constexpr crumb::Preset crumb::presets[numPresets] = {
     { "10\xc2\xb7" "dark", { 3, 10, 0, 0, 16000, 3, 1, -30, 1, 0, 1, 1, 5500, 10, 100, -3 } },
     { "12\xc2\xb7" "32k punch", { 12, 12, 0, 0, 31250, 2, 1, 0, 1, 15, 0, 1, 20000, 0, 100, -18 } },
     { "8\xc2\xb7" "11k crunch", { 6, 8, 0, 0, 11025, 5, 0, 0, 0, 0, 0, 1, 20000, 0, 100, -10 } },
-    { "12\xc2\xb7" "26k tread", { 2, 12, 1, 0, 26040, 3, 1, 0, 1, 10, 1, 1, 12000, 0, 100, -3 } },
+    { "12\xc2\xb7" "26k tread", { 2, 12, 0, 0, 26040, 3, 1, 0, 1, 10, 1, 1, 12000, 0, 100, -3 } },
     { "8\xc2\xb7" "16k fold", { 4, 8, 0, 0, 16000, 4, 1, 40, 0, 0, 0, 1, 20000, 0, 100, -7 } },
     { "6\xc2\xb7" "8k toy", { 6, 6, 0, 0, 8000, 8, 0, 0, 0, 0, 0, 1, 20000, 0, 100, -12 } },
     { "14\xc2\xb7" "44k glue", { 5, 14, 0, 40, 44100, 1, 1, 0, 1, 30, 0, 1, 20000, 0, 100, -7 } },
@@ -750,34 +767,47 @@ constexpr crumb::Preset crumb::presets[numPresets] = {
     { "drums \xc2\xb7 crunch bus", { 10, 10, 0, 0, 22050, 3, 1, 0, 1, 10, 0, 1, 20000, 0, 42.5f, -8.7f } },
     { "drums \xc2\xb7 break dust", { 6, 12, 0, 0, 26040, 6, 1, -10, 1, 0, 1, 1, 9500, 10, 100, -8 } },
     { "bass \xc2\xb7 warm 12", { 8, 12, 0, 0, 26040, 0, 1, -20, 1, 0, 1, 1, 4000, 20, 100, -11 } },
-    { "bass \xc2\xb7 sub grit", { 14, 8, 0, 0, 12000, 2, 1, 0, 1, 0, 1, 0, 2500, 25, 23, -9.7f } },
+    { "bass \xc2\xb7 sub grit", { 14, 8, 0, 0, 12000, 2, 1, 0, 1, 0, 1, 1, 2500, 25, 23, -9.7f } },
     { "keys \xc2\xb7 lo-fi", { 4, 10, 0, 30, 18000, 12, 1, -20, 1, 0, 1, 1, 6500, 5, 100, -4 } },
     { "vocal \xc2\xb7 radio", { 10, 8, 0, 20, 11025, 0, 1, 0, 1, 0, 2, 1, 1800, 40, 100, -12 } },
-    { "vocal \xc2\xb7 phone", { 6, 8, 1, 0, 8000, 0, 1, 0, 1, 0, 2, 1, 1200, 55, 100, -7 } },
+    { "vocal \xc2\xb7 phone", { 6, 8, 0, 0, 8000, 0, 1, 0, 1, 0, 2, 1, 1200, 55, 100, -7 } },
     { "hats \xc2\xb7 sizzle", { 0, 6, 0, 0, 30000, 0, 0, 0, 0, 0, 3, 1, 5000, 0, 50, -2 } },
     { "pad \xc2\xb7 drift", { 2, 12, 0, 20, 22050, 60, 1, -10, 1, 20, 1, 1, 8000, 0, 100, -2 } },
     { "fx \xc2\xb7 alias sweep", { 0, 16, 0, 0, 6000, 0, 1, 100, 0, 0, 0, 1, 20000, 0, 100, -3 } },
     { "fx \xc2\xb7 700 hz wreck", { 12, 4, 0, 0, 700, 30, 0, 0, 0, 0, 1, 1, 3000, 30, 100, -20 } },
     { "mix \xc2\xb7 parallel crush", { 12, 8, 0, 0, 16000, 4, 1, 0, 1, 0, 0, 1, 20000, 0, 11.9f, -2.6f } },
     // 0.3.0, from a clean stream to a crushed one
-    { "256k stream", { 0, 16, 1, 0, 44100, 0, 1, 0, 0, 0, 0, 1, 20000, 0, 100, 0 }, { 4, 25, 0, 0, 0, 0, -96, 0, 20, 19000, 4, 0 } },
-    { "128k stream", { 0, 16, 1, 0, 44100, 0, 1, 0, 0, 0, 0, 1, 20000, 0, 100, 0 }, { 10, 25, 0, 0, 0, 0, -96, 1, 20, 16000, 5, 0 } },
-    { "64k stream", { 0, 16, 1, 0, 32000, 0, 1, 0, 0, 0, 0, 1, 20000, 0, 100, 0 }, { 28, 30, 0, 0, 0, 0, -96, 1, 20, 12500, 5, 0 } },
+    { "256k stream", { 0, 16, 0, 0, 44100, 0, 1, 0, 0, 0, 0, 1, 20000, 0, 100, 0 }, { 4, 25, 0, 0, 0, 0, -96, 0, 20, 19000, 4, 0 } },
+    { "128k stream", { 0, 16, 0, 0, 44100, 0, 1, 0, 0, 0, 0, 1, 20000, 0, 100, 0 }, { 10, 25, 0, 0, 0, 0, -96, 1, 20, 16000, 5, 0 } },
+    { "64k stream", { 0, 16, 0, 0, 32000, 0, 1, 0, 0, 0, 0, 1, 20000, 0, 100, 0 }, { 28, 30, 0, 0, 0, 0, -96, 1, 20, 12500, 5, 0 } },
     { "56k stream", { 3, 16, 0, 0, 22000, 4, 1, 0, 0, 0, 0, 1, 20000, 0, 100, 2.6f }, { 70, 40, 6, 1, 0, 0, -96, 0, 160, 6300, 3, 0 } },
-    { "32k swirl", { 0, 16, 1, 0, 22050, 0, 1, 0, 1, 0, 0, 1, 20000, 0, 100, 0.3f }, { 55, 12, 0, 0, 0, 0, -96, 1, 20, 9000, 3, 0 } },
+    { "32k swirl", { 0, 16, 0, 0, 22050, 0, 1, 0, 1, 0, 0, 1, 20000, 0, 100, 0.3f }, { 55, 12, 0, 0, 0, 0, -96, 1, 20, 9000, 3, 0 } },
     { "slow smear", { 0, 0, 0, 0, 44100, 0, 1, 0, 0, 0, 0, 1, 20000, 0, 100, 0.5f }, { 62, 0, 0, 0, 0, 0, -96, 0, 40, 14000, 1, 0 } },
     { "fast garble", { 4, 14, 0, 0, 26040, 12, 1, 0, 1, 10, 0, 1, 20000, 0, 100, 9.4f }, { 78, 100, 0, 0, 0, 0, -96, 0, 90, 9000, 1, 0 } },
-    { "bad line", { 2, 13, 0, 0, 16000, 0, 1, 0, 1, 0, 0, 1, 20000, 10, 100, -1.8f }, { 35, 50, 30, 0, 0, 0, -60, 2, 200, 3800, 5, 0 } },
-    { "stuck buffer", { 0, 16, 1, 0, 44100, 0, 1, 0, 0, 0, 0, 1, 20000, 0, 100, 0 }, { 12, 12, 45, 1, 0, 0, -96, 1, 20, 20000, 3, 0 } },
-    { "phone call", { 6, 12, 1, 0, 8000, 0, 1, 0, 1, 0, 0, 1, 20000, 15, 100, -1 }, { 45, 62, 4, 1, 0, 0, -48, 2, 400, 3150, 5, 0 } },
-    { "only the lost", { 0, 16, 1, 0, 44100, 0, 1, 0, 0, 0, 0, 1, 20000, 0, 100, 9.9f }, { 38, 25, 0, 0, 1, 0, -96, 0, 20, 20000, 3, 0 } },
+    { "bad line", { 2, 13, 0, 0, 16000, 0, 1, 0, 1, 0, 0, 1, 20000, 10, 100, -1.8f }, { 35, 50, 30, 0, 0, 0, -96, 2, 200, 3800, 5, 0 } },
+    { "stuck buffer", { 0, 16, 0, 0, 44100, 0, 1, 0, 0, 0, 0, 1, 20000, 0, 100, 0 }, { 12, 12, 45, 1, 0, 0, -96, 1, 20, 20000, 3, 0 } },
+    { "phone call", { 6, 12, 0, 0, 8000, 0, 1, 0, 1, 0, 0, 1, 20000, 15, 100, -1 }, { 45, 62, 4, 1, 0, 0, -96, 2, 400, 3150, 5, 0 } },
+    { "only the lost", { 0, 16, 0, 0, 44100, 0, 1, 0, 0, 0, 0, 1, 20000, 0, 100, 9.9f }, { 38, 25, 0, 0, 1, 0, -96, 0, 20, 20000, 3, 0 } },
     { "flat codec", { 3, 14, 0, 0, 32000, 0, 1, 0, 1, 0, 0, 1, 20000, 0, 100, -3.8f }, { 66, 50, 0, 0, 0, 1, -96, 0, 20, 20000, 3, 0 } },
     { "8 bit cast", { 8, 8, 0, 20, 22050, 5, 1, 0, 1, 0, 0, 1, 20000, 0, 100, -9.3f }, { 40, 38, 0, 0, 0, 0, -96, 1, 70, 8000, 3, 0 } },
     { "torn tape", { 6, 10, 0, 0, 18000, 45, 1, -10, 1, 0, 0, 1, 20000, 0, 100, -7.9f }, { 30, 12, 22, 0, 0, 0, -96, 0, 60, 7000, 1, 0 } },
-    { "dial tone", { 18, 5, 1, 0, 6000, 8, 0, 0, 0, 0, 0, 1, 20000, 35, 100, -24 }, { 82, 75, 10, 1, 0, 1, -42, 2, 300, 3400, 4, 0 } },
+    { "dial tone", { 18, 5, 0, 0, 6000, 8, 0, 0, 0, 0, 0, 1, 20000, 35, 100, -24 }, { 82, 75, 10, 1, 0, 1, -96, 2, 300, 3400, 4, 0 } },
     { "hard crush", { 24, 3, 0, 0, 4000, 20, 0, 0, 0, 0, 0, 1, 20000, 0, 100, -24 }, { 60, 88, 8, 1, 0, 1, -96, 0, 60, 12000, 1, 0 } },
 };
 constexpr int crumb::presetOrder[numPresets] = { 0, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24 };
+const std::vector<crumb::PresetGroup>& crumb::presetGroups()
+{
+    static const std::vector<PresetGroup> groups {
+        { "clean", { 0, 4, 11, 25, 26 } },
+        { "sampler", { 1, 2, 5, 6, 8, 12 } },
+        { "crunch", { 3, 7, 9, 10, 37, 40 } },
+        { "stream", { 27, 28, 29, 30, 31, 36, 35 } },
+        { "phone", { 34, 32, 39, 18, 19 } },
+        { "glitch", { 33, 38, 22, 23 } },
+        { "instrument", { 13, 14, 20, 15, 16, 17, 21, 24 } },
+    };
+    return groups;
+}
 
 void CrumbProcessor::setAll(const float* normalised)
 {
@@ -850,8 +880,8 @@ void CrumbProcessor::stepPreset(int delta)
     else loadUserPreset(files[at - crumb::numPresets]);
 }
 
-// A new sound: everything on the panel but mix and output; auto gain goes off (without it the drive reaches 9 dB, half what
-// 0.3.0's did). The order of the draws is part of the site's port (silt's randomize, juce::Random).
+// A new sound: everything on the panel but mix and output; what left the panel (auto gain, gate, DC shift, invert, the
+// filter's position) is at rest (without auto gain the drive reaches 9 dB, half what 0.3.0's did). The order of the draws is part of the site's port (silt's randomize, juce::Random).
 void CrumbProcessor::randomize(int64_t seed)
 {
     Random r(seed);
@@ -861,7 +891,6 @@ void CrumbProcessor::randomize(int64_t seed)
     const auto log = [&](float lo, float hi) { return lo * std::pow(hi / lo, r.nextFloat()); };
     v[Preamp] = r.nextFloat() < 0.5f ? 0.0f : r.nextFloat() * 9;
     v[Bits] = r.nextFloat() < 0.2f ? 0.0f : (float) (3 + r.nextInt(14));
-    v[DcShift] = (float) r.nextInt(2);
     v[Rate] = r.nextFloat() < 0.2f ? 44100.0f : log(2500, 44100);
     v[Jitter] = r.nextFloat() < 0.6f ? 0.0f : r.nextFloat() * 50;
     v[ImagesOn] = (float) r.nextInt(2);

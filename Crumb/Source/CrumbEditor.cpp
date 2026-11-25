@@ -8,6 +8,7 @@
 // double-click = default, click the value to type. Every control is on the one page.
 #include "BinaryData.h"
 #include "Crumb.h"
+#include "PresetMenu.h"
 #include "Wave.h"
 #include <cstring>
 #include <optional>
@@ -17,7 +18,8 @@ using namespace juce;
 namespace
 {
 constexpr int C = 132, R = 41, W = 1056, H = 656, AX = 3, AT = 5, AW = crumb::Wave::columns / 2, AH = crumb::Wave::rows / 4;
-constexpr int titleY = 19, knobY = 22, lowerY = 29, selectY = 36; // two rows of dials; selectors on lowerY + 1, + 4, + 7
+constexpr int vizY = 4, titleY = 22, knobY = 25, lowerY = 32; // the picture's stepper over it; two rows of dials, the selectors beside the lower
+constexpr int vizSlot = 12; // `< spectrum >`
 constexpr float cw = 8, ch = 16;
 const Colour page { 0xff0d0d0d }, primary { 0xffececec }, muted { 0xff7a7a7a }, rule { 0xff2a2a2a }, line { 0xff2c2c2c }, dim { 0xff454545 }, accent { 0xffff3d1f }, kick { 0xff5a5a5a }, hot { 0xffff2424 }; // hot: clipping, printed as it is
 const Colour cobalt { 0xff5b7cff }, lilac { 0xffa98bff }, sun { 0xffffc83d }, tang { 0xffff6a2f }, pink { 0xffff4f9a }, cream { 0xffefe6d2 }; // riso inks
@@ -32,13 +34,15 @@ Font mono(float size, bool bold)
     return Font(FontOptions(faces[bold ? 1 : 0]).withPointHeight(size));
 }
 
-// The sections, in signal order, with their dials: two rows, left to right, `pitch` cells apart.
+// The sections, in signal order, with their dials: two rows, left to right, `pitch` cells apart. A divider stands two cells
+// left of a section, under the arrow: 1.5 cells off its dials and 1.5 to 2 off the last ring or label of the one before
+// (packet loss's label: 1).
 struct Section { const char* name; int x, w, pitch; };
-const Section sections[] = { { "in", 3, 10, 0 }, { "crush", 16, 30, 11 }, { "loss", 49, 28, 10 }, { "filter", 80, 28, 10 }, { "out", 111, 18, 10 } };
+const Section sections[] = { { "in", 3, 10, 0 }, { "crush", 16, 31, 11 }, { "loss", 50, 27, 9 }, { "filter", 80, 29, 10 }, { "out", 112, 17, 9 } };
 enum Zoom { automatic, samples, frames }; // what a control's change makes the picture show
 struct KnobSpec { const char *id, *name; int section, slot, row; Zoom zoom; bool centred; };
 const KnobSpec knobSpecs[] = {
-    { "preamp", "drive", 0, 0, 0, automatic, false }, { "gate", "gate", 0, 0, 1, automatic, false },
+    { "preamp", "drive", 0, 0, 0, automatic, false },
     { "bits", "bits", 1, 0, 0, samples, false }, { "rate", "rate", 1, 1, 0, samples, false }, { "jitter", "jitter", 1, 2, 0, samples, false },
     { "dither", "dither", 1, 0, 1, samples, false }, { "approxDev", "anti-alias", 1, 1, 1, samples, true }, { "imagesShift", "anti-image", 1, 2, 1, samples, false },
     { "loss", "loss", 2, 0, 0, frames, false }, { "speed", "speed", 2, 1, 0, frames, false }, { "drop", "packet loss", 2, 2, 0, frames, false },
@@ -48,13 +52,13 @@ constexpr int numKnobs = (int) std::size(knobSpecs);
 int knobX(const KnobSpec& k) { const auto& s = sections[k.section]; return s.pitch > 0 ? s.x + k.slot * s.pitch : s.x + (s.w - 8) / 2; }
 int knobRow(const KnobSpec& k) { return k.row == 0 ? knobY : lowerY; }
 
-// `< name >`: the slot is the longest of its own names and one cell either side, so it never resizes. loss and filter stack
-// theirs under their dials, labels and arrows each on one column, the stack centred; in and crush have one, centred.
+// `< name >`: the slot is the longest of its own names and one cell either side, so it never resizes. loss stacks three
+// beside the lower dials, labels and arrows each on one column, the stack centred; in and filter have one, centred.
 struct SelectorSpec { const char *id, *label; StringArray names; int section, y; Zoom zoom; };
 const SelectorSpec selectorSpecs[] = {
-    { "stereo", "", { "stereo", "joint", "mono" }, 0, 2, frames }, { "dcShift", "dc shift", { "off", "on" }, 1, 2, samples },
+    { "stereo", "", { "stereo", "joint", "mono" }, 0, 1, frames },
     { "ear", "weighting", { "perceptual", "flat" }, 2, 0, frames }, { "fill", "packets", { "drop", "repeat" }, 2, 1, frames }, { "keep", "delta", { "off", "on" }, 2, 2, frames },
-    { "slope", "slope", { "6 dB", "12 dB", "18 dB", "24 dB", "36 dB", "48 dB", "72 dB", "96 dB" }, 3, 0, automatic }, { "fOrder", "position", { "pre", "post" }, 3, 1, automatic }, { "invert", "invert", { "off", "on" }, 3, 2, automatic } };
+    { "slope", "slope", { "6 dB", "12 dB", "18 dB", "24 dB", "36 dB", "48 dB", "72 dB", "96 dB" }, 3, 1, automatic } };
 constexpr int numSelectors = (int) std::size(selectorSpecs);
 int slotWidth(const SelectorSpec& s)
 {
@@ -62,7 +66,7 @@ int slotWidth(const SelectorSpec& s)
     for (const auto& n : s.names) longest = jmax(longest, n.length());
     return longest + 4;
 }
-int selectorY(const SelectorSpec& s) { return lowerY + 1 + 3 * s.y; }
+int selectorY(const SelectorSpec& s) { return lowerY + 2 * s.y; }
 std::pair<int, int> selectorX(const SelectorSpec& s) // the label's first cell, the slot's
 {
     int label = 0, slot = 0;
@@ -78,7 +82,7 @@ struct Cell
     juce_wchar c = ' ';
     Colour fg, bg; // bg transparent: the paper
     bool bold = false;
-    uint8 edge = 0; // 1: a rule through the middle, 2: on the top edge
+    uint8 edge = 0; // 1: a rule through the middle, 2: on the top edge, 3: down the middle
     juce_wchar left = 0; // nonzero: half-cell centring, with the previous glyph's right half clipped to this cell
     bool operator!=(const Cell& o) const { return c != o.c || fg != o.fg || bg != o.bg || bold != o.bold || edge != o.edge || left != o.left; }
 };
@@ -128,12 +132,6 @@ struct Grid
 // Controls draw nothing: the grid shows them. The value box only appears while a value is typed.
 struct Look : LookAndFeel_V4
 {
-    Look()
-    {
-        setColour(PopupMenu::backgroundColourId, Colour(0xff141414)), setColour(PopupMenu::textColourId, cream);
-        setColour(PopupMenu::highlightedBackgroundColourId, Colour(0xff2a2a2a)), setColour(PopupMenu::highlightedTextColourId, cream);
-    }
-    Font getPopupMenuFont() override { return mono(13, false); }
     Font getLabelFont(Label&) override { return mono(cw / 0.6f, false); }
     void drawLabel(Graphics&, Label&) override {}
     void drawRotarySlider(Graphics&, int, int, int, int, float, float, float, Slider&) override {}
@@ -273,6 +271,8 @@ struct Editor : AudioProcessorEditor, Timer
     Component layer; // the controls, in design pixels
     Slider knobs[numKnobs];
     Key prev { "prev" }, next { "next" }, name { "preset" }, slotA { "A" }, slotB { "B" }, random { "randomize" };
+    Key vizPrev { "viz-" }, vizNext { "viz+" }, vizName { "viz" };
+    PresetMenu menu;
     OwnedArray<Key> arrows; // two per selector
     crumb::Wave wave;
     uint32_t seen = 0;
@@ -321,6 +321,11 @@ struct Editor : AudioProcessorEditor, Timer
         for (auto [key, x, w] : { std::tuple { &prev, 11, 3 }, { &next, 38, 3 }, { &name, 14, 24 }, { &slotA, 43, 1 }, { &slotB, 45, 1 }, { &random, 49, 9 } })
             layer.addAndMakeVisible(*key), key->setBounds(cells(x, 1, w, 1));
         prev.setTitle("previous preset"), next.setTitle("next preset"), name.setTitle("presets");
+        vizPrev.onClick = [this] { stepViz(-1); }, vizNext.onClick = vizName.onClick = [this] { stepViz(1); };
+        vizPrev.onStep = vizNext.onStep = vizName.onStep = [this](int by) { stepViz(by); };
+        for (auto [key, x, w] : { std::tuple { &vizPrev, AX, 2 }, { &vizName, AX + 2, vizSlot - 4 }, { &vizNext, AX + vizSlot - 2, 2 } })
+            layer.addAndMakeVisible(*key), key->setBounds(cells(x, vizY, w, 1));
+        vizPrev.setTitle("previous picture"), vizNext.setTitle("next picture"), vizName.setTitle("picture");
         prev.onStep = next.onStep = [this](int by) { proc.stepPreset(by), zoom = automatic; };
         for (int i = 0; i < numSelectors; ++i)
             for (int by : { -1, 1 })
@@ -333,6 +338,14 @@ struct Editor : AudioProcessorEditor, Timer
                 key->setTitle(String(by < 0 ? "previous " : "next ") + (s.label[0] != 0 ? s.label : s.id));
                 layer.addAndMakeVisible(key);
             }
+        layer.addChildComponent(menu);
+        menu.font = [](float size, bool bold) { return mono(size, bold); };
+        menu.onChoose = [this](int id) {
+            if (id == saveId) proc.saveUserPreset();
+            else if (id >= userId) proc.loadUserPreset(listed[id - userId]);
+            else proc.setCurrentProgram(id);
+            zoom = automatic;
+        };
 
         const int stored = proc.editorWidth; // read first: setting the limits already resizes
         setResizable(true, false);
@@ -372,12 +385,12 @@ struct Editor : AudioProcessorEditor, Timer
         if (is(s, "imagesShift")) return value("imagesOn") > 0.5f ? p->getValue() : -offAt;
         if (is(s, "lowCut")) return p->convertTo0to1(proc.band().low);
         if (is(s, "highCut")) return p->convertTo0to1(proc.band().high);
-        return p->getValue();
+        return is(s, "rate") ? 1 - p->getValue() : p->getValue(); // rate turns down: full left, the parameter as it was
     }
     static double knobDefaultFor(const CrumbProcessor& proc, int i)
     {
         const auto& s = knobSpecs[i];
-        return is(s, "bits") ? 11 / 23.0 : is(s, "imagesShift") ? -offAt : (double) proc.apvts.getParameter(s.id)->getDefaultValue();
+        return is(s, "bits") ? 11 / 23.0 : is(s, "imagesShift") ? -offAt : is(s, "rate") ? 1 - proc.apvts.getParameter(s.id)->getDefaultValue() : (double) proc.apvts.getParameter(s.id)->getDefaultValue();
     }
     double knobDefault(int i) const { return knobDefaultFor(proc, i); }
     String knobText(int i) const
@@ -395,7 +408,8 @@ struct Editor : AudioProcessorEditor, Timer
         const bool off = t.containsIgnoreCase("off");
         if (is(s, "bits")) return off || t.getIntValue() == 0 ? 1 + offAt : (jlimit(1, 24, t.getIntValue()) - 1) / 23.0;
         if (off && knobRange(i).getStart() < 0) return -offAt;
-        return proc.apvts.getParameter(s.id)->getValueForText(t);
+        const float v = proc.apvts.getParameter(s.id)->getValueForText(t);
+        return is(s, "rate") ? 1 - v : v;
     }
     const char* switchOf(int i) const { return is(knobSpecs[i], "approxDev") ? "approxOn" : is(knobSpecs[i], "imagesShift") ? "imagesOn" : nullptr; }
     void gesture(int i, bool begin)
@@ -420,34 +434,36 @@ struct Editor : AudioProcessorEditor, Timer
         else
         {
             if (const auto* sw = switchOf(i)) put(proc.apvts.getParameter(sw), v < -offAt / 2 ? 0.0f : 1.0f);
-            if (v >= 0 || switchOf(i) == nullptr) put(p, (float) v);
+            if (v >= 0 || switchOf(i) == nullptr) put(p, is(s, "rate") ? 1 - (float) v : (float) v);
         }
         if (s.zoom != automatic) zoom = s.zoom;
     }
     void step(int i, int by)
     {
         const auto& s = selectorSpecs[i];
-        if (std::strcmp(s.id, "invert") == 0 || std::strcmp(s.id, "slope") == 0) proc.adoptBand();
+        if (std::strcmp(s.id, "slope") == 0) proc.adoptBand();
         setParam(s.id, (float) ((index(s.id) + by + s.names.size()) % s.names.size()));
         if (s.zoom != automatic) zoom = s.zoom;
     }
+    void stepViz(int by) { proc.viz = (proc.viz + by + crumb::numViz) % crumb::numViz, zoom = automatic; }
+    // The preset list: the factory's groups, then the user's files and save.
+    static constexpr int userId = 1000, saveId = 999;
+    StringArray listed;
     void showPresets()
     {
-        PopupMenu menu;
-        for (int i : crumb::presetOrder) menu.addItem(1 + i, proc.getProgramName(i), true, proc.preset == i);
-        const auto files = proc.userPresets();
-        if (!files.isEmpty()) menu.addSeparator();
-        for (int k = 0; k < files.size(); ++k) menu.addItem(1000 + k, files[k], true, proc.preset < 0 && proc.presetName() == files[k]);
-        menu.addSeparator();
-        menu.addItem(999, "save");
-        menu.setLookAndFeel(&look);
-        menu.showMenuAsync(PopupMenu::Options().withTargetComponent(name), [self = SafePointer<Editor>(this), files](int r) {
-            if (!self || r == 0) return;
-            if (r == 999) self->proc.saveUserPreset();
-            else if (r >= 1000) self->proc.loadUserPreset(files[r - 1000]);
-            else self->proc.setCurrentProgram(r - 1);
-            self->zoom = automatic;
-        });
+        if (menu.isVisible()) return menu.close();
+        std::vector<PresetMenu::Group> groups;
+        for (const auto& g : crumb::presetGroups())
+        {
+            groups.push_back({ g.name, {} });
+            for (int i : g.presets) groups.back().items.push_back({ proc.getProgramName(i), i });
+        }
+        listed = proc.userPresets();
+        groups.push_back({ "user", {} });
+        for (int k = 0; k < listed.size(); ++k) groups.back().items.push_back({ listed[k], userId + k });
+        groups.back().items.push_back({ "save", saveId });
+        const int user = listed.indexOf(proc.presetName());
+        menu.open(std::move(groups), proc.preset >= 0 ? proc.preset.load() : user >= 0 ? userId + user : -1, { 3, 3, C - 6, R - 5 });
     }
     void resized() override
     {
@@ -462,7 +478,14 @@ struct Editor : AudioProcessorEditor, Timer
     void buildWave()
     {
         const double fs = proc.sampleRate.load();
-        if (showsFrames())
+        if (proc.viz == crumb::vizSpectrum) wave.spectrum(fs);
+        else if (proc.viz == crumb::vizSteps) wave.steps(fs, (double) value("rate"));
+        else if (proc.viz == crumb::vizPackets)
+        {
+            const int scale = crumb::rateScale(fs), hop = crumb::hops[crumb::speedIndex(value("speed") / 100)];
+            wave.packets(hop * ((1023 + hop) / hop) * scale, (int64_t) (uint32_t) (seen - proc.scope.origin.load(std::memory_order_relaxed)) - 2048 * scale - hop * scale / 2);
+        }
+        else if (showsFrames())
         {
             const int scale = crumb::rateScale(fs), hop = crumb::hops[crumb::speedIndex(value("speed") / 100)];
             // a frame shows from a latency and half a hop after it was coded
@@ -484,7 +507,8 @@ struct Editor : AudioProcessorEditor, Timer
         {
             const auto i = (size_t) (seen & (crumb::Scope::size - 1));
             wave.add(scope.dry[i].load(std::memory_order_relaxed), scope.wet[i].load(std::memory_order_relaxed), scope.gone[i].load(std::memory_order_relaxed), scope.mark[i].load(std::memory_order_relaxed),
-                     scope.cut[i].load(std::memory_order_relaxed), scope.over[i].load(std::memory_order_relaxed));
+                     scope.cut[i].load(std::memory_order_relaxed), scope.over[i].load(std::memory_order_relaxed),
+                     scope.pre[i].load(std::memory_order_relaxed), scope.held[i].load(std::memory_order_relaxed));
             cut = jmax(cut, std::abs(scope.cut[i].load(std::memory_order_relaxed))), over = jmax(over, std::abs(scope.over[i].load(std::memory_order_relaxed)));
         }
         if (fresh) heard = t, flat = false;
@@ -506,9 +530,10 @@ struct Editor : AudioProcessorEditor, Timer
         int hovered = 0;
         for (auto* key : arrows) hovered = 2 * hovered + (key->isMouseOver() ? 1 : 0);
         now.push_back((float) hovered);
-        now.push_back((float) (prev.isMouseOver() ? 1 : next.isMouseOver() ? 2 : random.isMouseOver() ? 3 : 0));
-        now.push_back(flat ? 0.0f : 1.0f);
-        if (!flat)
+        now.push_back((float) (prev.isMouseOver() ? 1 : next.isMouseOver() ? 2 : random.isMouseOver() ? 3 : vizPrev.isMouseOver() ? 4 : vizNext.isMouseOver() ? 5 : 0));
+        now.push_back(flat ? 0.0f : 1.0f), now.push_back((float) proc.viz.load());
+        now.insert(now.end(), wave.state.begin(), wave.state.end());
+        if (!flat && proc.viz == crumb::vizWave)
             for (const auto& c : wave.column) now.insert(now.end(), { c.dry.lo, c.dry.hi, c.wet.lo, c.wet.hi, c.gone.lo, c.gone.hi, c.cut.lo, c.cut.hi, c.over.lo, c.over.hi, (float) c.mark });
         now.push_back(flat ? 0 : wave.peak);
         if (now == drawnFrom && proc.presetName() == drawnName) return;
@@ -538,7 +563,7 @@ struct Editor : AudioProcessorEditor, Timer
         g.centre(x - 3, 14, y - 1, label, muted), g.centre(x - 3, 14, y + 4, text, primary, true);
     }
     // A clip meter's lit cells: one a dB, at least one while it clips.
-    static constexpr int meterCells = 11;
+    static constexpr int meterCells = 10;
     static int meter(const Held& h) { return h.db > 0 ? jlimit(1, meterCells, (int) std::floor(h.db + 0.5f)) : 0; }
     void refresh()
     {
@@ -553,14 +578,27 @@ struct Editor : AudioProcessorEditor, Timer
         g.right(C - 4, 1, "daveydidit", dim);
         g.edge(3, C - 3, 3, 2);
 
+        // What the picture shows, on its corner; the picture.
+        g.put(AX, vizY, "<", vizPrev.isMouseOver() ? primary : muted), g.centre(AX + 1, vizSlot - 2, vizY, crumb::vizNames[proc.viz], primary, true), g.put(AX + vizSlot - 1, vizY, ">", vizNext.isMouseOver() ? primary : muted);
         for (auto [i, j] : wave.water) g.put(AX + i, AT + j, u("░"), rule);
         g.braille(AX, AT, AW, AH, wave.line, accent), g.braille(AX, AT, AW, AH, wave.lost, primary, over);
         g.braille(AX, AT, AW, AH, wave.hot, hot);
-        g.braille(AX, AT, AW, AH, wave.taken, muted, under), g.braille(AX, AT, AW, AH, wave.ghost, showsFrames() ? kick : muted, under);
+        const bool waves = proc.viz == crumb::vizWave;
+        if (!waves) g.braille(AX, AT, AW, AH, wave.ghost, primary, under);
+        g.braille(AX, AT, AW, AH, wave.taken, muted, under);
+        if (waves) g.braille(AX, AT, AW, AH, wave.ghost, showsFrames() ? kick : muted, under);
+
+        if (!waves) // these stand on the bare page, not on the printed dots
+            for (int y = AT; y < AT + AH; ++y)
+                for (int x = AX; x < AX + AW; ++x) g.at[y][x].bg = page;
 
         for (const auto& s : sections)
         {
-            if (&s != sections) g.put(s.x - 2, titleY, u("→"), muted);
+            if (&s != sections)
+            {
+                g.put(s.x - 2, titleY, u("→"), muted);
+                for (int y = titleY + 1; y < R - 4; ++y) g.at[y][s.x - 2].edge = 3;
+            }
             g.put(s.x, titleY, s.name, primary), g.edge(s.x + (int) std::strlen(s.name) + 1, s.x + s.w, titleY, 1);
         }
         for (int i = 0; i < numKnobs; ++i)
@@ -572,7 +610,7 @@ struct Editor : AudioProcessorEditor, Timer
         {
             const auto& s = selectorSpecs[i];
             const auto [x, at] = selectorX(s);
-            const int w = slotWidth(s), y = selectorY(s), chosen = std::strcmp(s.id, "invert") == 0 ? (proc.band().invert ? 1 : 0) : index(s.id);
+            const int w = slotWidth(s), y = selectorY(s), chosen = index(s.id);
             g.put(x, y, s.label, muted);
             g.put(at, y, "<", arrows[2 * i]->isMouseOver() ? primary : muted), g.put(at + w - 1, y, ">", arrows[2 * i + 1]->isMouseOver() ? primary : muted);
             g.centre(at + 1, w - 2, y, s.names[jlimit(0, s.names.size() - 1, chosen)], primary, true);
@@ -580,13 +618,13 @@ struct Editor : AudioProcessorEditor, Timer
         // Where it clips, lit by the samples themselves: the drive's clip, the output past 0 dBFS; the output's peak.
         const auto& out = sections[4];
         const int lit[2] { meter(driveClip), meter(outClip) };
-        g.put(out.x, lowerY - 1, "clip", muted), g.put(out.x + out.w - 1, lowerY - 1, u("⠶"), lit[0] + lit[1] > 0 ? hot : dim);
+        g.put(out.x, lowerY, "clip", muted), g.put(out.x + out.w - 1, lowerY, u("⠶"), lit[0] + lit[1] > 0 ? hot : dim);
         for (int k = 0; k < 2; ++k)
         {
-            g.put(out.x, lowerY + 1 + 3 * k, k == 0 ? "drive" : "output", muted);
-            for (int c = 0; c < meterCells; ++c) g.put(out.x + out.w - meterCells + c, lowerY + 1 + 3 * k, u("⠶"), c < lit[k] ? hot : dim);
+            g.put(out.x, lowerY + 1 + k, k == 0 ? "drive" : "output", muted);
+            for (int c = 0; c < meterCells; ++c) g.put(out.x + out.w - meterCells + c, lowerY + 1 + k, u("⠶"), c < lit[k] ? hot : dim);
         }
-        g.put(out.x, selectY, "peak", muted), g.put(out.x + out.w - meterCells, selectY, outPeak > 0 ? (outPeak > 1 ? "+" : "") + minus(String(Decibels::gainToDecibels(outPeak), 1)) + " dB" : u("−inf"), primary, true);
+        g.put(out.x, lowerY + 4, "peak", muted), g.put(out.x + out.w - meterCells, lowerY + 4, outPeak > 0 ? (outPeak > 1 ? "+" : "") + minus(String(Decibels::gainToDecibels(outPeak), 1)) + " dB" : u("−inf"), primary, true);
         g.put(3, R - 3, String::repeatedString(u("─"), C - 6), rule);
         show(g);
     }
@@ -711,8 +749,8 @@ struct Editor : AudioProcessorEditor, Timer
         if (plot && lum > 20) return { &tintPlate, t, {} };
         return { nullptr, 1, lum > 150 ? page.interpolatedWith(cream, t) : c };
     }
-    // A cell of paper and dots (a mask layer per bit, one byte of coverage per pixel), straight into the image.
-    void printDots(Rectangle<int> r, const std::vector<uint8>& masks, int bits, const Ink& ink)
+    // A cell of paper (bare: of the plain page) and dots (a mask layer per bit, one byte of coverage per pixel), straight into the image.
+    void printDots(Rectangle<int> r, const std::vector<uint8>& masks, int bits, const Ink& ink, bool bare)
     {
         const Image::BitmapData to(image, r.getX(), r.getY(), r.getWidth(), r.getHeight(), Image::BitmapData::readWrite);
         const Image::BitmapData paper(paperPlate, r.getX(), r.getY(), r.getWidth(), r.getHeight());
@@ -725,7 +763,9 @@ struct Editor : AudioProcessorEditor, Timer
             if (bits & 1 << q) layers[count++] = masks.data() + q * n;
         for (int y = 0; y < h; ++y)
         {
-            std::memcpy(to.getLinePointer(y), paper.getLinePointer(y), (size_t) (w * to.pixelStride));
+            if (bare)
+                for (int x = 0; x < w; ++x) reinterpret_cast<PixelRGB*>(to.getPixelPointer(x, y))->setARGB(255, page.getRed(), page.getGreen(), page.getBlue());
+            else std::memcpy(to.getLinePointer(y), paper.getLinePointer(y), (size_t) (w * to.pixelStride));
             for (int x = 0; x < w; ++x)
             {
                 int cover = 0;
@@ -744,14 +784,14 @@ struct Editor : AudioProcessorEditor, Timer
     {
         const auto& c = shown.at[j][i];
         const auto r = pixelsOf(i, j);
-        const bool braille = c.c >= 0x2800 && c.c <= 0x28ff, shade = c.c == 0x2591, plain = c.edge == 0 && c.bg.isTransparent();
+        const bool braille = c.c >= 0x2800 && c.c <= 0x28ff, shade = c.c == 0x2591, bare = c.bg == page, plain = c.edge == 0 && (bare || c.bg.isTransparent());
         if (plain && (braille || shade || (c.c == ' ' && c.left <= ' ')))
         {
             const int s = (r.getWidth() > image.getWidth() / C ? 1 : 0) + (r.getHeight() > image.getHeight() / R ? 2 : 0);
             int bits = shade ? 1 << 8 : 0;
             for (int q = 0; q < 8; ++q)
                 if (braille && ((c.c - 0x2800) & brailleBit(q % 2, q / 2))) bits |= 1 << q;
-            return printDots(r, dotMasks[s], bits, inkOf(c.fg, i, j));
+            return printDots(r, dotMasks[s], bits, inkOf(c.fg, i, j), bare);
         }
         Graphics::ScopedSaveState state(g);
         g.reduceClipRegion(r); // nothing spills into a neighbour, which may be redrawn alone
@@ -760,8 +800,10 @@ struct Editor : AudioProcessorEditor, Timer
         const float w = (float) image.getWidth() / C, h = (float) image.getHeight() / R, x = (float) r.getX(), y = (float) r.getY();
         const float cx = x + (float) r.getWidth() / 2, cy = y + (float) r.getHeight() / 2, lw = jmax(1.0f, w * 0.12f);
         const int t = jmax(1, roundToInt(lw)), hy = roundToInt(cy - (float) t / 2);
-        if (c.edge != 0)
-            g.setColour(line), g.fillRect(r.getX(), c.edge == 2 ? r.getY() : roundToInt(y + (float) r.getHeight() / 2), r.getWidth(), jmax(1, roundToInt((float) image.getWidth() / (float) jmax(1, getWidth()))));
+        const int thin = jmax(1, roundToInt((float) image.getWidth() / (float) jmax(1, getWidth())));
+        if (c.edge == 3) g.setColour(line), g.fillRect(roundToInt(x + (float) (r.getWidth() - thin) / 2), r.getY(), thin, r.getHeight());
+        else if (c.edge != 0)
+            g.setColour(line), g.fillRect(r.getX(), c.edge == 2 ? r.getY() : roundToInt(y + (float) r.getHeight() / 2), r.getWidth(), thin);
         if (c.c == ' ' && c.left <= ' ') return;
         const auto ink = inkOf(c.fg, i, j);
         if (ink.plate != nullptr) g.setTiledImageFill(*ink.plate, 0, 0, ink.alpha);

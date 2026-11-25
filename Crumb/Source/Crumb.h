@@ -36,17 +36,19 @@ struct Scope
     static constexpr int size = 1 << 15; // 170 ms at 192 kHz, 5 editor frames
     using Feed = std::vector<std::atomic<float>>; // allocated with the processor, never resized
     Feed dry = Feed((size_t) size), wet = Feed((size_t) size), gone = Feed((size_t) size);
+    Feed pre = Feed((size_t) size), held = Feed((size_t) size); // the crush stage: what went into the converter, and the steps that came out of its sample and hold
     Feed cut = Feed((size_t) size), over = Feed((size_t) size); // clipping in dB, signed as the sample: what the drive's clip took off one past full scale, and how far the output is past 0 dBFS
     std::vector<std::atomic<uint8_t>> mark = std::vector<std::atomic<uint8_t>>((size_t) size);
     std::atomic<uint32_t> write { 0 }, origin { 0 }; // origin: where in that count the codec's own began
     std::atomic<float> peak { 0 };
     double (*clock)() = [] { return juce::Time::getMillisecondCounterHiRes(); }; // ms; tests substitute their own
-    void push(uint32_t at, float d, float w, float g, uint8_t m, float c = 0, float o = 0)
+    void push(uint32_t at, float d, float w, float g, uint8_t m, float c = 0, float o = 0, float p = 0, float h = 0)
     {
         const auto i = (size_t) (at & (size - 1));
         dry[i].store(d, std::memory_order_relaxed), wet[i].store(w, std::memory_order_relaxed);
         gone[i].store(g, std::memory_order_relaxed), mark[i].store(m, std::memory_order_relaxed);
         cut[i].store(c, std::memory_order_relaxed), over[i].store(o, std::memory_order_relaxed);
+        pre[i].store(p, std::memory_order_relaxed), held[i].store(h, std::memory_order_relaxed);
     }
     void loudest(float p) // audio thread: raises the peak unless the editor just took it
     {
@@ -62,6 +64,10 @@ struct Preset
 inline constexpr int numPresets = 41;
 extern const Preset presets[numPresets]; // 0..24 as in 0.2, in their order
 extern const int presetOrder[numPresets]; // how the arrows step: init, 0.3.0's, 0.2's
+struct PresetGroup { const char* name; std::vector<int> presets; };
+const std::vector<PresetGroup>& presetGroups(); // the preset list's: every factory preset once, by what it does
+enum Viz { vizWave, vizSpectrum, vizSteps, vizPackets, numViz }; // what the picture shows
+inline constexpr const char* vizNames[numViz] { "wave", "spectrum", "steps", "packets" };
 juce::Image plate(int k); // the editor's plates: ink, tint, paper
 } // namespace crumb
 
@@ -98,6 +104,7 @@ public:
     crumb::Scope scope;
     std::atomic<double> sampleRate { 48000 };
     std::atomic<int> editorWidth { 0 }; // 0 = never resized; saved as an additive root attribute
+    std::atomic<int> viz { 0 }; // crumb::Viz, the editor's picture: saved with the session (additive root attribute), no part of the sound
 
     // Preset UI and host-state transactions. preset: 0..40 factory, -1 user file or unknown (old state).
     juce::File presetFolder() const;

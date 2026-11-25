@@ -1914,7 +1914,14 @@ static int picture(const juce::StringArray& a)
     const int width = a[2].getIntValue();
     Proc p;
     p.setCurrentProgram(a[6].getIntValue());
-    for (int k = 7; k < a.size(); ++k) set(p, a[k].upToFirstOccurrenceOf("=", false, false).toRawUTF8(), a[k].fromFirstOccurrenceOf("=", false, false).getFloatValue());
+    bool menu = false; // menu=1: the preset list open; viz=k: the picture
+    for (int k = 7; k < a.size(); ++k)
+    {
+        const auto id = a[k].upToFirstOccurrenceOf("=", false, false), v = a[k].fromFirstOccurrenceOf("=", false, false);
+        if (id == "menu") menu = true;
+        else if (id == "viz") p.viz = v.getIntValue();
+        else set(p, id.toRawUTF8(), v.getFloatValue());
+    }
     prepare(p, 48000, 128, 2);
     p.scope.clock = testClock, testMs = 0;
     std::unique_ptr<juce::AudioProcessorEditor> e(p.createEditor());
@@ -1932,6 +1939,7 @@ static int picture(const juce::StringArray& a)
         }
         testMs += 32, dynamic_cast<juce::Timer&>(*e).timerCallback();
     }
+    if (menu) dynamic_cast<juce::Button*>(find(*e, "preset"))->onClick();
     return savePng(e->createComponentSnapshot(e->getLocalBounds(), true, a[3].getFloatValue()), juce::File::getCurrentWorkingDirectory().getChildFile(a[1]));
 }
 static int renderFile(const juce::StringArray& args)
@@ -1963,7 +1971,7 @@ static int renderFile(const juce::StringArray& args)
             if (feed)
             {
                 const auto at = (w + i) & (crumb::Scope::size - 1);
-                for (float v : { p.scope.dry[at].load(), p.scope.wet[at].load(), p.scope.gone[at].load(), (float) p.scope.mark[at].load(), p.scope.cut[at].load(), p.scope.over[at].load() }) out.writeFloat(v);
+                for (float v : { p.scope.dry[at].load(), p.scope.wet[at].load(), p.scope.gone[at].load(), (float) p.scope.mark[at].load(), p.scope.cut[at].load(), p.scope.over[at].load(), p.scope.pre[at].load(), p.scope.held[at].load() }) out.writeFloat(v);
             }
             else
                 for (int c = 0; c < 2; ++c) out.writeFloat(b.getSample(c, (int) i));
