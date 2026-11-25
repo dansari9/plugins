@@ -19,7 +19,7 @@ Run the commands in that README from inside `SpringReverb/`.
 
 ## Crumb
 
-Vintage-sampler bit crusher (milestone 1: DSP, parameters, state and tests). See [Crumb/README.md](Crumb/README.md); the commands there run from the repository root.
+Bit crusher and lossy codec. See [Crumb/README.md](Crumb/README.md); the commands there run from the repository root.
 
 ## Continuous integration
 

@@ -1844,7 +1844,12 @@ static const Golden sounds[] = {
 // Editor snapshots of the 0.3.0 wave UI, same environment gate as the audio.
 struct Shot { Variant variant; int percent; const char* hash; };
 static const Shot shots[] = {
-    { mainPage, 100, "" }, { mainPage, 50, "" }, { mainPage, 200, "" }, { morePage, 100, "" }, { quiet, 100, "" }, { crush, 100, "" },
+    { mainPage, 100, "9d52592dbd7c1ee8d61b55bbe8bf60876e708bab4cbe9ebc446e8932df2c4964" },
+    { mainPage, 50, "ee9faea5dd82941c63897a4788e0142e1759388f0b682f92be06baf88905763e" },
+    { mainPage, 200, "2006dae97146254aa05458bbca8c6902354453f61b58a7a5949b6df66ec4fce0" },
+    { morePage, 100, "2805247bd67d1e79b977573c33d3dccdc467cab30df6023edafdbd2ac03afff8" },
+    { quiet, 100, "cf417eddc42592c5d0f8c1af1deaffe567ba89a7ca2996132b00f51682979523" },
+    { crush, 100, "5955ef9f0f7e94238b4643074ce3c80452bcc4c7db139cccbf62195179a52dc3" },
 };
 static void testGoldens()
 {

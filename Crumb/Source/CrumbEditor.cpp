@@ -709,32 +709,48 @@ struct Editor : AudioProcessorEditor, Timer
         if (plot && lum > 20) return { &tintPlate, t, {} };
         return { nullptr, 1, lum > 150 ? page.interpolatedWith(cream, t) : c };
     }
-    // Coverage (one byte per pixel, the masks' layers or'ed) printed straight into the image.
-    void print(Rectangle<int> r, const std::vector<uint8>& masks, int bits, const Ink& ink)
+    // A cell of paper and dots (a mask layer per bit, one byte of coverage per pixel), straight into the image.
+    void printDots(Rectangle<int> r, const std::vector<uint8>& masks, int bits, const Ink& ink)
     {
-        const Image::BitmapData d(image, r.getX(), r.getY(), r.getWidth(), r.getHeight(), Image::BitmapData::readWrite);
-        std::optional<Image::BitmapData> from;
-        if (ink.plate != nullptr) from.emplace(*ink.plate, r.getX(), r.getY(), r.getWidth(), r.getHeight());
-        const int n = r.getWidth() * r.getHeight();
-        for (int y = 0; y < r.getHeight(); ++y)
-            for (int x = 0; x < r.getWidth(); ++x)
+        const Image::BitmapData to(image, r.getX(), r.getY(), r.getWidth(), r.getHeight(), Image::BitmapData::readWrite);
+        const Image::BitmapData paper(paperPlate, r.getX(), r.getY(), r.getWidth(), r.getHeight());
+        std::optional<Image::BitmapData> plate;
+        if (ink.plate != nullptr) plate.emplace(*ink.plate, r.getX(), r.getY(), r.getWidth(), r.getHeight());
+        const int w = r.getWidth(), h = r.getHeight(), n = w * h;
+        const uint8* layers[9];
+        int count = 0;
+        for (int q = 0; q < 9; ++q)
+            if (bits & 1 << q) layers[count++] = masks.data() + q * n;
+        for (int y = 0; y < h; ++y)
+        {
+            std::memcpy(to.getLinePointer(y), paper.getLinePointer(y), (size_t) (w * to.pixelStride));
+            for (int x = 0; x < w; ++x)
             {
                 int cover = 0;
-                for (int q = 0; q < 9; ++q)
-                    if (bits & 1 << q) cover = jmin(255, cover + masks[(size_t) (q * n + y * r.getWidth() + x)]);
+                for (int q = 0; q < count; ++q) cover += layers[q][y * w + x];
                 if (cover == 0) continue;
-                const float a = ink.alpha * (float) cover / 255;
-                auto* p = reinterpret_cast<PixelRGB*>(d.getPixelPointer(x, y));
-                const auto c = from ? from->getPixelColour(x, y) : ink.colour;
+                const float a = ink.alpha * (float) jmin(255, cover) / 255;
+                auto* p = reinterpret_cast<PixelRGB*>(to.getPixelPointer(x, y));
                 const auto mix = [a](uint8 under, uint8 top) { return (uint8) ((float) under + ((float) top - (float) under) * a + 0.5f); };
+                const auto c = plate ? plate->getPixelColour(x, y) : ink.colour;
                 p->setARGB(255, mix(p->getRed(), c.getRed()), mix(p->getGreen(), c.getGreen()), mix(p->getBlue(), c.getBlue()));
             }
+        }
     }
     // One cell in device pixels, snapped to whole pixels so lines and blocks join; vector glyphs as grid.js draws them.
     void drawCell(Graphics& g, int i, int j)
     {
         const auto& c = shown.at[j][i];
         const auto r = pixelsOf(i, j);
+        const bool braille = c.c >= 0x2800 && c.c <= 0x28ff, shade = c.c == 0x2591, plain = c.edge == 0 && c.bg.isTransparent();
+        if (plain && (braille || shade || (c.c == ' ' && c.left <= ' ')))
+        {
+            const int s = (r.getWidth() > image.getWidth() / C ? 1 : 0) + (r.getHeight() > image.getHeight() / R ? 2 : 0);
+            int bits = shade ? 1 << 8 : 0;
+            for (int q = 0; q < 8; ++q)
+                if (braille && ((c.c - 0x2800) & brailleBit(q % 2, q / 2))) bits |= 1 << q;
+            return printDots(r, dotMasks[s], bits, inkOf(c.fg, i, j));
+        }
         Graphics::ScopedSaveState state(g);
         g.reduceClipRegion(r); // nothing spills into a neighbour, which may be redrawn alone
         g.drawImageAt(paperPlate, 0, 0);
@@ -746,15 +762,6 @@ struct Editor : AudioProcessorEditor, Timer
             g.setColour(line), g.fillRect(r.getX(), c.edge == 2 ? r.getY() : roundToInt(y + (float) r.getHeight() / 2), r.getWidth(), jmax(1, roundToInt((float) image.getWidth() / (float) jmax(1, getWidth()))));
         if (c.c == ' ' && c.left <= ' ') return;
         const auto ink = inkOf(c.fg, i, j);
-        const bool braille = c.c >= 0x2800 && c.c <= 0x28ff;
-        if (braille || c.c == 0x2591) // braille, ░ (a dither of four dots)
-        {
-            const int s = (r.getWidth() > (int) w ? 1 : 0) + (r.getHeight() > (int) h ? 2 : 0);
-            int bits = 0;
-            for (int q = 0; q < 8; ++q)
-                if (braille && ((c.c - 0x2800) & brailleBit(q % 2, q / 2))) bits |= 1 << q;
-            return print(r, dotMasks[s], braille ? bits : 1 << 8, ink);
-        }
         if (ink.plate != nullptr) g.setTiledImageFill(*ink.plate, 0, 0, ink.alpha);
         else g.setColour(ink.colour);
         const auto glyph = [&](juce_wchar code, float offset) {
