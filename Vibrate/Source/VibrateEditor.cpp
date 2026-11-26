@@ -32,7 +32,13 @@ struct Cell
     uint8 edge = 0; // 1: a rule through the middle, 2: on the top edge, 3: down the middle
     juce_wchar left = 0; // nonzero: half-cell centring, with the previous glyph's right half clipped to this cell
     bool fixedInk = false;
-    bool operator!=(const Cell& o) const { return c != o.c || fg != o.fg || bg != o.bg || bold != o.bold || edge != o.edge || left != o.left || fixedInk != o.fixedInk; }
+    uint8 over = 0; // braille dots printed over the cell's own, in their own fixed ink (a lane's second ink)
+    Colour overFg;
+    bool operator!=(const Cell& o) const
+    {
+        return c != o.c || fg != o.fg || bg != o.bg || bold != o.bold || edge != o.edge || left != o.left || fixedInk != o.fixedInk
+            || over != o.over || overFg != o.overFg;
+    }
 };
 enum Mode { merge, under, over }; // braille onto braille: or the dots, keep the old cell, replace it
 using Dots = std::vector<std::pair<int, int>>;
@@ -43,7 +49,7 @@ struct Grid
     {
         for (auto p = s.getCharPointer(); !p.isEmpty(); ++x)
             if (const auto c = p.getAndAdvance(); isPositiveAndBelow(x, C) && isPositiveAndBelow(y, R))
-                at[y][x].c = c, at[y][x].fg = fg, at[y][x].bg = bg, at[y][x].bold = bold, at[y][x].left = 0;
+                at[y][x].c = c, at[y][x].fg = fg, at[y][x].bg = bg, at[y][x].bold = bold, at[y][x].left = 0, at[y][x].over = 0;
     }
     void centre(int x, int w, int y, String s, Colour fg, bool bold = false)
     {
@@ -52,7 +58,7 @@ struct Grid
         if ((w - s.length()) % 2 != 0)
             for (int k = 0; k <= s.length(); ++k)
                 if (isPositiveAndBelow(x + k, C) && isPositiveAndBelow(y, R))
-                    at[y][x + k] = { k < s.length() ? s[k] : ' ', fg, {}, bold, at[y][x + k].edge, k > 0 ? s[k - 1] : ' ' };
+                    at[y][x + k] = { k < s.length() ? s[k] : ' ', fg, {}, bold, at[y][x + k].edge, k > 0 ? s[k - 1] : ' ', false, 0, {} };
     }
     void right(int x, int y, const String& s, Colour fg, bool bold = false, bool fixed = false)
     {
@@ -79,7 +85,7 @@ struct Grid
                     auto& cell = at[y + j][x + i];
                     const bool old = cell.c >= 0x2800 && cell.c <= 0x28ff;
                     if (old && mode == under) continue;
-                    cell = { (juce_wchar) (0x2800 + (v | (old && mode == merge ? (int) cell.c - 0x2800 : 0))), fg, {}, false, cell.edge };
+                    cell = { (juce_wchar) (0x2800 + (v | (old && mode == merge ? (int) cell.c - 0x2800 : 0))), fg, {}, false, cell.edge, 0, false, 0, {} };
                 }
     }
 };
@@ -404,10 +410,13 @@ struct Editor final : AudioProcessorEditor, Timer
                 for (int x = 0; x < vibrate::plotWidth; ++x)
                 {
                     const auto& cell = plot[static_cast<std::size_t>(y * vibrate::plotWidth + x)];
-                    if (cell.dots != 0)
-                        g.at[origin - 1 + y][vibrate::plotX + x] = {
-                            static_cast<juce_wchar>(0x2800 + cell.dots), Colour(0xff000000u | cell.ink), {}, false, 0, 0, true
-                        };
+                    if ((cell.dots | cell.back) == 0)
+                        continue;
+                    const bool back = cell.back != 0;
+                    g.at[origin - 1 + y][vibrate::plotX + x] = {
+                        static_cast<juce_wchar>(0x2800 + (back ? cell.back : cell.dots)), Colour(0xff000000u | (back ? cell.backInk : cell.ink)),
+                        {}, false, 0, 0, true, static_cast<uint8>(back ? cell.dots : 0), Colour(0xff000000u | cell.ink)
+                    };
                 }
             if ((info.active & (1u << lane)) != 0)
             {
@@ -544,7 +553,7 @@ struct Editor final : AudioProcessorEditor, Timer
         return { nullptr, 1, lum > 150 ? page.interpolatedWith(cream, t) : c };
     }
     // A cell of paper (bare: of the plain page) and dots (a mask layer per bit, one byte of coverage per pixel), straight into the image.
-    void printDots(Rectangle<int> r, const std::vector<uint8>& masks, int bits, const Ink& ink, bool bare)
+    void printDots(Rectangle<int> r, const std::vector<uint8>& masks, int bits, const Ink& ink, bool bare, bool over = false)
     {
         const Image::BitmapData to(image, r.getX(), r.getY(), r.getWidth(), r.getHeight(), Image::BitmapData::readWrite);
         const Image::BitmapData paper(paperPlate, r.getX(), r.getY(), r.getWidth(), r.getHeight());
@@ -557,7 +566,8 @@ struct Editor final : AudioProcessorEditor, Timer
             if (bits & 1 << q) layers[count++] = masks.data() + q * n;
         for (int y = 0; y < h; ++y)
         {
-            if (bare)
+            if (over) {} // printed onto the cell as it is
+            else if (bare)
                 for (int x = 0; x < w; ++x) reinterpret_cast<PixelRGB*>(to.getPixelPointer(x, y))->setARGB(255, page.getRed(), page.getGreen(), page.getBlue());
             else std::memcpy(to.getLinePointer(y), paper.getLinePointer(y), (size_t) (w * to.pixelStride));
             for (int x = 0; x < w; ++x)
@@ -585,7 +595,15 @@ struct Editor final : AudioProcessorEditor, Timer
             int bits = shade ? 1 << 8 : 0;
             for (int q = 0; q < 8; ++q)
                 if (braille && ((c.c - 0x2800) & brailleBit(q % 2, q / 2))) bits |= 1 << q;
-            return printDots(r, dotMasks[s], bits, inkOf(c.fg, c.fixedInk), bare);
+            printDots(r, dotMasks[s], bits, inkOf(c.fg, c.fixedInk), bare);
+            if (braille && c.over != 0)
+            {
+                int over = 0;
+                for (int q = 0; q < 8; ++q)
+                    if (c.over & brailleBit(q % 2, q / 2)) over |= 1 << q;
+                printDots(r, dotMasks[s], over, inkOf(c.overFg, true), bare, true);
+            }
+            return;
         }
         Graphics::ScopedSaveState state(g);
         g.reduceClipRegion(r); // nothing spills into a neighbour, which may be redrawn alone

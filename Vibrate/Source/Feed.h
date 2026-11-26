@@ -13,6 +13,7 @@ struct Frame
     double panGain = 0, gapSeconds = 0;
     Controls energy {};
     double midEnergy = 0, leftEnergy = 0, rightEnergy = 0, cross = 0;
+    double feedEnergy = 0, midLow = 0, midHigh = 0, mixGain = 0; // the high-passed feed, the centre's extremes, mix
 };
 
 class Feed
@@ -87,6 +88,9 @@ public:
         for (std::size_t i = 0; i < sample.terms.size(); ++i)
             sums.energy[i] += sample.terms[i] * sample.terms[i];
         sums.midEnergy += sample.mid * sample.mid;
+        sums.feedEnergy += sample.input * sample.input;
+        sums.midLow = std::min(sums.midLow, sample.mid);
+        sums.midHigh = std::max(sums.midHigh, sample.mid);
         const double left = std::isfinite(sample.out.left) ? sample.out.left : 0;
         const double right = std::isfinite(sample.out.right) ? sample.out.right : 0;
         sums.leftEnergy += left * left;
@@ -102,6 +106,7 @@ public:
         Frame frame = sums;
         frame.sequence = sequence++;
         frame.enabled = sample.enabled;
+        frame.mixGain = sample.mixGain;
         if (firstPitch[0] > 0 && sample.pitch1 > 0 && hop > 1)
             frame.pitchStep = { (sample.pitch1 - firstPitch[0]) / (hop - 1), (sample.pitch2 - firstPitch[1]) / (hop - 1) };
         for (auto& energy : frame.energy)
@@ -111,6 +116,7 @@ public:
         frame.panGain *= inverseHop;
         frame.gapSeconds *= inverseHop * inverseSampleRate;
         frame.midEnergy *= inverseHop;
+        frame.feedEnergy *= inverseHop;
         frame.leftEnergy *= inverseHop;
         frame.rightEnergy *= inverseHop;
         frame.cross *= inverseHop;

@@ -77,7 +77,8 @@ static int renderFile(const juce::StringArray& args)
                 for (auto x : frame.phaseHz) frameText << ',' << x;
                 frameText << ',' << frame.panGain << ',' << frame.gapSeconds;
                 for (auto x : frame.energy) frameText << ',' << x;
-                frameText << ',' << frame.midEnergy << ',' << frame.leftEnergy << ',' << frame.rightEnergy << ',' << frame.cross << "]\n";
+                frameText << ',' << frame.midEnergy << ',' << frame.leftEnergy << ',' << frame.rightEnergy << ',' << frame.cross
+                          << ',' << frame.feedEnergy << ',' << frame.midLow << ',' << frame.midHigh << ',' << frame.mixGain << "]\n";
             }
         }
         else
@@ -505,11 +506,13 @@ void testBounds()
                         const double d = std::max(pitchChange(now.delay1, last.delay1), pitchChange(now.delay2, last.delay2));
                         if (i < fs)
                         {
-                            bounded &= p <= 10 * value && d <= 1.4 * value * std::sqrt(value)
-                                && std::abs(2 * db((1 + now.panGain) / (1 - now.panGain))) <= 3.0 * value;
+                            bounded &= p <= 12.5 * value && d <= 1.75 * value * std::sqrt(value)
+                                && std::abs(2 * db((1 + now.panGain) / (1 - now.panGain))) <= 3.75 * value
+                                && std::abs(now.delay2 - now.delay1) <= .00375 * fs * value * std::sqrt(value) + 1e-9
+                                && (now.phase1 == 0 || std::abs(std::log2(now.phase1 / 800)) <= .75 + .75 * value + 1e-9);
                         }
                         else
-                            throwBounded &= p <= 31.0 && d <= 22.4;
+                            throwBounded &= p <= 38.75 && d <= 28.0;
                     }
                     last = now;
                 });
@@ -643,7 +646,11 @@ void testSmoothnessAndSilence()
         {
             const double wet = (static_cast<double>(b.getSample(0, i)) - b.getSample(1, i)) * .5;
             const double delta = wet - previous;
-            if (block >= 2) maximum = std::max(maximum, std::abs(delta - difference));
+            if (block >= 12 && std::abs(delta - difference) > maximum) // after every tap's onset (16 ms)
+            {
+                maximum = std::abs(delta - difference);
+                if (std::getenv("VIBRATE_DEBUG")) std::cout << "  max at block " << block << " sample " << i << ": " << maximum << '\n';
+            }
             previous = wet;
             difference = delta;
         }
@@ -857,8 +864,115 @@ void testFeed()
         if (p.feed.pop(frame)) lanes.add(frame);
     }
     const unsigned active = lanes.readout().active;
-    check(active != 0 && (active & (1u << vibrate::phase)) == 0 && (active & (1u << vibrate::mix)) == 0,
-          "zero phase is blank and zero mix leaves other measured lanes visible");
+    const auto mixPlot = lanes.plot(vibrate::mix);
+    const bool grey = std::all_of(mixPlot.begin(), mixPlot.end(), [](const vibrate::Lanes::Cell& c) { return c.dots == 0; })
+                   && std::any_of(mixPlot.begin(), mixPlot.end(), [](const vibrate::Lanes::Cell& c) { return c.backInk != 0 && c.backInk != vibrate::baselineInk; });
+    check(active != 0 && (active & (1u << vibrate::phase)) == 0 && (active & (1u << vibrate::mix)) != 0 && grey,
+          "zero phase is blank; at zero mix the other lanes still move and the mix lane shows the signal all grey");
+}
+
+bool colored(juce::Colour c);
+
+// 0.2.0: every lane's depth at 100 % is 1.25 times 0.1.0's.
+void testDepths()
+{
+    const auto g = Engine::gains(full, false);
+    const auto d = Engine::depths(full);
+    const double pitchCents = Engine::wanderCents + Engine::flutterCents;
+    const double panDb = 20 * std::log10((1 + g[vibrate::pan]) / (1 - g[vibrate::pan]));
+    const double gapMs = 2 * d[1] * 1000, octaves = d[2], side = g[vibrate::side];
+    std::cout << "Depths at 100 %: pitch " << pitchCents << " c, pan " << panDb << " dB, delay gap " << gapMs << " ms, phase "
+              << octaves << " oct, side " << side * 100 << " %\n";
+    const bool scaled = pitchCents == 1.25 * 10 && Engine::wanderCents == 1.25 * 9 && Engine::flutterCents == 1.25 * 1
+                     && std::abs(panDb - 1.25 * 3.0) < 1e-3 && std::abs(gapMs - 1.25 * 3.0) < 1e-12
+                     && std::abs(octaves - 1.25 * 1.2) < 1e-12 && std::abs(Engine::depths({})[2] - 1.25 * .6) < 1e-12
+                     && std::abs(side - 1.25 * .28) < 1e-12;
+    check(scaled, "depths at 100 % are 1.25 times 0.1.0's: 12.5 c, 3.75 dB, 3.75 ms, 1.5 oct, 35 %");
+
+    // The deepest pitch read stays in the past, and the measured extremes over ten minutes stay inside the new figures.
+    const double nearest = Engine::pitchCentre - (Engine::wanderCents / (3462.0 * vibrate::rates[0]) + Engine::flutterCents / (3462.0 * vibrate::rates[2]));
+    Engine engine;
+    engine.prepare(48000, full);
+    double cents = 0, pan = 0, gap = 0, octave = 0, previous1 = 0, previous2 = 0;
+    for (int i = 0; i < 48000 * 600; ++i)
+        engine.process(.25f, .25f, [&](const vibrate::Sample& s) {
+            if (previous1 > 0)
+                cents = std::max({ cents, std::abs(1200 * std::log2(1 - (s.pitch1 - previous1))), std::abs(1200 * std::log2(1 - (s.pitch2 - previous2))) });
+            previous1 = s.pitch1, previous2 = s.pitch2;
+            pan = std::max(pan, std::abs(20 * std::log10((1 + s.panGain) / (1 - s.panGain))));
+            gap = std::max(gap, std::abs(s.delay2 - s.delay1) / 48);
+            octave = std::max({ octave, std::abs(std::log2(s.phase1 / 800)), std::abs(std::log2(s.phase2 / 800)) });
+        });
+    std::cout << "Ten minutes at 100 %: peak " << cents << " c, " << pan << " dB, " << gap << " ms, " << octave << " oct; nearest pitch read "
+              << nearest * 1000 << " ms\n";
+    check(nearest > .00025 && cents <= 12.5 && pan <= 3.75 && gap <= 3.75 && octave <= 1.5,
+          "pitch reads stay in the past; ten minutes at 100 % stay inside the 1.25x figures");
+}
+
+// The mix lane: the signal's lit dots per column, the lowest mix x of them in the rainbow, the rest grey.
+void testMixColours()
+{
+    bool exact = true, grey = true, rainbow = true;
+    for (float mix : { 0.0f, 50.0f, 100.0f })
+    {
+        VibrateProcessor p;
+        p.setCurrentProgram(0);
+        set(p, vibrate::mix, mix / 100);
+        p.prepareToPlay(48000, 240);
+        juce::AudioBuffer<float> block(2, 240);
+        juce::MidiBuffer midi;
+        vibrate::Lanes lanes;
+        vibrate::Frame frame;
+        for (int b = 0; b < 1200; ++b)
+        {
+            for (int i = 0; i < block.getNumSamples(); ++i)
+            {
+                const int t = b * 240 + i;
+                const auto x = static_cast<float>((.15 + .6 * std::abs(std::sin(t * 2e-5))) * std::sin(.0731 * t));
+                block.setSample(0, i, x);
+                block.setSample(1, i, x);
+            }
+            p.processBlock(block, midi);
+            while (p.feed.pop(frame)) lanes.add(frame);
+        }
+        exact &= lanes.mixShown() == mix / 100;
+        const auto plot = lanes.plot(vibrate::mix);
+        int columnsLit = 0, rainbowDots = 0, litDots = 0;
+        for (int x = 0; x < vibrate::Lanes::columns; ++x)
+        {
+            int top = -1, bottom = -1, lit = 0, coloured = 0, firstRainbow = -1;
+            for (int y = 0; y < vibrate::Lanes::dotsHigh; ++y)
+            {
+                const auto& c = plot[static_cast<std::size_t>(y / 4 * vibrate::plotWidth + x / 2)];
+                const auto bit = vibrate::brailleBit(x % 2, y % 4);
+                const bool over = (c.dots & bit) != 0, under = (c.back & bit) != 0;
+                if (!over && !under) continue;
+                if (top < 0) top = y;
+                bottom = y;
+                ++lit;
+                if (over)
+                {
+                    ++coloured;
+                    rainbow &= colored(juce::Colour(0xff000000u | c.ink));
+                    firstRainbow = firstRainbow < 0 ? y : firstRainbow;
+                }
+                else
+                {
+                    exact &= firstRainbow < 0; // no grey dot under a rainbow one
+                    grey &= !colored(juce::Colour(0xff000000u | c.backInk));
+                }
+            }
+            if (lit <= 1) continue; // an empty column keeps only its centre-line dot
+            exact &= lit == bottom - top + 1 && coloured == vibrate::Lanes::rainbowDots(lit, mix / 100);
+            ++columnsLit;
+            rainbowDots += coloured;
+            litDots += lit;
+        }
+        std::cout << "Mix " << mix << " %: " << columnsLit << " columns, " << rainbowDots << " of " << litDots << " dots in the rainbow\n";
+        exact &= columnsLit > 150 && (mix == 0 ? rainbowDots == 0 : mix == 100 ? rainbowDots == litDots
+                                     : std::abs(rainbowDots - .5 * litDots) <= .5 * columnsLit);
+    }
+    check(exact && grey && rainbow, "mix lane: 0 % all grey, 50 % the lower half of each column rainbow, 100 % all rainbow");
 }
 
 using Image = juce::Image;
@@ -1017,6 +1131,9 @@ int screenshot(const juce::StringArray& args)
         return 1;
     VibrateProcessor p;
     p.setCurrentProgram(args.size() > 6 ? args[6].getIntValue() : 0);
+    for (const auto& arg : args) // id=value, after the preset (mix=50)
+        if (auto* param = arg.contains("=") ? p.apvts.getParameter(arg.upToFirstOccurrenceOf("=", false, false)) : nullptr)
+            param->setValueNotifyingHost(param->convertTo0to1(arg.fromFirstOccurrenceOf("=", false, false).getFloatValue()));
     p.prepareToPlay(48000, 128);
     auto e = makeEditor(p);
     e->setSize(width, juce::roundToInt(width * 752 / 1056.0));
@@ -1111,6 +1228,8 @@ int main(int argc, char** argv)
     testSmoothnessAndSilence();
     testState();
     testFeed();
+    testDepths();
+    testMixColours();
     testEditor();
     return failures == 0 ? 0 : 1;
 }

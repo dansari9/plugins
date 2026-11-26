@@ -54,7 +54,7 @@ inline Pair snapZero(Pair value)
 template <typename T>
 T tanSmall(T x)
 {
-    // Taylor through x^9. All arguments are below 0.28 radians at the lowest rate.
+    // Taylor through x^9. All arguments are below 0.34 radians at the lowest rate.
     const T xx = x * x;
     return x + x * xx * (1.0 / 3 + xx * (2.0 / 15 + xx * (17.0 / 315 + xx * (62.0 / 2835))));
 }
@@ -62,11 +62,11 @@ T tanSmall(T x)
 template <typename T>
 T pow2Small(T x)
 {
-    // exp(x * log(2)), through x^9 for a maximum exponent of ±1.2.
+    // exp(x * log(2)), through x^11 for a maximum exponent of ±1.5 (relative error under 4e-9).
     const T t = x * 0.69314718055994530942;
     return 1.0 + t * (1.0 + t * (1.0 / 2 + t * (1.0 / 6 + t * (1.0 / 24
         + t * (1.0 / 120 + t * (1.0 / 720 + t * (1.0 / 5040
-        + t * (1.0 / 40320 + t / 362880.0))))))));
+        + t * (1.0 / 40320 + t * (1.0 / 362880 + t * (1.0 / 3628800 + t / 39916800.0))))))))));
 }
 
 // Fixed independent streams, selected to avoid chance correlation over the first 120 seconds.
@@ -243,6 +243,7 @@ struct Sample
     Controls terms;
     double pitch1, pitch2, panGain, delay1, delay2, phase1, phase2;
     unsigned enabled;
+    double mixGain;
 };
 
 struct IgnoreSample { void operator()(const Sample&) const {} };
@@ -316,10 +317,10 @@ public:
         if constexpr ((lanes & (1u << pitch)) != 0)
             if (g[pitch] > 0)
             {
-                pitch1 = 1.0 + fs * (0.0023 + d[pitchDepth] * n[0] * (9.0 / (3462.0 * rates[0]))
-                                                            + d[pitchDepth] * n[2] * (1.0 / (3462.0 * rates[2])));
-                pitch2 = 1.0 + fs * (0.0023 + d[pitchDepth] * n[1] * (9.0 / (3462.0 * rates[1]))
-                                                            + d[pitchDepth] * n[3] * (1.0 / (3462.0 * rates[3])));
+                pitch1 = 1.0 + fs * (pitchCentre + d[pitchDepth] * n[0] * (wanderCents / (3462.0 * rates[0]))
+                                                                 + d[pitchDepth] * n[2] * (flutterCents / (3462.0 * rates[2])));
+                pitch2 = 1.0 + fs * (pitchCentre + d[pitchDepth] * n[1] * (wanderCents / (3462.0 * rates[1]))
+                                                                 + d[pitchDepth] * n[3] * (flutterCents / (3462.0 * rates[3])));
                 p = g[pitch] * (tap(pitch1) - tap(pitch2));
             }
         if constexpr ((lanes & (1u << pan)) != 0)
@@ -374,22 +375,27 @@ public:
             if (g[lane] > 0)
                 enabled |= (1u << lane);
         observe({ input, x, out, { p, a, dl, h, s, q }, pitch1, pitch2, panGain, delay1, delay2, phase1, phase2,
-                  enabled & (lanes | (1u << mix)) });
+                  enabled & (lanes | (1u << mix)), g[mix] });
         return out;
     }
 
-private:
+    // At 100 %: each pitch voice wanders 11.25 c with 1.25 c of flutter, around a 2.8 ms centre that keeps the deepest
+    // read 0.27 ms in the past (0.2.0: 1.25 times 0.1.0's 9 + 1 c, which sat around 2.3 ms).
+    static constexpr double wanderCents = 11.25, flutterCents = 1.25, pitchCentre = 0.0028;
+
     static Controls gains(const Controls& c, bool bypass)
     {
-        return { 0.20 * std::sqrt(c[pitch]), 0.171 * c[pan], 0.22 * std::sqrt(c[delay]),
-                 0.30 * c[phase], 0.28 * c[side], bypass ? 0.0 : c[mix] };
+        return { 0.20 * std::sqrt(c[pitch]), 0.21257 * c[pan], 0.22 * std::sqrt(c[delay]),
+                 0.30 * c[phase], 0.35 * c[side], bypass ? 0.0 : c[mix] };
     }
 
     static std::array<double, 3> depths(const Controls& c)
     {
         // Stored in pitch, delay, phase order. The pitch voice constants are part of the taps.
-        return { c[pitch], 0.0015 * c[delay] * std::sqrt(c[delay]), 0.6 + 0.6 * c[phase] };
+        return { c[pitch], 0.001875 * c[delay] * std::sqrt(c[delay]), 0.75 + 0.75 * c[phase] };
     }
+
+private:
 
     double tap(double distance) const
     {
