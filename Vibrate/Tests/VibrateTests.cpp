@@ -18,7 +18,8 @@ static int renderFile(const juce::StringArray& args)
     juce::MemoryBlock input;
     if (!file.loadFileAsData(input) || input.getSize() == 0 || input.getSize() % (2 * sizeof(float)) != 0)
         return 1;
-    const bool frames = args[0] == "--frames";
+    const bool frames = args[0] == "--frames", plots = args[0] == "--plots";
+    vibrate::Lanes lanes;
     juce::MemoryInputStream in(input, false);
     juce::MemoryOutputStream out;
     VibrateProcessor processor;
@@ -67,7 +68,25 @@ static int renderFile(const juce::StringArray& args)
             for (int channel = 0; channel < 2; ++channel)
                 block.setSample(channel, i, in.readFloat());
         processor.processBlock(block, midi);
-        if (frames)
+        if (plots)
+        {
+            // Every 300 blocks, each lane's cells as drawn: dots, ink, back dots, back ink.
+            vibrate::Frame frame;
+            while (processor.feed.pop(frame))
+                lanes.add(frame);
+            if ((b + 1) % 300 == 0)
+            {
+                const char* separator = "[";
+                for (std::size_t lane = 0; lane < vibrate::numControls; ++lane)
+                    for (const auto& cell : lanes.plot(lane))
+                    {
+                        frameText << separator << int(cell.dots) << ',' << cell.ink << ',' << int(cell.back) << ',' << cell.backInk;
+                        separator = ",";
+                    }
+                frameText << "]\n";
+            }
+        }
+        else if (frames)
         {
             vibrate::Frame frame;
             while (processor.feed.pop(frame))
@@ -88,7 +107,7 @@ static int renderFile(const juce::StringArray& args)
         remaining -= count;
     }
     const auto output = juce::File::getCurrentWorkingDirectory().getChildFile(args[2]);
-    if (frames)
+    if (frames || plots)
     {
         const auto data = frameText.str();
         return output.replaceWithData(data.data(), data.size()) ? 0 : 1;
@@ -1205,7 +1224,7 @@ int main(int argc, char** argv)
     const juce::ScopedJuceInitialiser_GUI juce;
     juce::StringArray args;
     for (int i = 1; i < argc; ++i) args.add(argv[i]);
-    if (args.size() >= 3 && (args[0] == "--render" || args[0] == "--frames"))
+    if (args.size() >= 3 && (args[0] == "--render" || args[0] == "--frames" || args[0] == "--plots"))
         return renderFile(args);
     if (args.size() == 1 && args[0] == "--bench")
         return bench();
