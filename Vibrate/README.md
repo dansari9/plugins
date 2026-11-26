@@ -1,4 +1,4 @@
-# vibrate 0.1.0
+# vibrate 0.2.0
 
 Stereo movement for background parts. Five lanes add the same signal to the left and subtract it from the right, leaving the mono sum dry. Accepts mono or stereo input with stereo output. Reports zero latency.
 
@@ -11,7 +11,9 @@ Stereo movement for background parts. Five lanes add the same signal to the left
 | side | Eight fixed taps with a slow change in level |
 | mix | Linear gain on the sum of the five lanes |
 
-The display shows measured audio-thread activity. Turning off a lane clears its trace. The preset name opens the grouped preset list. The arrows step through factory and user presets. Use A and B to compare settings. Drag, scroll or use the arrow keys on a dial. Double-click to reset it, or select the value to type a percentage.
+At 100 % each pitch voice moves up to ±12.5 cents, pan up to ±3.75 dB, the delay gap up to ±3.75 ms, the phase sweep ±1.5 octaves around 800 Hz, and side adds 35 % of the centre (0.2.0: 1.25 times 0.1.0's depths; presets unchanged).
+
+The display shows measured audio-thread activity. Turning off a lane clears its trace. The bottom lane shows the input's centre in grey; the lower mix share of it, by height, turns to the five lane colours. The preset name opens the grouped preset list. The arrows step through factory and user presets. Use A and B to compare settings. Drag, scroll or use the arrow keys on a dial. Double-click to reset it, or select the value to type a percentage.
 
 ## Build and check
 
@@ -25,7 +27,7 @@ xvfb-run -a Vibrate/build/VibrateTests --bench-editor
 
 Set `FETCHCONTENT_SOURCE_DIR_JUCE` to use a local JUCE 8.0.15 checkout. On macOS, CMake defaults to universal binaries and also builds the AU as `Vibrate_AU`.
 
-`VibrateTests --render in.f32 out.f32 preset=0 rate_hz=48000` renders interleaved stereo float32 in 128-frame blocks. `--screenshot out.png 1440 1 in.f32 1920 0` captures the real editor after 1920 blocks. Use `-` instead of the input file to show the stopped editor and add `menu` to open the preset list.
+`VibrateTests --render in.f32 out.f32 preset=0 rate_hz=48000` renders interleaved stereo float32 in 128-frame blocks. `--screenshot out.png 1440 1 in.f32 1920 0 mix=50` captures the real editor after 1920 blocks, with optional parameter values. Use `-` instead of the input file to show the stopped editor and add `menu` to open the preset list.
 
 ## State
 
